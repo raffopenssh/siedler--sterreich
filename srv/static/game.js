@@ -125,6 +125,8 @@ const G = {
   parcelPolys: [],      // from export/geojson (polygon data for current KGs)
   buildingFootprints: [], // real building footprint polygons from cadastre
   landusePolys: [],     // real landuse polygons (forests, roads, water, etc.)
+  ezIndex: {},          // kg_code+ez → [parcel features] for quick grouping
+  ezHighlight: null,    // {kg, ez} of currently highlighted EZ group
   claimed: [],          // from our DB
   treasures: [], challenges: [], players: [], chatMsgs: [],
   sse: null,
@@ -829,6 +831,7 @@ async function startGameWithLoading() {
   setLoadStep('ls-kg', 'active');
   setLoadProgress(45);
   await fetchKGPolygonsBlocking();
+  buildEZIndex();
   setLoadStep('ls-kg', 'done');
   setLoadProgress(65);
 
@@ -933,7 +936,7 @@ async function loadMoreParcels() {
     for (const f of feats) { if (!ids.has(f.properties.parcel_id)) { G.parcels.push(f); added++; } }
     if (added > 0) { render(); renderMini(); }
     // Also fetch polygon data for any new KGs
-    fetchKGPolygons();
+    fetchKGPolygons().then(() => buildEZIndex());
     // Check for adjacent municipality crossings
     detectAdjacentMunicipalities();
     checkViewportMunicipality();
@@ -1016,6 +1019,30 @@ async function fetchKGPolygons() {
 }
 
 async function loadClaimed() { G.claimed = await GET('/api/session/'+G.session.id+'/parcels') || []; updateParcelCount(); }
+
+/** Build EZ index from loaded parcel polygons — groups parcels by kg_code + ez */
+function buildEZIndex() {
+  G.ezIndex = {};
+  for (const f of G.parcelPolys) {
+    const p = f.properties;
+    const ez = p.ez;
+    if (!ez) continue;
+    const key = p.kg_code + '-EZ' + ez;
+    if (!G.ezIndex[key]) G.ezIndex[key] = [];
+    G.ezIndex[key].push(f);
+  }
+  // Also index from point parcels (fallback)
+  for (const f of G.parcels) {
+    const p = f.properties;
+    const ez = p.ez;
+    if (!ez) continue;
+    const key = p.kg_code + '-EZ' + ez;
+    if (!G.ezIndex[key]) G.ezIndex[key] = [];
+    // Only add if not already in polys
+    const ids = new Set(G.ezIndex[key].map(pf => pf.properties.parcel_id));
+    if (!ids.has(p.parcel_id)) G.ezIndex[key].push(f);
+  }
+}
 async function loadTreasures() { G.treasures = await GET('/api/session/'+G.session.id+'/treasures') || []; }
 async function loadChallenges() { G.challenges = await GET('/api/session/'+G.session.id+'/challenges?player_id='+G.player.id) || []; renderQuests(); }
 async function loadPlayers() { G.players = await GET('/api/session/'+G.session.id+'/players') || []; renderPlayerList(); }
@@ -1104,6 +1131,7 @@ function handleEvent(d) {
     case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,''); loadClaimed().then(()=>render()); break;
     case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
+    case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed': toast('🏆 '+d.player+' Aufgabe!','ok'); break;
   }
 }
@@ -1166,6 +1194,9 @@ function render() {
 
   // ---- Treasures ----
   for (const t of G.treasures) drawTreasure(ctx, t);
+
+  // ---- EZ group highlight (all parcels in same EZ) ----
+  if (G.ezHighlight) drawEZHighlight(ctx);
 
   // ---- Selected parcel highlight ----
   if (G.sel) drawSelection(ctx, G.sel);
@@ -1715,6 +1746,54 @@ function drawTreasure(ctx, t) {
   ctx.fillRect(sx+2, sy+1, 1, 1);
 }
 
+function drawEZHighlight(ctx) {
+  const key = G.ezHighlight.kg + '-EZ' + G.ezHighlight.ez;
+  const parcels = G.ezIndex[key] || [];
+  if (parcels.length < 2) return;
+  const selId = G.sel?.properties?.parcel_id;
+  ctx.save();
+  // Pulse animation based on time
+  const pulse = 0.3 + 0.15 * Math.sin(Date.now() / 400);
+  for (const f of parcels) {
+    if (f.properties.parcel_id === selId) continue; // skip the selected one (drawn separately)
+    if (f.geometry.type === 'Polygon') {
+      const pts = f.geometry.coordinates[0].map(c => toScreen(c[0], c[1]));
+      // Quick bounds check
+      let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+      for (const pt of pts) {
+        if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
+        if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
+      }
+      if (maxX < -50 || minX > gc.width+50 || maxY < -50 || minY > gc.height+50) continue;
+      ctx.beginPath();
+      pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
+      ctx.closePath();
+      // Fill with semi-transparent gold
+      ctx.fillStyle = 'rgba(212,168,67,' + pulse + ')';
+      ctx.fill();
+      // Gold dashed border
+      ctx.strokeStyle = '#d4a843';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      const p = f.properties;
+      const [x, y] = toScreen(p.lon || f.geometry.coordinates[0], p.lat || f.geometry.coordinates[1]);
+      if (x < -30 || x > gc.width+30 || y < -30 || y > gc.height+30) continue;
+      const sz = Math.max(8, Math.min(30, Math.sqrt(p.area_sqm||100) * mapScale() / 80000));
+      ctx.fillStyle = 'rgba(212,168,67,' + pulse + ')';
+      ctx.fillRect(x-sz/2, y-sz/2, sz, sz);
+      ctx.strokeStyle = '#d4a843';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(x-sz/2, y-sz/2, sz, sz);
+      ctx.setLineDash([]);
+    }
+  }
+  ctx.restore();
+}
+
 function drawSelection(ctx, f) {
   const p = f.properties;
   ctx.save();
@@ -2059,7 +2138,7 @@ function onGameClick(e) {
   if (best) { showParcelPopup(best); return; }
 
   document.getElementById('parcel-popup').classList.remove('open');
-  G.sel = null; render();
+  G.sel = null; G.ezHighlight = null; render();
 }
 
 function showParcelPopup(f) {
@@ -2084,6 +2163,8 @@ function showParcelPopup(f) {
   document.getElementById('pp-title').textContent = '📍 ' + (p.gnr || pid);
   document.getElementById('pp-id').textContent = pid;
   document.getElementById('pp-kg').textContent = p.kg_name || p.kg_code || '-';
+  const ez = p.ez || '';
+  document.getElementById('pp-ez').textContent = ez ? 'EZ ' + ez : '-';
   document.getElementById('pp-area').textContent = area>10000?(area/10000).toFixed(2)+' ha':Math.round(area)+' m²';
   document.getElementById('pp-use').textContent = getLanduseName(p);
   // Density label based on built-up ratio
@@ -2111,6 +2192,48 @@ function showParcelPopup(f) {
       <button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
   } else if (claim.player_id === G.player.id) {
     act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${claim.converted_to}</span>`;
+  }
+
+  // EZ info panel
+  const ezInfo = document.getElementById('pp-ez-info');
+  const ezStats = document.getElementById('pp-ez-stats');
+  const ezAct = document.getElementById('pp-ez-actions');
+  if (ez && p.kg_code) {
+    const ezKey = p.kg_code + '-EZ' + ez;
+    const ezParcels = G.ezIndex[ezKey] || [];
+    if (ezParcels.length > 1) {
+      const claimMap = {};
+      for (const c of G.claimed) claimMap[c.parcel_id] = c;
+      const totalArea = ezParcels.reduce((s, pf) => s + (pf.properties.area_sqm || 0), 0);
+      const unclaimed = ezParcels.filter(pf => !claimMap[pf.properties.parcel_id]);
+      const myCount = ezParcels.filter(pf => claimMap[pf.properties.parcel_id]?.player_id === G.player.id).length;
+      const areaStr = totalArea > 10000 ? (totalArea/10000).toFixed(2)+' ha' : Math.round(totalArea)+' m²';
+      ezStats.innerHTML = `
+        <span>Parzellen</span><b>${ezParcels.length} (${unclaimed.length} frei)</b>
+        <span>Gesamtfläche</span><b>${areaStr}</b>
+        <span>Dein Besitz</span><b>${myCount} / ${ezParcels.length}</b>`;
+      ezAct.innerHTML = '';
+      if (unclaimed.length > 0) {
+        // Calculate total price with 20% discount
+        let totalPrice = 0;
+        for (const pf of unclaimed) {
+          const pp = pf.properties;
+          totalPrice += calcPrice(pp.area_sqm||0, extractLuCode('',pp), pp.building_count||0, pp.total_building_area_sqm||0);
+        }
+        const discountedPrice = Math.round(totalPrice * 0.8);
+        const savings = totalPrice - discountedPrice;
+        ezAct.innerHTML = `<button class="btn btn-gold btn-small" style="margin-top:8px;width:100%" onclick="doClaimEZ('${p.kg_code}','${ez}')">📋 Ganze EZ kaufen: ${discountedPrice}🪙 <span style='font-size:14px;color:#2a2'>(−20% = −${savings}🪙)</span></button>`;
+      }
+      ezInfo.style.display = '';
+      // Set EZ highlight for rendering
+      G.ezHighlight = {kg: p.kg_code, ez: ez};
+    } else {
+      ezInfo.style.display = 'none';
+      G.ezHighlight = null;
+    }
+  } else {
+    ezInfo.style.display = 'none';
+    G.ezHighlight = null;
   }
 
   document.getElementById('parcel-popup').classList.add('open');
@@ -2144,6 +2267,7 @@ window.doClaim = async function() {
   const res = await POST('/api/claim-parcel', {
     session_id:G.session.id, player_id:G.player.id,
     parcel_id:p.parcel_id, kg_code:p.kg_code||'', gnr:p.gnr||'',
+    ez:p.ez||'',
     area_sqm:p.area_sqm||0, landuse:extractLuCode('',p),
     building_count:p.building_count||0, total_building_area:p.total_building_area_sqm||0,
   });
@@ -2174,6 +2298,38 @@ window.doSell = async function(claimId) {
   document.getElementById('parcel-popup').classList.remove('open'); G.sel=null;
 };
 
+window.doClaimEZ = async function(kgCode, ez) {
+  const ezKey = kgCode + '-EZ' + ez;
+  const ezParcels = G.ezIndex[ezKey] || [];
+  const claimMap = {};
+  for (const c of G.claimed) claimMap[c.parcel_id] = c;
+  const unclaimed = ezParcels.filter(pf => !claimMap[pf.properties.parcel_id]);
+  if (unclaimed.length === 0) { toast('Alle Parzellen dieser EZ sind bereits vergeben','err'); return; }
+
+  const parcels = unclaimed.map(pf => {
+    const pp = pf.properties;
+    return {
+      parcel_id: pp.parcel_id,
+      gnr: pp.gnr || '',
+      area_sqm: pp.area_sqm || 0,
+      landuse: extractLuCode('', pp),
+      building_count: pp.building_count || 0,
+      total_building_area: pp.total_building_area_sqm || 0,
+    };
+  });
+
+  const res = await POST('/api/claim-ez', {
+    session_id: G.session.id, player_id: G.player.id,
+    kg_code: kgCode, ez: ez, parcels: parcels,
+  });
+  if (res.error) { toast(res.error, 'err'); return; }
+  toast('\u{1f4cb} EZ ' + ez + ': ' + res.claimed_count + ' Parzellen ('+res.discount+' gespart!)', 'ok');
+  G.player = res.player; updateStats();
+  await loadClaimed(); render();
+  if (G.sel) showParcelPopup(G.sel);
+  loadChallenges();
+};
+
 async function claimTreasure(t) {
   const res = await POST('/api/claim-treasure', {player_id:G.player.id, treasure_id:t.id});
   if (res.error) { toast(res.error,'err'); return; }
@@ -2185,12 +2341,13 @@ async function claimTreasure(t) {
 }
 
 document.getElementById('popup-close').onclick = () => {
-  document.getElementById('parcel-popup').classList.remove('open'); G.sel=null; render();
+  document.getElementById('parcel-popup').classList.remove('open'); G.sel=null; G.ezHighlight=null; render();
 };
 
-// Sparkle animation
+// Sparkle animation + EZ pulse
 setInterval(() => {
-  if (G.treasures.length>0 && document.getElementById('screen-game').classList.contains('active')) render();
+  if (document.getElementById('screen-game').classList.contains('active') &&
+      (G.treasures.length>0 || G.ezHighlight)) render();
 }, 800);
 
 // Auto-refresh

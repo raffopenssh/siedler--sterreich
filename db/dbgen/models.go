@@ -69,6 +69,7 @@ type ParcelClaim struct {
 	ConvertedTo   *string   `json:"converted_to"`
 	PurchasePrice int64     `json:"purchase_price"`
 	ClaimedAt     time.Time `json:"claimed_at"`
+	Ez            string    `json:"ez"`
 }
 
 type Player struct {

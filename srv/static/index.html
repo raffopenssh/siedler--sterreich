@@ -151,8 +151,8 @@
       </div>
       <div class="loading-steps" id="loading-steps">
         <div class="load-step" id="ls-session"><span class="ls-icon">⏳</span> Spielsitzung erstellen</div>
-        <div class="load-step" id="ls-parcels"><span class="ls-icon">⏳</span> Kataster-Parzellen laden</div>
-        <div class="load-step" id="ls-kg"><span class="ls-icon">⏳</span> Grundstücks-Polygone laden</div>
+        <div class="load-step" id="ls-parcels"><span class="ls-icon">⏳</span> Kataster-Parzellen &amp; EZ-Daten laden</div>
+        <div class="load-step" id="ls-kg"><span class="ls-icon">⏳</span> Polygone, Gebäude &amp; Nutzungsflächen laden</div>
         <div class="load-step" id="ls-treasures"><span class="ls-icon">⏳</span> Schätze &amp; Aufgaben platzieren</div>
         <div class="load-step" id="ls-ready"><span class="ls-icon">⏳</span> Karte rendern</div>
       </div>
@@ -176,6 +176,10 @@
         <div class="loading-tip" id="tip-4">
           <div class="tip-icon">⚔️</div>
           <div class="tip-text"><b>Multiplayer</b><br>Lade Freunde über einen Einladungslink ein und siedelt gemeinsam — oder gegeneinander — in derselben Gemeinde!</div>
+        </div>
+        <div class="loading-tip" id="tip-5">
+          <div class="tip-icon">📋</div>
+          <div class="tip-text"><b>Einlagezahl (EZ)</b><br>Im Grundbuch fasst eine EZ mehrere Parzellen zusammen. Kaufe eine ganze EZ auf einmal und spare 20% — eine mächtige Strategie!</div>
         </div>
       </div>
     </div>
@@ -249,11 +253,17 @@
         <div class="pp-grid">
           <span>Parzelle</span><b id="pp-id">-</b>
           <span>KG</span><b id="pp-kg">-</b>
+          <span>EZ</span><b id="pp-ez">-</b>
           <span>Fläche</span><b id="pp-area">-</b>
           <span>Nutzung</span><b id="pp-use">-</b>
           <span>Bebauung</span><b id="pp-density">-</b>
           <span>Besitzer</span><b id="pp-owner">-</b>
           <span>Preis</span><b id="pp-price">-</b>
+        </div>
+        <div id="pp-ez-info" class="pp-ez-info" style="display:none">
+          <div class="pp-ez-header"><span class="pixel-label">📋 Einlagezahl (EZ) — Grundbuch-Einheit</span></div>
+          <div class="pp-ez-stats" id="pp-ez-stats"></div>
+          <div id="pp-ez-actions"></div>
         </div>
         <div id="pp-actions" class="pp-actions"></div>
       </div>

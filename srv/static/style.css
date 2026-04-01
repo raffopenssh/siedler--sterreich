@@ -285,6 +285,23 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-grid span { color:var(--text-dim); }
 .pp-grid b { color:var(--text); font-weight:normal; }
 .pp-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
+.pp-ez-info {
+  margin-top:10px; padding:10px; background:rgba(0,0,0,.3);
+  border:2px solid var(--panel-border); border-radius:4px;
+}
+.pp-ez-stats {
+  font:18px var(--font-game); color:var(--text); margin:6px 0;
+  display:grid; grid-template-columns:auto 1fr; gap:1px 10px;
+}
+.pp-ez-stats span { color:var(--text-dim); }
+.pp-ez-stats b { color:var(--text); font-weight:normal; }
+.ez-highlight {
+  animation:ez-pulse 1.5s ease-in-out infinite;
+}
+@keyframes ez-pulse {
+  0%,100% { opacity:0.6; }
+  50% { opacity:1; }
+}
 
 /* In-game address search */
 .game-search {

@@ -97,6 +97,7 @@ func (s *Server) Serve(addr string) error {
 
 	// Game actions
 	mux.HandleFunc("POST /api/claim-parcel", s.handleClaimParcel)
+	mux.HandleFunc("POST /api/claim-ez", s.handleClaimEZ)
 	mux.HandleFunc("POST /api/convert-parcel", s.handleConvertParcel)
 	mux.HandleFunc("POST /api/claim-treasure", s.handleClaimTreasure)
 	mux.HandleFunc("POST /api/complete-challenge", s.handleCompleteChallenge)
@@ -417,6 +418,7 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		ParcelID  string  `json:"parcel_id"`
 		KgCode    string  `json:"kg_code"`
 		Gnr       string  `json:"gnr"`
+		Ez        string  `json:"ez"`
 		AreaSqm            float64 `json:"area_sqm"`
 		Landuse            string  `json:"landuse"`
 		BuildingCount      int     `json:"building_count"`
@@ -457,6 +459,7 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		ParcelID:      req.ParcelID,
 		KgCode:        req.KgCode,
 		Gnr:           req.Gnr,
+		Ez:            req.Ez,
 		AreaSqm:       req.AreaSqm,
 		Landuse:       &landuse,
 		PurchasePrice: int64(price),
@@ -488,6 +491,124 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"price":   price,
 		"player":  updatedPlayer,
+	})
+}
+
+func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		PlayerID  string `json:"player_id"`
+		KgCode    string `json:"kg_code"`
+		Ez        string `json:"ez"`
+		Parcels   []struct {
+			ParcelID          string  `json:"parcel_id"`
+			Gnr               string  `json:"gnr"`
+			AreaSqm           float64 `json:"area_sqm"`
+			Landuse           string  `json:"landuse"`
+			BuildingCount     int     `json:"building_count"`
+			TotalBuildingArea float64 `json:"total_building_area"`
+		} `json:"parcels"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+
+	if len(req.Parcels) == 0 {
+		jsonErr(w, "No parcels to claim", 400)
+		return
+	}
+	if len(req.Parcels) > 100 {
+		jsonErr(w, "Too many parcels (max 100)", 400)
+		return
+	}
+
+	// Calculate total price with 20% EZ bulk discount
+	totalPrice := 0
+	for _, p := range req.Parcels {
+		// Skip already claimed
+		if _, err := s.Q.GetParcelClaim(r.Context(), dbgen.GetParcelClaimParams{
+			SessionID: req.SessionID,
+			ParcelID:  p.ParcelID,
+		}); err == nil {
+			continue
+		}
+		totalPrice += calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.TotalBuildingArea)
+	}
+
+	// 20% discount for bulk EZ claim
+	discountedPrice := int(float64(totalPrice) * 0.8)
+
+	// Check player has enough coins
+	player, err := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
+	if err != nil {
+		jsonErr(w, "Player not found", 404)
+		return
+	}
+	if player.Coins < int64(discountedPrice) {
+		jsonErr(w, fmt.Sprintf("Not enough coins! Need %d, have %d", discountedPrice, player.Coins), 400)
+		return
+	}
+
+	// Claim all unclaimed parcels
+	claimed := 0
+	for _, p := range req.Parcels {
+		// Skip already claimed
+		if _, err := s.Q.GetParcelClaim(r.Context(), dbgen.GetParcelClaimParams{
+			SessionID: req.SessionID,
+			ParcelID:  p.ParcelID,
+		}); err == nil {
+			continue
+		}
+		price := calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.TotalBuildingArea)
+		// Each parcel gets its proportional discounted price
+		discPrice := int64(float64(price) * 0.8)
+		landuse := p.Landuse
+		s.Q.ClaimParcel(r.Context(), dbgen.ClaimParcelParams{
+			SessionID:     req.SessionID,
+			PlayerID:      req.PlayerID,
+			ParcelID:      p.ParcelID,
+			KgCode:        req.KgCode,
+			Gnr:           p.Gnr,
+			Ez:            req.Ez,
+			AreaSqm:       p.AreaSqm,
+			Landuse:       &landuse,
+			PurchasePrice: discPrice,
+		})
+		claimed++
+	}
+
+	if claimed == 0 {
+		jsonErr(w, "All parcels in this EZ are already claimed", 409)
+		return
+	}
+
+	s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{
+		Coins: int64(-discountedPrice),
+		ID:    req.PlayerID,
+	})
+	xpReward := int64(claimed * 15) // Bonus XP for bulk EZ claim
+	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
+		Xp: xpReward,
+		ID: req.PlayerID,
+	})
+
+	s.broadcast(req.SessionID, map[string]any{
+		"type":    "ez_claimed",
+		"ez":      req.Ez,
+		"kg_code": req.KgCode,
+		"count":   claimed,
+		"player":  player.Name,
+	})
+
+	updatedPlayer, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
+	jsonResp(w, map[string]any{
+		"success":         true,
+		"claimed_count":   claimed,
+		"total_price":     discountedPrice,
+		"discount":        totalPrice - discountedPrice,
+		"xp_reward":       xpReward,
+		"player":          updatedPlayer,
 	})
 }
 

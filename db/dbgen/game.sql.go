@@ -11,8 +11,8 @@ import (
 )
 
 const claimParcel = `-- name: ClaimParcel :exec
-INSERT INTO parcel_claims (session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, purchase_price)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO parcel_claims (session_id, player_id, parcel_id, kg_code, gnr, ez, area_sqm, landuse, purchase_price)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type ClaimParcelParams struct {
@@ -21,6 +21,7 @@ type ClaimParcelParams struct {
 	ParcelID      string  `json:"parcel_id"`
 	KgCode        string  `json:"kg_code"`
 	Gnr           string  `json:"gnr"`
+	Ez            string  `json:"ez"`
 	AreaSqm       float64 `json:"area_sqm"`
 	Landuse       *string `json:"landuse"`
 	PurchasePrice int64   `json:"purchase_price"`
@@ -33,6 +34,7 @@ func (q *Queries) ClaimParcel(ctx context.Context, arg ClaimParcelParams) error 
 		arg.ParcelID,
 		arg.KgCode,
 		arg.Gnr,
+		arg.Ez,
 		arg.AreaSqm,
 		arg.Landuse,
 		arg.PurchasePrice,
@@ -210,7 +212,7 @@ func (q *Queries) GetCachedData(ctx context.Context, cacheKey string) (string, e
 }
 
 const getParcelClaim = `-- name: GetParcelClaim :one
-SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at FROM parcel_claims WHERE session_id = ? AND parcel_id = ?
+SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez FROM parcel_claims WHERE session_id = ? AND parcel_id = ?
 `
 
 type GetParcelClaimParams struct {
@@ -233,6 +235,7 @@ func (q *Queries) GetParcelClaim(ctx context.Context, arg GetParcelClaimParams) 
 		&i.ConvertedTo,
 		&i.PurchasePrice,
 		&i.ClaimedAt,
+		&i.Ez,
 	)
 	return i, err
 }
@@ -352,7 +355,7 @@ func (q *Queries) GetPlayerChallenges(ctx context.Context, arg GetPlayerChalleng
 }
 
 const getPlayerParcels = `-- name: GetPlayerParcels :many
-SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at FROM parcel_claims WHERE session_id = ? AND player_id = ?
+SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez FROM parcel_claims WHERE session_id = ? AND player_id = ?
 `
 
 type GetPlayerParcelsParams struct {
@@ -381,6 +384,7 @@ func (q *Queries) GetPlayerParcels(ctx context.Context, arg GetPlayerParcelsPara
 			&i.ConvertedTo,
 			&i.PurchasePrice,
 			&i.ClaimedAt,
+			&i.Ez,
 		); err != nil {
 			return nil, err
 		}
@@ -550,7 +554,7 @@ func (q *Queries) GetSessionByInvite(ctx context.Context, inviteCode string) (Ga
 }
 
 const getSessionParcels = `-- name: GetSessionParcels :many
-SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at FROM parcel_claims WHERE session_id = ?
+SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez FROM parcel_claims WHERE session_id = ?
 `
 
 func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]ParcelClaim, error) {
@@ -574,6 +578,7 @@ func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]Pa
 			&i.ConvertedTo,
 			&i.PurchasePrice,
 			&i.ClaimedAt,
+			&i.Ez,
 		); err != nil {
 			return nil, err
 		}
