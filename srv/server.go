@@ -108,6 +108,9 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/player/{id}", s.handleGetPlayer)
 	mux.HandleFunc("GET /api/player/{id}/sessions", s.handleGetPlayerSessions)
 
+	// KG data endpoint (paginated, avoids proxy size limits)
+	mux.HandleFunc("GET /api/kg/{code}", s.handleKGData)
+
 	// Cadastre proxy with caching
 	mux.HandleFunc("GET /api/cadastre/", s.handleCadastreProxy)
 
@@ -903,6 +906,82 @@ func (s *Server) handleGetPlayerSessions(w http.ResponseWriter, r *http.Request)
 
 // ---- Cadastre Proxy with Caching ----
 
+// handleKGData serves KG geojson data in pages to avoid proxy size limits.
+// GET /api/kg/{code}?layer=parcels&page=0&pagesize=200
+// Returns {features: [...], page, pagesize, total, hasMore}
+func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
+	kg := r.PathValue("code")
+	layer := r.URL.Query().Get("layer")
+	if layer == "" {
+		layer = "parcels"
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pagesize"))
+	if pageSize <= 0 || pageSize > 500 {
+		pageSize = 200
+	}
+
+	// Get cached full GeoJSON or fetch from upstream
+	cacheKey := "/export/geojson?kg=" + kg + "&layers=" + layer
+	var body []byte
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		body = []byte(cached)
+	} else {
+		url := cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer
+		resp, err := http.Get(url)
+		if err != nil {
+			jsonErr(w, "Cadastre API error", 502)
+			return
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+		if err != nil {
+			jsonErr(w, "Read error", 502)
+			return
+		}
+		// Compact coordinates
+		if compacted, err := compactGeoJSON(raw); err == nil {
+			body = compacted
+		} else {
+			body = raw
+		}
+		expiry := time.Now().Add(1 * time.Hour)
+		s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+			CacheKey: cacheKey, Data: string(body), ExpiresAt: expiry,
+		})
+	}
+
+	// Parse features and paginate
+	var fc struct {
+		Features []json.RawMessage `json:"features"`
+	}
+	if err := json.Unmarshal(body, &fc); err != nil {
+		jsonErr(w, "Parse error", 500)
+		return
+	}
+
+	total := len(fc.Features)
+	start := page * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
+	// Build compact response
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"features":[`))
+	for i, f := range fc.Features[start:end] {
+		if i > 0 {
+			w.Write([]byte{','})
+		}
+		w.Write(f)
+	}
+	fmt.Fprintf(w, `],"page":%d,"pagesize":%d,"total":%d,"has_more":%v}`, page, pageSize, total, end < total)
+}
+
 func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 	// Strip our prefix and forward to cadastre API
 	path := strings.TrimPrefix(r.URL.Path, "/api/cadastre")
@@ -935,6 +1014,14 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compact GeoJSON: round coordinates to 6 decimals, minify JSON
+	// This reduces ~1.6MB responses to ~1MB (and ~300KB with gzip)
+	if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/spatial/") {
+		if compacted, err := compactGeoJSON(body); err == nil {
+			body = compacted
+		}
+	}
+
 	// Cache for 1 hour
 	expiry := time.Now().Add(1 * time.Hour)
 	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
@@ -943,10 +1030,50 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: expiry,
 	})
 
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
+}
+
+// compactGeoJSON rounds coordinates to 6 decimal places and minifies JSON.
+func compactGeoJSON(data []byte) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, err
+	}
+	roundCoords(obj)
+	return json.Marshal(obj)
+}
+
+func roundCoords(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		if coords, ok := val["coordinates"]; ok {
+			val["coordinates"] = roundCoordValue(coords)
+		}
+		for _, child := range val {
+			roundCoords(child)
+		}
+	case []any:
+		for _, child := range val {
+			roundCoords(child)
+		}
+	}
+}
+
+func roundCoordValue(v any) any {
+	switch val := v.(type) {
+	case float64:
+		return math.Round(val*1e6) / 1e6
+	case []any:
+		out := make([]any, len(val))
+		for i, c := range val {
+			out[i] = roundCoordValue(c)
+		}
+		return out
+	}
+	return v
 }
 
 // ---- SSE (Server-Sent Events) ----

@@ -971,6 +971,19 @@ async function loadMoreParcels() {
   } catch(e) { console.error(e); }
 }
 
+/** Fetch all pages of a KG layer via /api/kg/{code}?layer=...&page=N */
+async function fetchKGLayer(kg, layer) {
+  const features = [];
+  let page = 0;
+  while (true) {
+    const data = await GET('/api/kg/'+kg+'?layer='+layer+'&page='+page+'&pagesize=200');
+    if (data.features) for (const f of data.features) features.push(f);
+    if (!data.has_more) break;
+    page++;
+  }
+  return features;
+}
+
 async function fetchKGPolygonsBlocking() {
   // Find KG codes from loaded parcels and fetch real polygon geometries
   const kgs = new Set();
@@ -988,25 +1001,17 @@ async function fetchKGPolygonsBlocking() {
   const promises = [];
   for (const kg of kgs) {
     G.kgsLoaded.add(kg);
-    // Fetch parcels, building footprints, and landuse polygons in parallel per KG
     promises.push(
       Promise.all([
-        GET(CAD+'/export/geojson?kg='+kg+'&layers=parcels'),
-        GET(CAD+'/export/geojson?kg='+kg+'&layers=building_footprints'),
-        GET(CAD+'/export/geojson?kg='+kg+'&layers=landuse'),
+        fetchKGLayer(kg, 'parcels'),
+        fetchKGLayer(kg, 'building_footprints'),
+        fetchKGLayer(kg, 'landuse'),
       ]).then(([parcels, footprints, landuse]) => {
-        if (parcels?.features) {
-          for (const f of parcels.features) G.parcelPolys.push(f);
-        }
-        if (footprints?.features) {
-          for (const f of footprints.features) G.buildingFootprints.push(f);
-        }
-        if (landuse?.features) {
-          // Only keep polygon features (skip points)
-          for (const f of landuse.features) {
-            if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
-              G.landusePolys.push(f);
-            }
+        for (const f of parcels) G.parcelPolys.push(f);
+        for (const f of footprints) G.buildingFootprints.push(f);
+        for (const f of landuse) {
+          if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
+            G.landusePolys.push(f);
           }
         }
         done++;
@@ -1028,21 +1033,15 @@ async function fetchKGPolygons() {
     G.kgsLoaded.add(kg);
     try {
       const [parcels, footprints, landuse] = await Promise.all([
-        GET(CAD+'/export/geojson?kg='+kg+'&layers=parcels'),
-        GET(CAD+'/export/geojson?kg='+kg+'&layers=building_footprints'),
-        GET(CAD+'/export/geojson?kg='+kg+'&layers=landuse'),
+        fetchKGLayer(kg, 'parcels'),
+        fetchKGLayer(kg, 'building_footprints'),
+        fetchKGLayer(kg, 'landuse'),
       ]);
-      if (parcels?.features) {
-        for (const f of parcels.features) G.parcelPolys.push(f);
-      }
-      if (footprints?.features) {
-        for (const f of footprints.features) G.buildingFootprints.push(f);
-      }
-      if (landuse?.features) {
-        for (const f of landuse.features) {
-          if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
-            G.landusePolys.push(f);
-          }
+      for (const f of parcels) G.parcelPolys.push(f);
+      for (const f of footprints) G.buildingFootprints.push(f);
+      for (const f of landuse) {
+        if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
+          G.landusePolys.push(f);
         }
       }
       render();
