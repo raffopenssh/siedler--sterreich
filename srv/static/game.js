@@ -2005,7 +2005,18 @@ function initGameInput() {
       touchDist=d; render();
     }
   }, {passive:false});
-  gc.addEventListener('touchend', () => { G.drag.active=false; clearTimeout(loadTimer); loadTimer=setTimeout(loadMoreParcels,600); });
+  gc.addEventListener('touchend', (e) => {
+    const wasTap = G.drag.active && !G.drag.moved;
+    G.drag.active=false;
+    clearTimeout(loadTimer);
+    loadTimer=setTimeout(loadMoreParcels,600);
+    // Trigger click logic for taps (touch without drag)
+    if (wasTap && e.changedTouches && e.changedTouches[0]) {
+      const touch = e.changedTouches[0];
+      // Create a synthetic event with clientX/clientY for onGameClick
+      onGameClick({clientX: touch.clientX, clientY: touch.clientY});
+    }
+  });
 
   // Zoom buttons
   document.getElementById('btn-zoomin').onclick = () => { G.cam.zoom=Math.min(20,G.cam.zoom+0.5); render(); renderMini(); };
