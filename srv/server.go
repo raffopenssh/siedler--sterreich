@@ -119,23 +119,41 @@ func (s *Server) Serve(addr string) error {
 
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gz *gzip.Writer
+	gz            *gzip.Writer
+	headerWritten bool
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	w.Header().Del("Content-Length") // compressed size differs
+	w.Header().Set("Content-Encoding", "gzip")
+	w.headerWritten = true
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.headerWritten {
+		w.WriteHeader(http.StatusOK)
+	}
 	return w.gz.Write(b)
+}
+
+func (w *gzipResponseWriter) Flush() {
+	w.gz.Flush()
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		// Skip gzip for SSE and non-gzip clients
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") ||
+			strings.HasSuffix(r.URL.Path, "/events") {
 			next.ServeHTTP(w, r)
 			return
 		}
 		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
 		defer gz.Close()
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Del("Content-Length")
 		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, gz: gz}, r)
 	})
 }
