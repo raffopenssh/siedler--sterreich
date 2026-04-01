@@ -1604,6 +1604,12 @@ function initGameInput() {
   // Zoom buttons
   document.getElementById('btn-zoomin').onclick = () => { G.cam.zoom=Math.min(20,G.cam.zoom+0.5); render(); renderMini(); };
   document.getElementById('btn-zoomout').onclick = () => { G.cam.zoom=Math.max(13,G.cam.zoom-0.5); render(); renderMini(); };
+  document.getElementById('btn-gearth').onclick = () => {
+    // Map game zoom (13-20) to Google Earth eye altitude (roughly 10000m at z13, 50m at z20)
+    const alt = Math.round(10000 / Math.pow(2, G.cam.zoom - 13));
+    const url = 'https://earth.google.com/web/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+alt+'a,0h,0t,0r';
+    window.open(url, '_blank');
+  };
 
   // Keyboard
   document.addEventListener('keydown', e => {
