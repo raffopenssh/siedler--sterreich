@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>⚔️ Siedler Österreich</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <div id="toast-container"></div>
+
+  <!-- ===================== WELCOME ===================== -->
+  <div id="screen-welcome" class="screen active">
+    <div class="welcome-bg"></div>
+    <div class="welcome-content">
+      <div class="logo-art">
+        <span class="logo-castle">🏰</span>
+        <h1 class="logo-text">SIEDLER<br>ÖSTERREICH</h1>
+        <div class="logo-sub">Entdecke · Beanspruche · Schütze die Natur</div>
+      </div>
+      <div class="welcome-panel">
+        <label class="pixel-label">Wähle deinen Namen</label>
+        <input type="text" id="input-name" placeholder="Pseudonym..." maxlength="30" autocomplete="off">
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-register">Neues Spiel</button>
+          <button class="btn btn-secondary" id="btn-login">Weiterspielen</button>
+        </div>
+        <div id="welcome-error" class="error-text"></div>
+      </div>
+      <div id="quick-rejoin" class="quick-rejoin"></div>
+    </div>
+  </div>
+
+  <!-- ===================== MAP PICKER ===================== -->
+  <div id="screen-pick" class="screen">
+    <div class="pick-header">
+      <h2>🗺️ Wähle deine Gemeinde</h2>
+      <div class="pick-search">
+        <input type="text" id="input-search" placeholder="Gemeinde, Adresse oder PLZ..." autocomplete="off">
+        <div id="search-results" class="search-dropdown"></div>
+      </div>
+      <button class="btn btn-secondary btn-small" id="btn-back-pick" style="display:none">◀ Zurück</button>
+    </div>
+    <canvas id="pick-canvas"></canvas>
+    <div id="pick-info" class="pick-info"></div>
+  </div>
+
+  <!-- ===================== LOBBY ===================== -->
+  <div id="screen-lobby" class="screen">
+    <div class="lobby-panel">
+      <h2 class="lobby-title">🏰 Spiellobby</h2>
+      <div id="lobby-muni" class="lobby-muni"></div>
+      <div id="lobby-create">
+        <button class="btn btn-primary btn-large" id="btn-create-session">Neues Spiel erstellen</button>
+        <div class="lobby-divider">— oder mit Code beitreten —</div>
+        <div class="btn-row">
+          <input type="text" id="input-invite" placeholder="Einladungscode...">
+          <button class="btn btn-gold" id="btn-join-session">Beitreten</button>
+        </div>
+      </div>
+      <div id="lobby-waiting" style="display:none">
+        <div class="pixel-label">Einladungslink:</div>
+        <div class="invite-box" id="invite-url"></div>
+        <div class="pixel-label">Spieler:</div>
+        <ul id="lobby-players" class="player-list"></ul>
+        <button class="btn btn-primary btn-large" id="btn-start">🎮 Spiel starten</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== LOADING ===================== -->
+  <div id="screen-loading" class="screen">
+    <div class="loading-wrap">
+      <div class="loading-castle">🏰</div>
+      <h2 class="loading-title">Siedlung wird vorbereitet...</h2>
+      <div class="loading-muni" id="loading-muni"></div>
+      <div class="loading-bar-wrap">
+        <div class="loading-bar" id="loading-bar"></div>
+      </div>
+      <div class="loading-steps" id="loading-steps">
+        <div class="load-step" id="ls-session"><span class="ls-icon">⏳</span> Spielsitzung erstellen</div>
+        <div class="load-step" id="ls-parcels"><span class="ls-icon">⏳</span> Kataster-Parzellen laden</div>
+        <div class="load-step" id="ls-kg"><span class="ls-icon">⏳</span> Grundstücks-Polygone laden</div>
+        <div class="load-step" id="ls-treasures"><span class="ls-icon">⏳</span> Schätze &amp; Aufgaben platzieren</div>
+        <div class="load-step" id="ls-ready"><span class="ls-icon">⏳</span> Karte rendern</div>
+      </div>
+      <div class="loading-info" id="loading-info">
+        <div class="loading-tip active" id="tip-0">
+          <div class="tip-icon">🗺️</div>
+          <div class="tip-text"><b>Echte Katasterdaten</b><br>Jede Parzelle in diesem Spiel basiert auf echten österreichischen Grundstücksdaten — mit realen Flächen, Nutzungsarten und Grenzen.</div>
+        </div>
+        <div class="loading-tip" id="tip-1">
+          <div class="tip-icon">🌿</div>
+          <div class="tip-text"><b>Naturschutz-Ziel: 30%</b><br>Kaufe Parzellen und wandle sie in Naturschutzgebiete um. Dein Ziel: 30% der Fläche deiner Gemeinde unter Schutz stellen!</div>
+        </div>
+        <div class="loading-tip" id="tip-2">
+          <div class="tip-icon">💰</div>
+          <div class="tip-text"><b>Wirtschaft &amp; Strategie</b><br>Du startest mit 1000 Münzen. Kaufe klug — größere Parzellen kosten mehr, bringen aber auch mehr Naturschutz-Punkte.</div>
+        </div>
+        <div class="loading-tip" id="tip-3">
+          <div class="tip-icon">💎</div>
+          <div class="tip-text"><b>Versteckte Schätze</b><br>Auf der Karte findest du Schatztruhen mit Münzen, Erfahrungspunkten und seltenen Gegenständen. Klicke sie an!</div>
+        </div>
+        <div class="loading-tip" id="tip-4">
+          <div class="tip-icon">⚔️</div>
+          <div class="tip-text"><b>Multiplayer</b><br>Lade Freunde über einen Einladungslink ein und siedelt gemeinsam — oder gegeneinander — in derselben Gemeinde!</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== GAME ===================== -->
+  <div id="screen-game" class="screen">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sb-header">
+        <span id="game-title">Siedler</span>
+        <button class="btn btn-small" id="btn-invite">📋</button>
+      </div>
+      <div class="sb-section">
+        <h3>🏰 <span id="s-name">-</span></h3>
+        <div class="stat"><span>🪙 Münzen</span><b id="s-coins">1000</b></div>
+        <div class="stat"><span>⚡ Erfahrung</span><b id="s-xp">0</b></div>
+        <div class="stat"><span>🎯 Level</span><b id="s-level">1</b></div>
+        <div class="stat"><span>📍 Parzellen</span><b id="s-parcels">0</b></div>
+      </div>
+      <div class="sb-section">
+        <h3>🌿 Naturschutz-Ziel: 30%</h3>
+        <div class="bio-wrap">
+          <div class="bio-bar" id="bio-bar"></div>
+          <div class="bio-marker" style="left:30%"></div>
+          <span class="bio-label" id="bio-label">0%</span>
+        </div>
+      </div>
+      <div class="sb-section" id="sec-players">
+        <h3>⚔️ Mitspieler</h3>
+        <div id="game-players"></div>
+      </div>
+      <div class="sb-section sb-scroll" id="sec-quests">
+        <h3>📜 Aufgaben</h3>
+        <div id="quest-list"></div>
+      </div>
+      <div class="sb-section" id="sec-rejoin" style="display:none">
+        <div class="rejoin-ingame">🔑 <a id="rejoin-ingame-link" href="#" style="color:var(--gold);font:14px VT323;word-break:break-all">Wiedereinstiegs-Link kopieren</a></div>
+      </div>
+      <div class="sb-chat">
+        <div class="chat-title">💬 Chat</div>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="chat-input-row">
+          <input type="text" id="input-chat" placeholder="Nachricht..." maxlength="200">
+          <button id="btn-chat">▶</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main canvas -->
+    <main id="game-main">
+      <canvas id="game-canvas"></canvas>
+      <div id="minimap"><canvas id="mini-canvas"></canvas></div>
+      <div id="parcel-popup" class="popup">
+        <button class="popup-close" id="popup-close">✕</button>
+        <h3 id="pp-title">-</h3>
+        <div class="pp-grid">
+          <span>Parzelle</span><b id="pp-id">-</b>
+          <span>KG</span><b id="pp-kg">-</b>
+          <span>Fläche</span><b id="pp-area">-</b>
+          <span>Nutzung</span><b id="pp-use">-</b>
+          <span>Besitzer</span><b id="pp-owner">-</b>
+          <span>Preis</span><b id="pp-price">-</b>
+        </div>
+        <div id="pp-actions" class="pp-actions"></div>
+      </div>
+      <div id="zoom-controls" class="zoom-controls">
+        <button class="btn btn-small" id="btn-zoomin">+</button>
+        <button class="btn btn-small" id="btn-zoomout">−</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/static/game.js"></script>
+</body>
+</html>

@@ -8,10 +8,99 @@ import (
 	"time"
 )
 
+type ApiCache struct {
+	CacheKey  string    `json:"cache_key"`
+	Data      string    `json:"data"`
+	FetchedAt time.Time `json:"fetched_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type Challenge struct {
+	ID             int64      `json:"id"`
+	SessionID      string     `json:"session_id"`
+	PlayerID       string     `json:"player_id"`
+	ChallengeType  string     `json:"challenge_type"`
+	Title          string     `json:"title"`
+	Description    *string    `json:"description"`
+	TargetParcelID *string    `json:"target_parcel_id"`
+	RewardCoins    int64      `json:"reward_coins"`
+	RewardXp       int64      `json:"reward_xp"`
+	Completed      int64      `json:"completed"`
+	CompletedAt    *time.Time `json:"completed_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+type ChatMessage struct {
+	ID        int64     `json:"id"`
+	SessionID string    `json:"session_id"`
+	PlayerID  string    `json:"player_id"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type GameSession struct {
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	InviteCode       string    `json:"invite_code"`
+	MunicipalityCode string    `json:"municipality_code"`
+	MunicipalityName string    `json:"municipality_name"`
+	CenterLon        float64   `json:"center_lon"`
+	CenterLat        float64   `json:"center_lat"`
+	CreatedBy        string    `json:"created_by"`
+	CreatedAt        time.Time `json:"created_at"`
+	Status           string    `json:"status"`
+}
+
 type Migration struct {
 	MigrationNumber int64     `json:"migration_number"`
 	MigrationName   string    `json:"migration_name"`
 	ExecutedAt      time.Time `json:"executed_at"`
+}
+
+type ParcelClaim struct {
+	ID            int64     `json:"id"`
+	SessionID     string    `json:"session_id"`
+	PlayerID      string    `json:"player_id"`
+	ParcelID      string    `json:"parcel_id"`
+	KgCode        string    `json:"kg_code"`
+	Gnr           string    `json:"gnr"`
+	AreaSqm       float64   `json:"area_sqm"`
+	Landuse       *string   `json:"landuse"`
+	ConvertedTo   *string   `json:"converted_to"`
+	PurchasePrice int64     `json:"purchase_price"`
+	ClaimedAt     time.Time `json:"claimed_at"`
+}
+
+type Player struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	RejoinToken       string    `json:"rejoin_token"`
+	MunicipalityCode  *string   `json:"municipality_code"`
+	MunicipalityName  *string   `json:"municipality_name"`
+	Coins             int64     `json:"coins"`
+	BiodiversityScore float64   `json:"biodiversity_score"`
+	Level             int64     `json:"level"`
+	Xp                int64     `json:"xp"`
+	CreatedAt         time.Time `json:"created_at"`
+	LastSeen          time.Time `json:"last_seen"`
+}
+
+type SessionPlayer struct {
+	SessionID string    `json:"session_id"`
+	PlayerID  string    `json:"player_id"`
+	JoinedAt  time.Time `json:"joined_at"`
+}
+
+type Treasure struct {
+	ID           int64      `json:"id"`
+	SessionID    string     `json:"session_id"`
+	Lon          float64    `json:"lon"`
+	Lat          float64    `json:"lat"`
+	TreasureType string     `json:"treasure_type"`
+	Value        int64      `json:"value"`
+	FoundBy      *string    `json:"found_by"`
+	FoundAt      *time.Time `json:"found_at"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 type Visitor struct {
