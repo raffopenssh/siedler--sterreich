@@ -411,7 +411,7 @@ input[type=text]:focus { border-color:var(--gold); }
   #game-main { width:100%; height:100%; }
   #sidebar {
     position:fixed; bottom:0; left:0; right:0; z-index:200;
-    width:100%; height:auto; max-height:65vh;
+    width:100%; height:65vh;
     border-right:none; border-top:4px solid var(--panel-border);
     transform:translateY(calc(100% - 52px));
     transition:transform .3s ease;
@@ -423,8 +423,8 @@ input[type=text]:focus { border-color:var(--gold); }
   .sb-header { padding:8px 10px; }
   .sb-section { padding:8px 10px; }
 
-  /* Minimap */
-  #minimap { width:110px; height:80px; bottom:60px; left:8px; }
+  /* Minimap — hidden on mobile to avoid popup overlap */
+  #minimap { display:none; }
 
   /* In-game search */
   .game-search { width:220px; max-width:calc(100% - 80px); top:8px; }
@@ -440,11 +440,17 @@ input[type=text]:focus { border-color:var(--gold); }
   /* Popup */
   .popup {
     min-width:0; width:auto; padding:14px; max-width:calc(100vw - 16px);
-    max-height:45vh; /* Limit to 45% of viewport height to allow both popups without overlap */
-    overflow-y:auto; /* Enable scrolling */
+    overflow-y:auto;
   }
-  #parcel-popup { left:8px; bottom:70px; right:auto; } /* Moved up more */
-  #ez-popup { left:8px; top:70px; right:auto; bottom:auto; }
+  .popup-drag-handle { display:none; } /* no dragging on mobile */
+  #parcel-popup {
+    left:8px; right:8px; bottom:60px;
+    max-height:calc(55vh - 60px); /* fit above 52px bottom bar with room */
+  }
+  #ez-popup {
+    left:8px; right:8px; top:60px; bottom:auto;
+    max-height:35vh;
+  }
 
   /* Chat */
   .chat-input-row input { font-size:16px; }

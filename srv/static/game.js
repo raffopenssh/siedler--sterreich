@@ -2353,10 +2353,10 @@ function showParcelPopup(f) {
   document.getElementById('ez-popup').classList.remove('open');
 
   document.getElementById('parcel-popup').classList.add('open');
-  // Position parcel popup at bottom-left
+  // Reset inline position so CSS handles it (mobile vs desktop)
   const pp = document.getElementById('parcel-popup');
   if (!pp.dataset.userMoved) {
-    pp.style.left = '16px'; pp.style.bottom = '16px';
+    pp.style.left = ''; pp.style.bottom = '';
     pp.style.right = ''; pp.style.top = '';
   }
   render();
@@ -2436,17 +2436,14 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
   popup.classList.add('open');
   // Position to the right of parcel popup if not manually moved
   if (!popup.dataset.userMoved) {
-    const ppEl = document.getElementById('parcel-popup');
-    const ppRect = ppEl.getBoundingClientRect();
-    // On mobile, position at top; on desktop, position to the right
-    if (window.innerWidth < 768) {
-      popup.style.left = '8px';
-      popup.style.top = '60px';
-      popup.style.right = ''; popup.style.bottom = '';
-    } else {
+    // Reset to CSS defaults; on desktop only, position to the right of parcel popup
+    popup.style.left = ''; popup.style.top = '';
+    popup.style.right = ''; popup.style.bottom = '';
+    if (window.innerWidth >= 768) {
+      const ppEl = document.getElementById('parcel-popup');
+      const ppRect = ppEl.getBoundingClientRect();
       popup.style.left = (ppRect.right + 12) + 'px';
       popup.style.bottom = '16px';
-      popup.style.right = ''; popup.style.top = '';
     }
   }
   render();
@@ -2636,7 +2633,13 @@ document.getElementById('ez-popup-close').onclick = () => {
 // Reset popup positions when closing
 function resetPopupPosition(id) {
   const el = document.getElementById(id);
-  if (el) { delete el.dataset.userMoved; }
+  if (el) {
+    delete el.dataset.userMoved;
+    el.style.left = '';
+    el.style.top = '';
+    el.style.bottom = '';
+    el.style.right = '';
+  }
 }
 
 // Sparkle animation for treasures
