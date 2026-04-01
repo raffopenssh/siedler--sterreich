@@ -296,6 +296,51 @@ function initPicker() {
   pickCanvas.addEventListener('wheel', onPickWheel, {passive:false});
   pickCanvas.addEventListener('click', onPickClick);
 
+  // Touch support for mobile
+  let pickTouchDist = 0;
+  pickCanvas.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) {
+      e.preventDefault();
+      const touch = e.touches[0];
+      onPickDown({clientX: touch.clientX, clientY: touch.clientY});
+    } else if (e.touches.length === 2) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pickTouchDist = Math.sqrt(dx*dx + dy*dy);
+      if (G.pick.drag.active) G.pick.drag.wasPinch = true;
+    }
+  }, {passive: false});
+
+  pickCanvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (e.touches.length === 1 && G.pick.drag.active) {
+      const touch = e.touches[0];
+      onPickMove({clientX: touch.clientX, clientY: touch.clientY});
+    } else if (e.touches.length === 2 && pickTouchDist > 0) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      G.pick.cam.zoom += (d/pickTouchDist - 1) * 2;
+      G.pick.cam.zoom = Math.max(5, Math.min(14, G.pick.cam.zoom));
+      pickTouchDist = d;
+      drawPick();
+    }
+  }, {passive: false});
+
+  pickCanvas.addEventListener('touchend', e => {
+    const wasTap = G.pick.drag.active && !G.pick.drag.moved && !G.pick.drag.wasPinch;
+    if (wasTap && e.changedTouches && e.changedTouches[0]) {
+      const touch = e.changedTouches[0];
+      onPickClick({clientX: touch.clientX, clientY: touch.clientY}, true);
+    }
+    onPickUp();
+    if (e.touches.length === 0) {
+      pickTouchDist = 0;
+      if (G.pick.drag) G.pick.drag.wasPinch = false;
+    }
+  });
+
   // Search
   const inp = document.getElementById('input-search');
   const dd = document.getElementById('search-results');
@@ -565,7 +610,7 @@ function geoBounds(geom) {
 
 // Pick canvas interactions
 function onPickDown(ev) {
-  G.pick.drag = { active:true, sx:ev.clientX, sy:ev.clientY, slon:G.pick.cam.lon, slat:G.pick.cam.lat, moved:false };
+  G.pick.drag = { active:true, sx:ev.clientX, sy:ev.clientY, slon:G.pick.cam.lon, slat:G.pick.cam.lat, moved:false, wasPinch:false };
   pickCanvas.classList.add('dragging');
 }
 function onPickMove(ev) {
@@ -619,7 +664,7 @@ function onPickWheel(ev) {
   G.pick.cam.zoom = Math.max(5, Math.min(14, G.pick.cam.zoom));
   drawPick();
 }
-function onPickClick(ev) {
+function onPickClick(ev, isTouch) {
   if (G.pick.drag.moved) return;
   const rect = pickCanvas.getBoundingClientRect();
   const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
@@ -634,7 +679,9 @@ function onPickClick(ev) {
       const d = Math.abs(x - mx) + Math.abs(y - my);
       if (d < bestD) { bestD = d; best = m; }
     }
-    if (best && bestD < 18) {
+    // Use larger hit area for touch (50px) vs mouse (18px)
+    const threshold = isTouch ? 50 : 18;
+    if (best && bestD < threshold) {
       // Direct click on municipality dot → start game!
       pickMunicipality(best.gemeinde_code || best.code, best.name);
     }
