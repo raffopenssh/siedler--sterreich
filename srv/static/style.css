@@ -94,7 +94,9 @@ input[type=text]:focus { border-color:var(--gold); }
 .welcome-panel input { margin-bottom:14px; }
 .name-row { display:flex; gap:8px; align-items:stretch; margin-bottom:14px; }
 .name-row input { flex:1; margin-bottom:0; }
-.btn-reroll { font-size:20px; padding:6px 12px; line-height:1; }
+.btn-reroll { font-size:20px; padding:6px 12px; line-height:1; flex-shrink:0; }
+.btn-lucky { background:#7a3ea0; color:#fff; border-color:#9a5ec0; flex:1; }
+.btn-lucky:hover { background:#8a4eb0; }
 .rejoin-box {
   margin-top:16px; padding:14px; background:rgba(0,0,0,.3); border:2px solid var(--green);
 }
@@ -541,3 +543,29 @@ input[type=text]:focus { border-color:var(--gold); }
   line-height: 1.4; text-align: left;
 }
 .tip-text b { color: var(--gold); font-size: 20px; }
+
+/* Loading countdown */
+.loading-countdown {
+  font: 22px 'VT323', monospace; color: var(--text-dim); min-height: 28px;
+}
+
+/* Loading invite panel */
+.loading-invite {
+  width: 480px; max-width: 90vw; margin-top: 8px;
+  animation: loading-invite-fade 1s ease 3s both;
+}
+@keyframes loading-invite-fade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.loading-invite-inner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: rgba(20,40,20,0.85); border: 2px solid var(--green);
+  border-radius: 6px; padding: 12px 16px;
+}
+.loading-invite-icon { font-size: 20px; flex-shrink:0; }
+.loading-invite-label { font: 9px 'Press Start 2P', monospace; color: var(--green-light); white-space:nowrap; }
+.loading-invite-url {
+  flex:1; font: 16px 'VT323', monospace; color: var(--gold-light);
+  word-break: break-all; min-width: 0;
+}

@@ -202,49 +202,63 @@ function randomName() {
   return a + n;
 }
 
+// ================= URL STATE (no cookies, no localStorage) =================
+// State persisted in URL: ?pid=xxx&pname=yyy&rejoin=token&invite=code
+function getUrlParam(key) {
+  return new URLSearchParams(location.search).get(key);
+}
+function setUrlParams(obj) {
+  const sp = new URLSearchParams(location.search);
+  for (const [k,v] of Object.entries(obj)) {
+    if (v == null) sp.delete(k); else sp.set(k, v);
+  }
+  const qs = sp.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?'+qs : '') + location.hash);
+}
+
 // ================= WELCOME =================
 {
   const inp = document.getElementById('input-name');
   const err = document.getElementById('welcome-error');
-  const saved = localStorage.getItem('pid');
-  const savedName = localStorage.getItem('pname');
 
-  // Pre-fill with a random name suggestion
-  if (!saved) inp.value = randomName();
+  // Check invite in URL path or param
+  const invitePathMatch = location.pathname.match(/\/join\/([^/?]+)/);
+  const inviteCode = invitePathMatch?.[1] || getUrlParam('invite');
+  if (inviteCode) setUrlParams({invite: inviteCode});
+
+  // Retrieve saved player from URL
+  const savedPid = getUrlParam('pid');
+  const savedName = getUrlParam('pname');
+
+  // Pre-fill name: from URL or random suggestion
+  inp.value = savedName || randomName();
   document.getElementById('btn-reroll').onclick = () => { inp.value = randomName(); inp.focus(); };
 
-  if (saved && savedName) {
+  if (savedPid && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
       `Zuletzt: <a onclick="quickLogin()">${esc(savedName)}</a> — <a onclick="quickLogin()">Weiterspielen</a>`;
-    // Load active session to show invite link
-    GET('/api/player/'+saved+'/sessions').then(sessions => {
-      if (sessions?.length > 0) {
-        const s = sessions[0];
-        const iUrl = location.origin + '/join/' + s.invite_code;
-        document.getElementById('quick-rejoin').innerHTML =
-          `<div>Zuletzt: <a onclick="quickLogin()">${esc(savedName)}</a> — <a onclick="quickLogin()">Weiterspielen</a></div>` +
-          `<div class="invite-share">`+
-            `<span class="invite-label">⚔️ Freunde einladen:</span> `+
-            `<span class="invite-link" onclick="navigator.clipboard.writeText('${iUrl}');this.textContent='📋 Kopiert!';setTimeout(()=>this.textContent='${iUrl}',2000)">${iUrl}</span>`+
-          `</div>`;
-      }
-    }).catch(()=>{});
   }
 
-  // Check invite in URL
-  const inviteMatch = location.pathname.match(/\/join\/(.+)/);
-  if (inviteMatch) localStorage.setItem('invite', inviteMatch[1]);
+  async function registerAndProceed(goLucky) {
+    let name = inp.value.trim();
+    if (!name || name.length < 2) { name = randomName(); inp.value = name; }
+    const res = await POST('/api/register', {name});
+    if (res.error) { err.textContent=res.error; return null; }
+    savePlayer(res.player);
+    setUrlParams({rejoin: res.rejoin_url ? res.rejoin_url.split('/').pop() : null});
+    toast('🎉 Willkommen, ' + res.player.name + '!', 'ok');
+    return res.player;
+  }
 
   document.getElementById('btn-register').onclick = async () => {
-    const name = inp.value.trim();
-    if (name.length < 2) { err.textContent='Mindestens 2 Zeichen!'; return; }
-    const res = await POST('/api/register', {name});
-    if (res.error) { err.textContent=res.error; return; }
-    savePlayer(res.player);
-    // Store rejoin URL for later (shown in-game sidebar)
-    localStorage.setItem('rejoin_url', location.origin + res.rejoin_url);
-    toast('🎉 Willkommen, ' + res.player.name + '!', 'ok');
-    show('pick');
+    const p = await registerAndProceed(false);
+    if (p) show('pick');
+  };
+
+  document.getElementById('btn-lucky').onclick = async () => {
+    const p = await registerAndProceed(true);
+    if (!p) return;
+    await startLucky();
   };
 
   document.getElementById('btn-login').onclick = async () => {
@@ -258,26 +272,54 @@ function randomName() {
     else show('pick');
   };
 
-  inp.addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('btn-register').click(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key==='Enter') document.getElementById('btn-register').click();
+  });
 }
 
 window.quickLogin = async function() {
-  const id = localStorage.getItem('pid');
+  const id = getUrlParam('pid');
   if (!id) return;
   try {
     const p = await GET('/api/player/'+id);
-    if (p.error) { localStorage.clear(); return; }
+    if (p.error) { setUrlParams({pid:null,pname:null,rejoin:null}); return; }
     G.player = p;
     const sessions = await GET('/api/player/'+id+'/sessions');
     if (sessions?.length > 0) { G.session = sessions[0]; startGame(); }
     else show('pick');
-  } catch(e) { localStorage.clear(); }
+  } catch(e) { setUrlParams({pid:null,pname:null,rejoin:null}); }
 };
 
 function savePlayer(p) {
   G.player = p;
-  localStorage.setItem('pid', p.id);
-  localStorage.setItem('pname', p.name);
+  setUrlParams({pid: p.id, pname: p.name});
+}
+
+// Pick a random municipality and start loading immediately
+async function startLucky() {
+  show('loading');
+  document.getElementById('loading-muni').textContent = '🍀 Zufallsgemeinde wird gewählt...';
+  ['ls-session','ls-parcels','ls-kg','ls-treasures','ls-ready'].forEach(id => setLoadStep(id,''));
+  startTipRotation();
+  startLoadingCountdown(30);
+  try {
+    // Pick a random municipality from the full list
+    let all = pickData.allMunis;
+    if (!all || all.length === 0) {
+      const res = await GET(CAD+'/search/municipalities?list=all&limit=5000&format=json');
+      all = (res.data || res || []).filter(m => m.lon && m.lat);
+      pickData.allMunis = all;
+    }
+    if (!all || all.length === 0) throw new Error('Keine Gemeinden geladen');
+    const m = all[Math.floor(Math.random() * all.length)];
+    G.selectedMuni = { code: m.gemeinde_code || m.code, name: m.name, lon: m.lon, lat: m.lat };
+    document.getElementById('loading-muni').textContent = '📍 ' + G.selectedMuni.name + ' (' + G.selectedMuni.code + ')';
+    await startSinglePlayer();
+  } catch(e) {
+    console.error(e);
+    toast('Fehler beim Zufallsstart: ' + e.message, 'err');
+    show('welcome');
+  }
 }
 
 // ================= MUNICIPALITY PICKER (Real GADM outlines) =================
@@ -735,10 +777,10 @@ window.pickMunicipality = async function(code, name) {
   }
   if (!G.selectedMuni.lon) { G.selectedMuni.lon = 13.5; G.selectedMuni.lat = 47.5; }
 
-  // Check pending invite
-  const inv = localStorage.getItem('invite');
+  // Check pending invite (stored in URL param)
+  const inv = getUrlParam('invite');
   if (inv) {
-    localStorage.removeItem('invite');
+    setUrlParams({invite: null});
     try {
       const res = await POST('/api/session/join', {player_id:G.player.id, invite_code:inv});
       if (res.session) { G.session = res.session; startGameWithLoading(); return; }
@@ -752,13 +794,17 @@ window.pickMunicipality = async function(code, name) {
 async function startSinglePlayer() {
   const m = G.selectedMuni;
   G.loadStart = Date.now();
+  const alreadyLoading = document.getElementById('screen-loading').classList.contains('active');
   show('loading');
   document.getElementById('loading-muni').textContent = '📍 ' + m.name + ' (' + m.code + ')';
   // Reset all steps
   ['ls-session','ls-parcels','ls-kg','ls-treasures','ls-ready'].forEach(id => setLoadStep(id, ''));
   setLoadStep('ls-session', 'active');
   setLoadProgress(5);
-  startTipRotation();
+  if (!alreadyLoading) {
+    startTipRotation();
+    startLoadingCountdown(30);
+  }
 
   // Create session automatically
   const res = await POST('/api/session/create', {
@@ -771,6 +817,8 @@ async function startSinglePlayer() {
   G.session.invite_code = res.invite_code;
   setLoadStep('ls-session', 'done');
   setLoadProgress(15);
+  // Show invite panel on loading screen
+  showLoadingInvite(res.invite_code);
 
   // Now load game data with progress
   await startGameWithLoading();
@@ -801,6 +849,45 @@ function startTipRotation() {
 }
 function stopTipRotation() {
   if (tipInterval) { clearInterval(tipInterval); tipInterval = null; }
+}
+
+let _countdownInterval = null;
+function startLoadingCountdown(estimatedSec) {
+  if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
+  const el = document.getElementById('loading-countdown');
+  if (!el) return;
+  let remaining = estimatedSec;
+  function tick() {
+    if (!el) return;
+    if (remaining > 0) {
+      el.textContent = '⏱️ Etwa noch ' + remaining + ' Sekunde' + (remaining === 1 ? '' : 'n') + '...';
+      remaining--;
+    } else {
+      el.textContent = '⏳ Fast fertig...';
+    }
+  }
+  tick();
+  _countdownInterval = setInterval(tick, 1000);
+}
+function stopLoadingCountdown() {
+  if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
+  const el = document.getElementById('loading-countdown');
+  if (el) el.textContent = '✅ Bereit!';
+}
+
+function showLoadingInvite(inviteCode) {
+  const panel = document.getElementById('loading-invite');
+  const urlEl = document.getElementById('loading-invite-url');
+  const copyBtn = document.getElementById('loading-invite-copy');
+  if (!panel || !urlEl) return;
+  const url = location.origin + '/join/' + inviteCode;
+  urlEl.textContent = url;
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(url);
+    copyBtn.textContent = '✅ Kopiert!';
+    setTimeout(() => { copyBtn.textContent = '📋 Kopieren'; }, 2000);
+  };
+  panel.style.display = '';
 }
 
 // ================= LOBBY =================
@@ -880,6 +967,8 @@ async function startGameWithLoading() {
     setLoadStep('ls-session', 'done');
     setLoadProgress(15);
     startTipRotation();
+    startLoadingCountdown(25);
+    if (G.session?.invite_code) showLoadingInvite(G.session.invite_code);
   }
 
   // Set camera — use shared view from invite URL hash if present, else municipality center
@@ -945,6 +1034,7 @@ async function startGameWithLoading() {
   const minWait = Math.max(800, 4000 - elapsed);
   await new Promise(r => setTimeout(r, minWait));
   stopTipRotation();
+  stopLoadingCountdown();
   show('game');
 
   // Init canvas AFTER showing the game screen (so clientWidth/Height > 0)
@@ -965,8 +1055,11 @@ async function startGameWithLoading() {
     toast('📋 Einladung kopiert!','ok');
   };
 
-  // Show rejoin link in sidebar if available
-  const rejoinUrl = localStorage.getItem('rejoin_url');
+  // Show rejoin link in sidebar — encode as URL with pid param (no localStorage)
+  const rejoinParam = getUrlParam('rejoin');
+  const rejoinUrl = rejoinParam
+    ? location.origin + '/rejoin/' + rejoinParam
+    : null;
   if (rejoinUrl) {
     const sec = document.getElementById('sec-rejoin');
     const link = document.getElementById('rejoin-ingame-link');
@@ -1749,9 +1842,17 @@ function drawForestSprites(ctx, claimMap) {
     const t = getParcelTerrain(f.properties, claim);
     if (t !== TERRAIN.forest && t !== TERRAIN.garden) return null;
     const luCode = extractLuCode('', f.properties);
-    if (luCode === '63') return 'orchard';  // Obstgarten
+    if (luCode === '63') return 'orchard';   // Obstgarten
     if (luCode === '57') return 'krummholz'; // Krummholz/Latschen
-    if (t === TERRAIN.forest) return 'forest';
+    if (luCode === '58') return 'plantation'; // Aufforstung / plantation
+    // Heuristic: large pure-forest parcel with no buildings → plantation likely
+    if (t === TERRAIN.forest) {
+      const area = f.properties.area_sqm || 0;
+      const bc = f.properties.building_count || 0;
+      // Large mono parcels (>2ha) with no buildings = plantation look
+      if (area > 20000 && bc === 0) return 'plantation';
+      return 'forest';
+    }
     return null;
   }
 
@@ -1770,21 +1871,26 @@ function drawForestSprites(ctx, claimMap) {
 
     let treeCount, variantFn;
     if (style === 'orchard') {
-      // Orchards: sparser, always deciduous/fruit variant
+      // Orchards: sparser, always fruit tree
       treeCount = Math.min(8, Math.max(1, Math.floor(area / 800)));
-      variantFn = (i) => 4; // fruit tree
+      variantFn = (i) => 4;
     } else if (style === 'krummholz') {
       // Krummholz: dense low scrub
       treeCount = Math.min(12, Math.max(2, Math.floor(area / 400)));
-      variantFn = (i) => 2; // bush variant
+      variantFn = (i) => 2;
     } else if (style === 'reforested') {
-      // Reforested: young trees, mix of saplings
+      // Reforested: young saplings or norway spruce (common replanting species)
       treeCount = Math.min(12, Math.max(2, Math.floor(area / 500)));
-      variantFn = (i) => (hash + i) % 2 === 0 ? 3 : 0; // young pine / sapling
+      variantFn = (i) => (hash + i) % 3 === 0 ? 3 : 5; // sapling or spruce
+    } else if (style === 'plantation') {
+      // Spruce plantation (Fichtenforst) — dense uniform rows
+      treeCount = Math.min(20, Math.max(4, Math.floor(area / 300)));
+      variantFn = (i) => 7;
     } else {
-      // Normal forest
-      treeCount = Math.min(15, Math.max(2, Math.floor(area / 500)));
-      variantFn = (i) => (hash + i) % 3;
+      // Normal mixed forest: pine, deciduous, norway spruce, birch
+      treeCount = Math.min(18, Math.max(2, Math.floor(area / 500)));
+      const v = [0, 1, 5, 6, 5]; // weighted toward spruce (common in Austria)
+      variantFn = (i) => v[(hash + i) % v.length];
     }
 
     for (let i = 0; i < treeCount; i++) {
@@ -1794,18 +1900,23 @@ function drawForestSprites(ctx, claimMap) {
       const lat = b.s + (b.n - b.s) * u;
       if (!pip(lon, lat, coords)) continue;
       const [tx, ty] = toScreen(lon, lat);
-      drawTree(ctx, tx, ty, variantFn(i));
+      drawTree(ctx, tx, ty, variantFn(i), hash + i);
     }
   }
   ctx.restore();
 }
 
-function drawTree(ctx, x, y, variant) {
+function drawTree(ctx, x, y, variant, seedOffset) {
   // Settlers IV style trees
-  // Variants: 0=pine, 1=deciduous, 2=bush, 3=young sapling, 4=fruit tree
+  // Variants: 0=pine, 1=deciduous, 2=bush/krummholz, 3=young sapling,
+  //           4=fruit tree, 5=norway spruce, 6=birch, 7=spruce plantation
   const scale = G.cam.zoom > 16 ? 1.2 : 0.8;
   x = Math.round(x);
   y = Math.round(y);
+
+  // Animated sway for tall trees (variants 5,6,7) — very subtle
+  const t = (Date.now() / 2200 + (seedOffset||0) * 0.37) % (Math.PI * 2);
+  const sway = (variant === 5 || variant === 6 || variant === 7) ? Math.sin(t) * 1.2 * scale : 0;
 
   // Shadow
   ctx.fillStyle = 'rgba(0,0,0,0.15)';
@@ -1814,7 +1925,7 @@ function drawTree(ctx, x, y, variant) {
   ctx.fill();
 
   if (variant === 0) {
-    // Pine tree - dark pointed
+    // Pine tree - classic Settlers IV dark pointed
     ctx.fillStyle = '#5a3a20';
     ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
     ctx.fillStyle = '#1a5a1a';
@@ -1824,7 +1935,7 @@ function drawTree(ctx, x, y, variant) {
     ctx.fillStyle = '#2a7a2a';
     drawTriangle(ctx, x, y-8*scale, 12*scale, 8*scale);
   } else if (variant === 1) {
-    // Deciduous - round
+    // Deciduous - round oak/beech
     ctx.fillStyle = '#5a3a20';
     ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
     ctx.fillStyle = '#2a7a2a';
@@ -1834,6 +1945,11 @@ function drawTree(ctx, x, y, variant) {
     ctx.fillStyle = '#3a8a3a';
     ctx.beginPath();
     ctx.arc(x-2, y-14*scale, 5*scale, 0, Math.PI*2);
+    ctx.fill();
+    // Light highlight dot
+    ctx.fillStyle = 'rgba(100,200,80,0.3)';
+    ctx.beginPath();
+    ctx.arc(x-3, y-15*scale, 3*scale, 0, Math.PI*2);
     ctx.fill();
   } else if (variant === 2) {
     // Bush / Krummholz scrub - low and wide
@@ -1858,19 +1974,74 @@ function drawTree(ctx, x, y, variant) {
     ctx.fillStyle = '#38a038';
     drawTriangle(ctx, x, y-10*scale, 8*scale, 7*scale);
   } else if (variant === 4) {
-    // Fruit tree (orchard) - round canopy, pink/white blossom hint
+    // Fruit tree (orchard) - round canopy, pink/white blossom
     ctx.fillStyle = '#7a4a28';
     ctx.fillRect(x-1*scale, y-5*scale, 2*scale, 6*scale);
-    // Canopy
     ctx.fillStyle = '#3a8a2a';
     ctx.beginPath();
     ctx.arc(x, y-13*scale, 7*scale, 0, Math.PI*2);
     ctx.fill();
-    // Blossom dots
     ctx.fillStyle = 'rgba(255,200,200,0.7)';
     ctx.beginPath(); ctx.arc(x-2, y-15*scale, 2*scale, 0, Math.PI*2); ctx.fill();
     ctx.beginPath(); ctx.arc(x+3, y-12*scale, 1.5*scale, 0, Math.PI*2); ctx.fill();
     ctx.beginPath(); ctx.arc(x-1, y-11*scale, 1.5*scale, 0, Math.PI*2); ctx.fill();
+  } else if (variant === 5) {
+    // Norway Spruce (Fichte) — tall, very narrow spire, dark blue-green
+    // Trunk
+    ctx.fillStyle = '#4a2e10';
+    ctx.fillRect(x-1*scale+sway*0.1, y-3*scale, 2*scale, 4*scale);
+    // Four tiers, each slightly offset by sway
+    const spruceColors = ['#0e3d12','#145018','#1a5e1e','#226628'];
+    const tiers = [[5,5],[7,7],[9,8],[11,7]];
+    for (let i = 0; i < tiers.length; i++) {
+      const [w,h] = tiers[i];
+      const yo = y - 6*scale - i*7*scale;
+      ctx.fillStyle = spruceColors[i];
+      drawTriangle(ctx, x + sway*(i*0.15), yo, w*scale, h*scale);
+    }
+    // Tiny highlight on top tier
+    ctx.fillStyle = 'rgba(80,180,80,0.22)';
+    drawTriangle(ctx, x + sway*0.6, y - 6*scale - 3*tiers.length*scale, 3*scale, 3*scale);
+  } else if (variant === 6) {
+    // Silver Birch (Birke) — white trunk, light airy canopy, gentle sway
+    // Trunk with white/grey pixel art
+    ctx.fillStyle = '#d0cec0';
+    ctx.fillRect(x-1*scale+sway*0.05, y-4*scale, 2*scale, 6*scale);
+    // Black birch marks
+    ctx.fillStyle = '#444';
+    ctx.fillRect(x-1*scale+sway*0.05, y-3*scale, 2*scale, 1*scale);
+    ctx.fillRect(x-1*scale+sway*0.05, y-6*scale, 2*scale, 1*scale);
+    // Light canopy — sparse, yellowish-green
+    ctx.fillStyle = 'rgba(140,190,80,0.7)';
+    ctx.beginPath();
+    ctx.arc(x + sway, y-16*scale, 6*scale, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(160,210,90,0.5)';
+    ctx.beginPath();
+    ctx.arc(x-4*scale + sway, y-13*scale, 4*scale, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x+3*scale + sway, y-14*scale, 3.5*scale, 0, Math.PI*2);
+    ctx.fill();
+  } else if (variant === 7) {
+    // Spruce plantation (Fichtenforst) — uniform tight rows, same-height spires
+    // A cluster of 2 tight spruces side by side — pixel art monoculture look
+    const offsets = [-4*scale, 4*scale];
+    const swayFactor = [0.8, 1.2];
+    for (let j = 0; j < 2; j++) {
+      const ox = x + offsets[j] + sway * swayFactor[j] * 0.5;
+      // Trunk
+      ctx.fillStyle = '#3a2408';
+      ctx.fillRect(ox-1*scale, y-3*scale, 1.5*scale, 4*scale);
+      // Tiers — uniform height, very dark (plantation monoculture)
+      const pc = ['#0a3010','#0e3a14','#124018','#16481c'];
+      const pts = [[4,4],[6,5],[7,6],[8,5]];
+      for (let i = 0; i < pts.length; i++) {
+        const [w,h] = pts[i];
+        ctx.fillStyle = pc[i];
+        drawTriangle(ctx, ox, y - 5*scale - i*6*scale, w*scale, h*scale);
+      }
+    }
   }
 }
 

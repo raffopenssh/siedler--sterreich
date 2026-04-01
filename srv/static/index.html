@@ -85,16 +85,17 @@
       <div class="logo-art">
         <span class="logo-castle">🏰</span>
         <h1 class="logo-text">SIEDLER<br>ÖSTERREICH</h1>
-        <div class="logo-sub">Entdecke · Beanspruche · Schütze die Natur</div>
       </div>
       <div class="welcome-panel">
-        <label class="pixel-label">Wähle deinen Namen</label>
         <div class="name-row">
-          <input type="text" id="input-name" placeholder="Pseudonym..." maxlength="30" autocomplete="off">
           <button class="btn btn-small btn-reroll" id="btn-reroll" title="Neuer Vorschlag">🎲</button>
+          <input type="text" id="input-name" placeholder="Wähle Pseudonym..." maxlength="30" autocomplete="off">
         </div>
         <div class="btn-row">
           <button class="btn btn-primary" id="btn-register">Neues Spiel</button>
+          <button class="btn btn-lucky" id="btn-lucky">🍀 Auf Glück</button>
+        </div>
+        <div class="btn-row">
           <button class="btn btn-secondary" id="btn-login">Weiterspielen</button>
         </div>
         <div id="welcome-error" class="error-text"></div>
@@ -149,6 +150,7 @@
       <div class="loading-bar-wrap">
         <div class="loading-bar" id="loading-bar"></div>
       </div>
+      <div class="loading-countdown" id="loading-countdown"></div>
       <div class="loading-steps" id="loading-steps">
         <div class="load-step" id="ls-session"><span class="ls-icon">⏳</span> Spielsitzung erstellen</div>
         <div class="load-step" id="ls-parcels"><span class="ls-icon">⏳</span> Kataster-Parzellen &amp; EZ-Daten laden</div>
@@ -180,6 +182,14 @@
         <div class="loading-tip" id="tip-5">
           <div class="tip-icon">📋</div>
           <div class="tip-text"><b>Einlagezahl (EZ)</b><br>Im Grundbuch fasst eine EZ mehrere Parzellen zusammen. Kaufe eine ganze EZ auf einmal und spare 20% — eine mächtige Strategie!</div>
+        </div>
+      </div>
+      <div class="loading-invite" id="loading-invite" style="display:none">
+        <div class="loading-invite-inner">
+          <span class="loading-invite-icon">⚔️</span>
+          <span class="loading-invite-label">Freunde einladen:</span>
+          <span class="loading-invite-url" id="loading-invite-url"></span>
+          <button class="btn btn-small" id="loading-invite-copy">📋 Kopieren</button>
         </div>
       </div>
     </div>
