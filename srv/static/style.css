@@ -290,8 +290,10 @@ input[type=text]:focus { border-color:var(--gold); }
 /* ============ LOADING SCREEN ============ */
 .loading-wrap {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  height: 100vh; gap: 16px;
+  height: 100vh; width: 100vw; gap: 16px; padding: 20px; box-sizing: border-box;
   background: radial-gradient(ellipse at center, #2a2010 0%, #1a1408 100%);
+  text-align: center;
+  overflow-y: auto;
 }
 .loading-castle {
   font-size: 72px;
@@ -302,14 +304,17 @@ input[type=text]:focus { border-color:var(--gold); }
   50% { transform: translateY(-10px); }
 }
 .loading-title {
-  font: 20px 'Press Start 2P', monospace;
+  font: 16px 'Press Start 2P', monospace;
   color: var(--gold);
   text-align: center;
+  max-width: 500px;
+  line-height: 1.6;
 }
 .loading-muni {
   font: 28px 'VT323', monospace;
   color: var(--text-light);
   letter-spacing: 2px;
+  text-align: center;
 }
 .loading-bar-wrap {
   width: 400px; max-width: 80vw; height: 24px;
@@ -328,7 +333,7 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .loading-steps {
   display: flex; flex-direction: column; gap: 8px;
-  min-width: 320px;
+  min-width: 320px; text-align: left;
 }
 .load-step {
   font: 20px 'VT323', monospace; color: #665;
@@ -360,6 +365,6 @@ input[type=text]:focus { border-color:var(--gold); }
 .tip-icon { font-size: 32px; flex-shrink: 0; }
 .tip-text {
   font: 18px 'VT323', monospace; color: #cca;
-  line-height: 1.4;
+  line-height: 1.4; text-align: left;
 }
 .tip-text b { color: var(--gold); font-size: 20px; }

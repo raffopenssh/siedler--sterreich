@@ -561,6 +561,7 @@ window.pickMunicipality = async function(code, name) {
 
 async function startSinglePlayer() {
   const m = G.selectedMuni;
+  G.loadStart = Date.now();
   show('loading');
   document.getElementById('loading-muni').textContent = '📍 ' + m.name + ' (' + m.code + ')';
   // Reset all steps
@@ -659,12 +660,15 @@ async function refreshLobby() {
 let gc, gctx, mc, mctx;
 
 async function startGameWithLoading() {
+  if (!G.loadStart) G.loadStart = Date.now();
   // Show loading screen if not already showing
   if (!document.getElementById('screen-loading').classList.contains('active')) {
     show('loading');
-    document.getElementById('loading-muni').textContent = G.session.municipality_name;
+    document.getElementById('loading-muni').textContent = '📍 ' + G.session.municipality_name;
+    ['ls-session','ls-parcels','ls-kg','ls-treasures','ls-ready'].forEach(id => setLoadStep(id, ''));
     setLoadStep('ls-session', 'done');
     setLoadProgress(15);
+    startTipRotation();
   }
 
   // Set camera to municipality center BEFORE loading parcels
@@ -704,9 +708,11 @@ async function startGameWithLoading() {
   setLoadStep('ls-ready', 'done');
   setLoadProgress(100);
 
-  // Small delay for satisfaction, then switch to game
+  // Ensure loading screen shows for at least 4s so users can read tips
+  const elapsed = Date.now() - (G.loadStart || 0);
+  const minWait = Math.max(800, 4000 - elapsed);
+  await new Promise(r => setTimeout(r, minWait));
   stopTipRotation();
-  await new Promise(r => setTimeout(r, 800));
   show('game');
 
   // Init canvas AFTER showing the game screen (so clientWidth/Height > 0)
@@ -1072,11 +1078,22 @@ function extractLuCode(lu, p) {
   // Try parsing from summary key
   const match = lu.match(/(\d{2})/);
   if (match) return match[1];
-  if (lu.includes('Wald')) return '56';
-  if (lu.includes('Bau')) return '42';
-  if (lu.includes('Verkehr')) return '48';
-  if (lu.includes('Wiese')) return '52';
-  if (lu.includes('Gewässer')) return '70';
+  // Parse from landuse_summary text keys
+  const st = p.landuse_summary ? Object.keys(p.landuse_summary).join(' ') : lu;
+  if (st.includes('Wald') || st.includes(' W')) return '56';
+  if (st.includes('Wiese') || st.includes('LN(W)')) return '52';
+  if (st.includes('Acker') || st.includes('LN(A)')) return '50';
+  if (st.includes('Weide') || st.includes('LN(Hu)')) return '53';
+  if (st.includes('Baufläche') || st.includes('B(bf)') || st.includes('B(')  ) return '42';
+  if (st.includes('Gebäude') || st.includes('Geb(')) return '43';
+  if (st.includes('Garten') || st.includes('Ga')) return '62';
+  if (st.includes('Verkehr') || st.includes('Straß') || st.includes('V(')) return '48';
+  if (st.includes('Gewässer') || st.includes('Bach') || st.includes('See') || st.includes('Fl(')) return '70';
+  if (st.includes('Alpe') || st.includes('Alm')) return '55';
+  if (st.includes('Weingarten') || st.includes('WG')) return '60';
+  if (st.includes('Fels') || st.includes('Geröll') || st.includes('Ödland') || st.includes('Fe')) return '85';
+  if (st.includes('Sumpf') || st.includes('Moor')) return '83';
+  if (st.includes('Grünland') || st.includes('LN')) return '52';
   return '';
 }
 
