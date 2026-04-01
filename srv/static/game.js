@@ -1983,10 +1983,12 @@ function initGameInput() {
   gc.addEventListener('touchstart', e => {
     if (e.touches.length===1) {
       e.preventDefault();
-      G.drag = {active:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,slon:G.cam.lon,slat:G.cam.lat,moved:false};
+      G.drag = {active:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,slon:G.cam.lon,slat:G.cam.lat,moved:false,wasPinch:false};
     } else if (e.touches.length===2) {
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       touchDist = Math.sqrt(dx*dx+dy*dy);
+      // Mark that we started a pinch gesture
+      if (G.drag.active) G.drag.wasPinch = true;
     }
   }, {passive:false});
   gc.addEventListener('touchmove', e => {
@@ -2006,15 +2008,20 @@ function initGameInput() {
     }
   }, {passive:false});
   gc.addEventListener('touchend', (e) => {
-    const wasTap = G.drag.active && !G.drag.moved;
+    const wasTap = G.drag.active && !G.drag.moved && !G.drag.wasPinch;
+    const wasPinch = G.drag.wasPinch;
     G.drag.active=false;
     clearTimeout(loadTimer);
     loadTimer=setTimeout(loadMoreParcels,600);
-    // Trigger click logic for taps (touch without drag)
+    // Trigger click logic for taps (touch without drag or pinch)
     if (wasTap && e.changedTouches && e.changedTouches[0]) {
       const touch = e.changedTouches[0];
       // Create a synthetic event with clientX/clientY for onGameClick
       onGameClick({clientX: touch.clientX, clientY: touch.clientY});
+    }
+    // Reset pinch zoom tracking when all touches end
+    if (e.touches.length === 0) {
+      touchDist = 0;
     }
   });
 
@@ -2340,15 +2347,60 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
   }
 
   G.ezHighlight = {kg: kgCode, ez: ez};
+
+  // Calculate bounds of all EZ parcels and zoom to fit
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const pf of ezParcels) {
+    const p = pf.properties;
+    if (pf.geometry.type === 'Polygon') {
+      // Get bounds from polygon coordinates
+      for (const coord of pf.geometry.coordinates[0]) {
+        minLon = Math.min(minLon, coord[0]);
+        maxLon = Math.max(maxLon, coord[0]);
+        minLat = Math.min(minLat, coord[1]);
+        maxLat = Math.max(maxLat, coord[1]);
+      }
+    } else {
+      // Point geometry
+      const lon = p.lon || pf.geometry.coordinates[0];
+      const lat = p.lat || pf.geometry.coordinates[1];
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+    }
+  }
+  // Calculate center and zoom to fit all parcels
+  const centerLon = (minLon + maxLon) / 2;
+  const centerLat = (minLat + maxLat) / 2;
+  const lonRange = maxLon - minLon;
+  const latRange = maxLat - minLat;
+  // Canvas dimensions for zoom calculation (accounting for popups on mobile)
+  const canvasWidth = gc.width;
+  const canvasHeight = gc.height;
+  // Calculate zoom level to fit the bounds with some padding
+  const lonZoom = Math.log2(360 / (lonRange * 1.5) * (canvasWidth / 800));
+  const latZoom = Math.log2(180 / (latRange * 1.5) * (canvasHeight / 600));
+  const targetZoom = Math.max(15, Math.min(19, Math.min(lonZoom, latZoom)));
+  // Animate to show entire EZ
+  animateCamera(centerLon, centerLat, targetZoom, 500);
+
   const popup = document.getElementById('ez-popup');
   popup.classList.add('open');
   // Position to the right of parcel popup if not manually moved
   if (!popup.dataset.userMoved) {
     const ppEl = document.getElementById('parcel-popup');
     const ppRect = ppEl.getBoundingClientRect();
-    popup.style.left = (ppRect.right + 12) + 'px';
-    popup.style.bottom = '16px';
-    popup.style.right = ''; popup.style.top = '';
+    // On mobile, position at top; on desktop, position to the right
+    if (window.innerWidth < 768) {
+      popup.style.left = '8px';
+      popup.style.top = '60px';
+      popup.style.right = ''; popup.style.bottom = '';
+    } else {
+      popup.style.left = (ppRect.right + 12) + 'px';
+      popup.style.bottom = '16px';
+      popup.style.right = ''; popup.style.top = '';
+    }
   }
   render();
 }
