@@ -1982,8 +1982,9 @@ function initGameInput() {
   document.getElementById('btn-zoomout').onclick = () => { G.cam.zoom=Math.max(13,G.cam.zoom-0.5); render(); renderMini(); };
   document.getElementById('btn-gearth').onclick = () => {
     // Open Google Maps satellite view at current camera position
-    const z = Math.round(G.cam.zoom);
-    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+z+'z/data=!3m1!1e1';
+    // Map game zoom (13-20) to Google Maps distance: z13≈8000m, z20≈50m
+    const dist = Math.round(8000 / Math.pow(2, G.cam.zoom - 13));
+    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+dist+'m/data=!3m1!1e3';
     window.open(url, '_blank');
   };
 
