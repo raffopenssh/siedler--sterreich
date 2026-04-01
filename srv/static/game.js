@@ -162,12 +162,35 @@ function show(id) {
 
 function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
+// ================= NAME GENERATOR =================
+const _ADJ = [
+  'Tapfer','Kühn','Edel','Stolz','Wild','Flink','Mutig','Weise',
+  'Stark','Listig','Grimmig','Eisern','Treu','Finster','Feurig',
+  'Schnell','Leise','Dunkel','Golden','Silbern','Steinig','Kalt',
+  'Schattig','Stürmisch','Sanft','Alt','Jung','Groß','Klein','Mächtig',
+];
+const _NOUN = [
+  'Ritter','Jäger','Bauer','Schmied','Falke','Wolf','Bär','Adler',
+  'Fuchs','Hirsch','Löwe','Drache','Rabe','Stein','Berg','Bach',
+  'Wald','Turm','Schild','Schwert','Eiche','Linde','Fels','Blitz',
+  'Donner','Schatten','Flamme','Frost','Stern','Mond',
+];
+function randomName() {
+  const a = _ADJ[Math.floor(Math.random()*_ADJ.length)];
+  const n = _NOUN[Math.floor(Math.random()*_NOUN.length)];
+  return a + n;
+}
+
 // ================= WELCOME =================
 {
   const inp = document.getElementById('input-name');
   const err = document.getElementById('welcome-error');
   const saved = localStorage.getItem('pid');
   const savedName = localStorage.getItem('pname');
+
+  // Pre-fill with a random name suggestion
+  if (!saved) inp.value = randomName();
+  document.getElementById('btn-reroll').onclick = () => { inp.value = randomName(); inp.focus(); };
 
   if (saved && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
