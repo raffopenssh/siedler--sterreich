@@ -3,8 +3,74 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>⚔️ Siedler Österreich</title>
+<title>Siedler Österreich – Entdecke und schütze Österreichs Natur</title>
+
+<!-- SEO -->
+<meta name="description" content="Siedler Österreich ist ein Multiplayer-Browserspiel, in dem du echte österreichische Katasterparzellen erkundest, beanspruchst und die Biodiversität schützt. Spiele mit Freunden und stelle 30 % der Fläche unter Naturschutz!">
+<meta name="keywords" content="Siedler Österreich, Browserspiel, Kataster, Naturschutz, Biodiversität, Multiplayer, Österreich, Parzellen, Gemeinde">
+<meta name="author" content="exe.dev">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://siedler-oesterreich.exe.xyz:8000/">
+
+<!-- Open Graph -->
+<meta property="og:title" content="Siedler Österreich – Entdecke und schütze Österreichs Natur">
+<meta property="og:description" content="Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität deiner Gemeinde.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://siedler-oesterreich.exe.xyz:8000/">
+<meta property="og:image" content="https://siedler-oesterreich.exe.xyz:8000/static/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Siedler Österreich – Multiplayer-Kataster-Strategiespiel">
+<meta property="og:locale" content="de_AT">
+<meta property="og:site_name" content="Siedler Österreich">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Siedler Österreich – Entdecke und schütze Österreichs Natur">
+<meta name="twitter:description" content="Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität.">
+<meta name="twitter:image" content="https://siedler-oesterreich.exe.xyz:8000/static/og-image.png">
+<meta name="twitter:image:alt" content="Siedler Österreich – Multiplayer-Kataster-Strategiespiel">
+
+<!-- App / PWA -->
+<meta name="theme-color" content="#1a1408">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Siedler AT">
+<link rel="apple-touch-icon" href="/static/og-image.png">
+<link rel="manifest" href="/static/manifest.json">
+
+<!-- Favicon -->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+
+<!-- Structured Data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Siedler Österreich",
+  "description": "Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität deiner Gemeinde.",
+  "url": "https://siedler-oesterreich.exe.xyz:8000/",
+  "applicationCategory": "GameApplication",
+  "operatingSystem": "Web",
+  "inLanguage": "de-AT",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "EUR"
+  },
+  "author": {
+    "@type": "Organization",
+    "name": "exe.dev",
+    "url": "https://exe.dev"
+  },
+  "image": "https://siedler-oesterreich.exe.xyz:8000/static/og-image.png",
+  "screenshot": "https://siedler-oesterreich.exe.xyz:8000/static/og-image.png",
+  "genre": ["Strategy", "Multiplayer", "Educational"],
+  "gamePlatform": "Web Browser"
+}
+</script>
+
+<!-- Fonts & Styles -->
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -116,6 +182,10 @@
   <div id="screen-game" class="screen">
     <!-- Sidebar -->
     <aside id="sidebar">
+      <button class="sb-toggle" id="sb-toggle" onclick="document.getElementById('sidebar').classList.toggle('expanded')">
+        <span class="sb-toggle-icon">▲</span>
+        <span id="sb-toggle-stats">🪙 <b id="st-coins">1000</b> &nbsp; ⚡ <b id="st-xp">0</b> &nbsp; 📍 <b id="st-parcels">0</b></span>
+      </button>
       <div class="sb-header">
         <span id="game-title">Siedler</span>
         <button class="btn btn-small" id="btn-invite">📋</button>

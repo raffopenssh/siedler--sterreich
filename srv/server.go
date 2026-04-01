@@ -67,6 +67,11 @@ func (s *Server) setUpDatabase(dbPath string) error {
 func (s *Server) Serve(addr string) error {
 	mux := http.NewServeMux()
 
+	// SEO / meta
+	mux.HandleFunc("GET /robots.txt", s.handleRobots)
+	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
+	mux.HandleFunc("GET /static/og-image.png", s.handleOGImage)
+
 	// Static files and main page
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
 	mux.HandleFunc("GET /{$}", s.handleIndex)

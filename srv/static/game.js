@@ -41,6 +41,81 @@ const LANDUSE_NAMES = {
   '80':'Ödland','83':'Sumpf','84':'Gletscher','85':'Fels',
 };
 
+// Map abbreviations from landuse_summary keys (e.g. "B(bf)") to terrain type + numeric code
+const ABBR_MAP = {
+  'B(bf)':  {terrain:TERRAIN.building, code:'41', name:'Baufläche'},
+  'B(Geb)': {terrain:TERRAIN.building, code:'42', name:'Gebäude'},
+  'B(Ga)':  {terrain:TERRAIN.garden,   code:'62', name:'Garten'},
+  'B(Ghs)': {terrain:TERRAIN.building, code:'45', name:'Gewächshaus'},
+  'B(Ke)':  {terrain:TERRAIN.building, code:'43', name:'Keller'},
+  'B(Ru)':  {terrain:TERRAIN.waste,    code:'44', name:'Ruine'},
+  'LN(W)':  {terrain:TERRAIN.meadow,   code:'52', name:'Wiese'},
+  'LN(A)':  {terrain:TERRAIN.farm,     code:'50', name:'Acker'},
+  'LN(Hu)': {terrain:TERRAIN.meadow,   code:'53', name:'Weide'},
+  'LN(EW)': {terrain:TERRAIN.meadow,   code:'54', name:'Grünland'},
+  'LN':     {terrain:TERRAIN.meadow,   code:'52', name:'Grünland'},
+  'W':      {terrain:TERRAIN.forest,   code:'56', name:'Wald'},
+  'Alpe':   {terrain:TERRAIN.meadow,   code:'55', name:'Alpe'},
+  'V(Str)': {terrain:TERRAIN.road,     code:'48', name:'Straße'},
+  'V(Weg)': {terrain:TERRAIN.road,     code:'48', name:'Weg'},
+  'V(Pl)':  {terrain:TERRAIN.road,     code:'48', name:'Platz'},
+  'V(Bahn)':{terrain:TERRAIN.road,     code:'48', name:'Bahn'},
+  'V(Brü)': {terrain:TERRAIN.road,     code:'48', name:'Brücke'},
+  'Ga':     {terrain:TERRAIN.garden,   code:'62', name:'Garten'},
+  'WG':     {terrain:TERRAIN.garden,   code:'60', name:'Weingarten'},
+  'Ob':     {terrain:TERRAIN.garden,   code:'63', name:'Obstgarten'},
+  'So':     {terrain:TERRAIN.waste,    code:'80', name:'Sonstige'},
+  'Q':      {terrain:TERRAIN.water,    code:'70', name:'Quelle'},
+  'Fl(St)': {terrain:TERRAIN.water,    code:'73', name:'Fluss'},
+  'Fl(B)':  {terrain:TERRAIN.water,    code:'71', name:'Bach'},
+  'See':    {terrain:TERRAIN.water,    code:'72', name:'See'},
+  'Fe':     {terrain:TERRAIN.waste,    code:'85', name:'Fels'},
+  'Moor':   {terrain:TERRAIN.wetland,  code:'83', name:'Moor'},
+  'Bio':    {terrain:TERRAIN.bio,      code:'52', name:'Naturschutz'},
+};
+
+/** Parse landuse_summary → {dominant:{terrain,code,name}, buildingCount, entries:[{abbr,terrain,count}]} */
+function parseLanduseSummary(summary) {
+  if (!summary || typeof summary !== 'object') return {dominant:null, buildingCount:0, entries:[]};
+  const entries = [];
+  let buildingCount = 0;
+  for (const [key, count] of Object.entries(summary)) {
+    // Extract abbreviation after " - "
+    const dashIdx = key.lastIndexOf(' - ');
+    const abbr = dashIdx >= 0 ? key.slice(dashIdx + 3) : key;
+    let info = ABBR_MAP[abbr];
+    if (!info) {
+      // Fuzzy match: try prefix
+      for (const [k, v] of Object.entries(ABBR_MAP)) {
+        if (abbr.startsWith(k) || abbr.includes(k)) { info = v; break; }
+      }
+    }
+    if (!info) {
+      // Guess from the full description text
+      const t = key.toLowerCase();
+      if (t.includes('wald') || t.includes(' w ')) info = ABBR_MAP['W'];
+      else if (t.includes('wiese')) info = ABBR_MAP['LN(W)'];
+      else if (t.includes('acker')) info = ABBR_MAP['LN(A)'];
+      else if (t.includes('baufläche') || t.includes('gebäude')) info = ABBR_MAP['B(bf)'];
+      else if (t.includes('garten')) info = ABBR_MAP['Ga'];
+      else if (t.includes('verkehr') || t.includes('straß')) info = ABBR_MAP['V(Str)'];
+      else if (t.includes('gewässer') || t.includes('bach') || t.includes('see')) info = ABBR_MAP['Q'];
+      else if (t.includes('alpe') || t.includes('alm')) info = ABBR_MAP['Alpe'];
+      else if (t.includes('sumpf') || t.includes('moor')) info = ABBR_MAP['Moor'];
+      else if (t.includes('fels') || t.includes('geröll')) info = ABBR_MAP['Fe'];
+      else info = {terrain:TERRAIN.grass, code:'', name:abbr};
+    }
+    entries.push({abbr, terrain:info.terrain, code:info.code, name:info.name, count});
+    if (info.code === '41' || info.code === '42' || info.code === '43' || info.code === '45') {
+      buildingCount += count;
+    }
+  }
+  // Dominant = highest count
+  let dominant = entries.length > 0 ? entries[0] : null;
+  for (const e of entries) { if (!dominant || e.count > dominant.count) dominant = e; }
+  return {dominant, buildingCount, entries};
+}
+
 const PLAYER_COLORS = ['#e04040','#4080e0','#e0c040','#a040e0','#40e0a0','#e08040','#e040a0','#40e040'];
 
 // ---- Game State ----
@@ -855,10 +930,17 @@ function updateStats() {
   document.getElementById('s-coins').textContent = G.player.coins;
   document.getElementById('s-xp').textContent = G.player.xp;
   document.getElementById('s-level').textContent = Math.floor(G.player.xp/200)+1;
+  // Mobile toggle stats
+  const stc = document.getElementById('st-coins');
+  if (stc) stc.textContent = G.player.coins;
+  const stx = document.getElementById('st-xp');
+  if (stx) stx.textContent = G.player.xp;
 }
 function updateParcelCount() {
   const mine = G.claimed.filter(c=>c.player_id===G.player.id);
   document.getElementById('s-parcels').textContent = mine.length;
+  const stp = document.getElementById('st-parcels');
+  if (stp) stp.textContent = mine.length;
 }
 function renderPlayerList() {
   document.getElementById('game-players').innerHTML = G.players.map((p,i) => {
@@ -1029,18 +1111,17 @@ function drawParcelPoly(ctx, f, claimMap) {
   const coords = geom.coordinates[0];
   const parcelId = p.parcel_id;
   const claim = claimMap[parcelId];
-  const lu = p.landuse_summary ? Object.keys(p.landuse_summary)[0] : '';
-  const luCode = extractLuCode(lu, p);
-  const terrain = (claim?.converted_to) ? TERRAIN.bio : (LANDUSE_TERRAIN[luCode] || TERRAIN.grass);
+  const terrain = getParcelTerrain(p, claim);
 
   // Project coordinates
   const pts = coords.map(c => toScreen(c[0], c[1]));
 
   // Check if visible
-  const minX = Math.min(...pts.map(p=>p[0]));
-  const maxX = Math.max(...pts.map(p=>p[0]));
-  const minY = Math.min(...pts.map(p=>p[1]));
-  const maxY = Math.max(...pts.map(p=>p[1]));
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  for (const pt of pts) {
+    if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
+    if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
+  }
   if (maxX < -50 || minX > gc.width+50 || maxY < -50 || minY > gc.height+50) return;
 
   ctx.beginPath();
@@ -1061,6 +1142,25 @@ function drawParcelPoly(ctx, f, claimMap) {
   ctx.lineWidth = claim ? 2 : 0.7;
   ctx.stroke();
 
+  // Draw building sprites on parcels with building landuse
+  const parsed = parseLanduseSummary(p.landuse_summary);
+  if (parsed.buildingCount > 0 && (maxX - minX) > 8 && (maxY - minY) > 8) {
+    const pxArea = (maxX - minX) * (maxY - minY);
+    const numBuildings = Math.min(6, Math.max(1, Math.floor(parsed.buildingCount * Math.min(1, pxArea / 3000))));
+    const bHash = Math.abs(hash);
+    for (let i = 0; i < numBuildings; i++) {
+      // Deterministic pseudo-random placement inside parcel
+      const t = ((bHash + i * 7919) % 10000) / 10000;
+      const u = ((bHash + i * 3571) % 10000) / 10000;
+      const bx = minX + (maxX - minX) * (0.15 + t * 0.7);
+      const by = minY + (maxY - minY) * (0.15 + u * 0.7);
+      if (pip(bx, by, pts)) {
+        const big = parsed.buildingCount > 3 && i === 0;
+        drawBuilding(ctx, bx, by, big, bHash + i);
+      }
+    }
+  }
+
   // Claimed: draw player flag
   if (claim) {
     const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
@@ -1068,33 +1168,99 @@ function drawParcelPoly(ctx, f, claimMap) {
   }
 }
 
+/** Draw a pixel-art building at (x,y) */
+function drawBuilding(ctx, x, y, large, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const variant = seed % 4;
+  if (large) {
+    // Bigger building — church/barn
+    ctx.fillStyle = '#6a5a48';
+    ctx.fillRect(x-8, y-6, 16, 10);
+    ctx.fillStyle = '#8a4a30';
+    // Peaked roof
+    ctx.beginPath();
+    ctx.moveTo(x-9, y-6); ctx.lineTo(x, y-14); ctx.lineTo(x+9, y-6);
+    ctx.closePath(); ctx.fill();
+    // Window
+    ctx.fillStyle = '#e8d880';
+    ctx.fillRect(x-2, y-4, 4, 3);
+    // Door
+    ctx.fillStyle = '#4a3020';
+    ctx.fillRect(x-2, y, 4, 4);
+  } else if (variant < 2) {
+    // Small house
+    ctx.fillStyle = '#7a6a58';
+    ctx.fillRect(x-5, y-4, 10, 7);
+    ctx.fillStyle = '#a05030';
+    ctx.beginPath();
+    ctx.moveTo(x-6, y-4); ctx.lineTo(x, y-10); ctx.lineTo(x+6, y-4);
+    ctx.closePath(); ctx.fill();
+    // Window
+    ctx.fillStyle = '#e8d880';
+    ctx.fillRect(x-2, y-2, 2, 2);
+    ctx.fillRect(x+1, y-2, 2, 2);
+  } else if (variant === 2) {
+    // Flat-roofed building
+    ctx.fillStyle = '#808070';
+    ctx.fillRect(x-6, y-5, 12, 8);
+    ctx.fillStyle = '#606058';
+    ctx.fillRect(x-6, y-6, 12, 2);
+    ctx.fillStyle = '#e8d880';
+    ctx.fillRect(x-4, y-3, 2, 2);
+    ctx.fillRect(x+2, y-3, 2, 2);
+  } else {
+    // Shed
+    ctx.fillStyle = '#6a5840';
+    ctx.fillRect(x-4, y-3, 8, 6);
+    ctx.fillStyle = '#8a6a40';
+    ctx.fillRect(x-5, y-5, 10, 3);
+  }
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  ctx.beginPath();
+  ctx.ellipse(x+2, y+4, 6, 2, 0, 0, Math.PI*2);
+  ctx.fill();
+}
+
 function extractLuCode(lu, p) {
-  // Try to get a numeric code from various property formats
+  // Use landuse_codes if available (from bbox spatial endpoint)
   if (p.landuse_codes) {
     const first = p.landuse_codes.split(',')[0].trim();
     if (first) return first;
   }
   if (p.dominant_landuse) return p.dominant_landuse;
-  // Try parsing from summary key
-  const match = lu.match(/(\d{2})/);
+  // Parse from landuse_summary using our proper parser
+  if (p.landuse_summary) {
+    const parsed = parseLanduseSummary(p.landuse_summary);
+    if (parsed.dominant) return parsed.dominant.code;
+  }
+  // Fallback: try numeric from raw string
+  const match = (lu || '').match(/(\d{2})/);
   if (match) return match[1];
-  // Parse from landuse_summary text keys
-  const st = p.landuse_summary ? Object.keys(p.landuse_summary).join(' ') : lu;
-  if (st.includes('Wald') || st.includes(' W')) return '56';
-  if (st.includes('Wiese') || st.includes('LN(W)')) return '52';
-  if (st.includes('Acker') || st.includes('LN(A)')) return '50';
-  if (st.includes('Weide') || st.includes('LN(Hu)')) return '53';
-  if (st.includes('Baufläche') || st.includes('B(bf)') || st.includes('B(')  ) return '42';
-  if (st.includes('Gebäude') || st.includes('Geb(')) return '43';
-  if (st.includes('Garten') || st.includes('Ga')) return '62';
-  if (st.includes('Verkehr') || st.includes('Straß') || st.includes('V(')) return '48';
-  if (st.includes('Gewässer') || st.includes('Bach') || st.includes('See') || st.includes('Fl(')) return '70';
-  if (st.includes('Alpe') || st.includes('Alm')) return '55';
-  if (st.includes('Weingarten') || st.includes('WG')) return '60';
-  if (st.includes('Fels') || st.includes('Geröll') || st.includes('Ödland') || st.includes('Fe')) return '85';
-  if (st.includes('Sumpf') || st.includes('Moor')) return '83';
-  if (st.includes('Grünland') || st.includes('LN')) return '52';
   return '';
+}
+
+/** Get terrain colors from landuse_summary, returns the dominant terrain color array */
+function getParcelTerrain(p, claim) {
+  if (claim?.converted_to) return TERRAIN.bio;
+  if (p.landuse_summary) {
+    const parsed = parseLanduseSummary(p.landuse_summary);
+    if (parsed.dominant) return parsed.dominant.terrain;
+  }
+  const luCode = extractLuCode('', p);
+  return LANDUSE_TERRAIN[luCode] || TERRAIN.grass;
+}
+
+/** Get human-readable landuse name from summary */
+function getLanduseName(p) {
+  if (p.landuse_summary) {
+    const parsed = parseLanduseSummary(p.landuse_summary);
+    if (parsed.entries.length > 0) {
+      return parsed.entries.map(e => e.name + (e.count > 1 ? ' (×'+e.count+')' : '')).join(', ');
+    }
+  }
+  const code = extractLuCode('', p);
+  return LANDUSE_NAMES[code] || code || '-';
 }
 
 function drawParcelPoint(ctx, f, claimMap) {
@@ -1105,8 +1271,7 @@ function drawParcelPoint(ctx, f, claimMap) {
   const area = p.area_sqm || 100;
   const size = Math.max(6, Math.min(40, Math.sqrt(area) * mapScale() / 80000));
   const claim = claimMap[p.parcel_id];
-  const luCode = (p.landuse_codes||'').split(',')[0].trim() || p.dominant_landuse || '';
-  const terrain = (claim?.converted_to) ? TERRAIN.bio : (LANDUSE_TERRAIN[luCode] || TERRAIN.grass);
+  const terrain = getParcelTerrain(p, claim);
   const hash = simpleHash(p.parcel_id || '');
 
   // Draw as slightly rotated diamond (isometric feel)
@@ -1144,8 +1309,8 @@ function drawFlag(ctx, x, y, color, isBio) {
 function drawForestSprites(ctx, claimMap) {
   // Draw little tree sprites on forest parcels
   const polys = G.parcelPolys.filter(f => {
-    const lu = extractLuCode('', f.properties);
-    return lu === '56' || lu === '57' || lu === '58';
+    const t = getParcelTerrain(f.properties, claimMap[f.properties.parcel_id]);
+    return t === TERRAIN.forest;
   });
 
   ctx.save();
@@ -1330,8 +1495,7 @@ function renderMini() {
     const mx = pad + (lon-minLon)*sc;
     const my = pad + (maxLat-lat)*sc;
     const cl = cm[p.parcel_id];
-    const luCode = (p.landuse_codes||'').split(',')[0] || '';
-    const t = cl?.converted_to ? TERRAIN.bio : (LANDUSE_TERRAIN[luCode]||TERRAIN.grass);
+    const t = getParcelTerrain(p, cl);
     mctx.fillStyle = cl ? (G.pcolors[cl.player_id]||t[0]) : t[0];
     mctx.fillRect(mx-1, my-1, 3, 3);
   }
@@ -1466,7 +1630,7 @@ function showParcelPopup(f) {
   document.getElementById('pp-id').textContent = pid;
   document.getElementById('pp-kg').textContent = p.kg_name || p.kg_code || '-';
   document.getElementById('pp-area').textContent = area>10000?(area/10000).toFixed(2)+' ha':Math.round(area)+' m²';
-  document.getElementById('pp-use').textContent = LANDUSE_NAMES[luCode] || luCode || '-';
+  document.getElementById('pp-use').textContent = getLanduseName(p);
   document.getElementById('pp-owner').textContent = owner ? owner.name : 'Frei';
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
