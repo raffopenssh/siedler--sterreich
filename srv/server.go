@@ -764,7 +764,7 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB max
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max
 	if err != nil {
 		jsonErr(w, "Read error", 502)
 		return

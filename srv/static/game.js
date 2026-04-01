@@ -123,6 +123,8 @@ const G = {
   player: null, session: null,
   parcels: [],          // from cadastre (point data)
   parcelPolys: [],      // from export/geojson (polygon data for current KGs)
+  buildingFootprints: [], // real building footprint polygons from cadastre
+  landusePolys: [],     // real landuse polygons (forests, roads, water, etc.)
   claimed: [],          // from our DB
   treasures: [], challenges: [], players: [], chatMsgs: [],
   sse: null,
@@ -162,6 +164,23 @@ function show(id) {
 
 function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
+/** Build invite URL with current camera view encoded as hash params */
+function inviteUrl(code) {
+  let url = location.origin + '/join/' + code;
+  if (G.cam) {
+    url += '#v=' + G.cam.lon.toFixed(5) + ',' + G.cam.lat.toFixed(5) + ',' + G.cam.zoom;
+  }
+  return url;
+}
+
+/** Parse view hash params from URL (e.g. #v=15.07200,47.06400,18) */
+function parseViewHash() {
+  const h = location.hash;
+  const m = h.match(/v=([\d.]+),([\d.]+),(\d+)/);
+  if (m) return { lon: parseFloat(m[1]), lat: parseFloat(m[2]), zoom: parseInt(m[3]) };
+  return null;
+}
+
 // ================= NAME GENERATOR =================
 const _ADJ = [
   'Tapfer','Kühn','Edel','Stolz','Wild','Flink','Mutig','Weise',
@@ -199,12 +218,12 @@ function randomName() {
     GET('/api/player/'+saved+'/sessions').then(sessions => {
       if (sessions?.length > 0) {
         const s = sessions[0];
-        const inviteUrl = location.origin + '/join/' + s.invite_code;
+        const iUrl = location.origin + '/join/' + s.invite_code;
         document.getElementById('quick-rejoin').innerHTML =
           `<div>Zuletzt: <a onclick="quickLogin()">${esc(savedName)}</a> — <a onclick="quickLogin()">Weiterspielen</a></div>` +
           `<div class="invite-share">`+
             `<span class="invite-label">⚔️ Freunde einladen:</span> `+
-            `<span class="invite-link" onclick="navigator.clipboard.writeText('${inviteUrl}');this.textContent='📋 Kopiert!';setTimeout(()=>this.textContent='${inviteUrl}',2000)">${inviteUrl}</span>`+
+            `<span class="invite-link" onclick="navigator.clipboard.writeText('${iUrl}');this.textContent='📋 Kopiert!';setTimeout(()=>this.textContent='${iUrl}',2000)">${iUrl}</span>`+
           `</div>`;
       }
     }).catch(()=>{});
@@ -754,10 +773,10 @@ function stopTipRotation() {
 function showLobbyWaiting(inviteCode) {
   document.getElementById('lobby-create').style.display = 'none';
   document.getElementById('lobby-waiting').style.display = '';
-  const url = location.origin + '/join/' + inviteCode;
+  const url = inviteUrl(inviteCode);
   const box = document.getElementById('invite-url');
   box.textContent = url;
-  box.onclick = () => { navigator.clipboard.writeText(url); toast('📋 Kopiert!','ok'); };
+  box.onclick = () => { navigator.clipboard.writeText(inviteUrl(inviteCode)); toast('📋 Kopiert!','ok'); };
   refreshLobby();
 }
 
@@ -782,10 +801,18 @@ async function startGameWithLoading() {
     startTipRotation();
   }
 
-  // Set camera to municipality center BEFORE loading parcels
-  G.cam.lon = G.session.center_lon;
-  G.cam.lat = G.session.center_lat;
-  G.cam.zoom = 17;
+  // Set camera — use shared view from invite URL hash if present, else municipality center
+  const sharedView = parseViewHash();
+  if (sharedView) {
+    G.cam.lon = sharedView.lon;
+    G.cam.lat = sharedView.lat;
+    G.cam.zoom = sharedView.zoom;
+    history.replaceState(null, '', location.pathname + location.search); // clean hash
+  } else {
+    G.cam.lon = G.session.center_lon;
+    G.cam.lat = G.session.center_lat;
+    G.cam.zoom = 17;
+  }
   // Track known municipalities so we only toast once per muni
   G.knownMunis = new Set();
   G.knownMunis.add(G.session.municipality_code);
@@ -844,7 +871,7 @@ async function startGameWithLoading() {
   renderMini();
 
   document.getElementById('btn-invite').onclick = () => {
-    navigator.clipboard.writeText(location.origin+'/join/'+G.session.invite_code);
+    navigator.clipboard.writeText(inviteUrl(G.session.invite_code));
     toast('📋 Einladung kopiert!','ok');
   };
 
@@ -862,8 +889,7 @@ async function startGameWithLoading() {
     const sec = document.getElementById('sec-rejoin');
     const joinLink = document.getElementById('join-ingame-link');
     sec.style.display = '';
-    const joinUrl = location.origin + '/join/' + G.session.invite_code;
-    joinLink.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(joinUrl); toast('⚔️ Einladungs-Link kopiert!','ok'); };
+    joinLink.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(inviteUrl(G.session.invite_code)); toast('⚔️ Einladungs-Link kopiert!','ok'); };
   }
 }
 
@@ -926,10 +952,26 @@ async function fetchKGPolygonsBlocking() {
   const promises = [];
   for (const kg of kgs) {
     G.kgsLoaded.add(kg);
+    // Fetch parcels, building footprints, and landuse polygons in parallel per KG
     promises.push(
-      GET(CAD+'/export/geojson?kg='+kg+'&layers=parcels').then(data => {
-        if (data.features) {
-          for (const f of data.features) G.parcelPolys.push(f);
+      Promise.all([
+        GET(CAD+'/export/geojson?kg='+kg+'&layers=parcels'),
+        GET(CAD+'/export/geojson?kg='+kg+'&layers=building_footprints'),
+        GET(CAD+'/export/geojson?kg='+kg+'&layers=landuse'),
+      ]).then(([parcels, footprints, landuse]) => {
+        if (parcels?.features) {
+          for (const f of parcels.features) G.parcelPolys.push(f);
+        }
+        if (footprints?.features) {
+          for (const f of footprints.features) G.buildingFootprints.push(f);
+        }
+        if (landuse?.features) {
+          // Only keep polygon features (skip points)
+          for (const f of landuse.features) {
+            if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
+              G.landusePolys.push(f);
+            }
+          }
         }
         done++;
         setLoadProgress(45 + Math.floor((done/total)*20));
@@ -949,12 +991,26 @@ async function fetchKGPolygons() {
   for (const kg of kgs) {
     G.kgsLoaded.add(kg);
     try {
-      const data = await GET(CAD+'/export/geojson?kg='+kg+'&layers=parcels');
-      if (data.features) {
-        for (const f of data.features) G.parcelPolys.push(f);
-        render();
-        renderMini();
+      const [parcels, footprints, landuse] = await Promise.all([
+        GET(CAD+'/export/geojson?kg='+kg+'&layers=parcels'),
+        GET(CAD+'/export/geojson?kg='+kg+'&layers=building_footprints'),
+        GET(CAD+'/export/geojson?kg='+kg+'&layers=landuse'),
+      ]);
+      if (parcels?.features) {
+        for (const f of parcels.features) G.parcelPolys.push(f);
       }
+      if (footprints?.features) {
+        for (const f of footprints.features) G.buildingFootprints.push(f);
+      }
+      if (landuse?.features) {
+        for (const f of landuse.features) {
+          if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
+            G.landusePolys.push(f);
+          }
+        }
+      }
+      render();
+      renderMini();
     } catch(e) { console.error('KG fetch failed:', kg, e); }
   }
 }
@@ -1076,18 +1132,16 @@ function render() {
   const W = gc.width, H = gc.height;
 
   // ---- Background terrain ----
-  // Settlers IV has lush green grass with variation
   ctx.fillStyle = '#3a6828';
   ctx.fillRect(0, 0, W, H);
-
-  // Grass texture - noise pattern
-  const s = mapScale();
-  const b = viewBounds();
   drawGrassTexture(ctx, W, H);
 
   // Build claim lookup
   const claimMap = {};
   for (const c of G.claimed) claimMap[c.parcel_id] = c;
+
+  // ---- Draw real landuse polygons (forests, water, roads, etc.) ----
+  if (G.landusePolys.length > 0) drawLandusePolygons(ctx);
 
   // ---- Draw parcel polygons (from export/geojson KG data) ----
   if (G.parcelPolys.length > 0) {
@@ -1104,14 +1158,17 @@ function render() {
     }
   }
 
+  // ---- Trees on forest parcels ----
+  drawForestSprites(ctx, claimMap);
+
+  // ---- Draw real building footprints ----
+  if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
+
   // ---- Treasures ----
   for (const t of G.treasures) drawTreasure(ctx, t);
 
   // ---- Selected parcel highlight ----
   if (G.sel) drawSelection(ctx, G.sel);
-
-  // ---- Trees on forest parcels ----
-  drawForestSprites(ctx, claimMap);
 
   // Scale bar
   drawScaleBar(ctx, W, H);
@@ -1155,6 +1212,189 @@ function drawGrassTexture(ctx, W, H) {
   ctx.fillRect(0, 0, W, H);
 }
 
+// ================= REAL LANDUSE POLYGONS =================
+// Map landuse_code to fill colors (Settlers-style terrain)
+const LANDUSE_POLY_COLORS = {
+  '40': {fill:'#5a8a40', stroke:'#4a7a30'},     // Baufläche begrünt
+  '42': {fill:'#8b7058', stroke:'#6a5040'},     // Gebäude
+  '48': {fill:'#b0a898', stroke:'#908880', a:0.7},  // Verkehr (roads) — lighter, more visible
+  '52': {fill:'#5a9e3a', stroke:'#4a8e2a'},     // Wiese
+  '53': {fill:'#62a240', stroke:'#52923a'},     // Weide
+  '56': {fill:'#1e5a1e', stroke:'#145014'},     // Wald
+  '57': {fill:'#2a5a2a', stroke:'#1a4a1a'},     // Krummholz
+  '58': {fill:'#6a9a5a', stroke:'#5a8a4a'},     // Alpe
+  '59': {fill:'#7a7860', stroke:'#6a6850'},     // Ödland
+  '60': {fill:'#4a8a6a', stroke:'#3a7a5a'},     // Sumpf
+  '61': {fill:'#5aa83a', stroke:'#4a982a'},     // Grünland gemäht
+  '62': {fill:'#c8b858', stroke:'#a89838', a:0.65}, // Acker — golden/brown
+  '63': {fill:'#80aa40', stroke:'#709a30'},     // Weingarten
+  '64': {fill:'#6b8e4a', stroke:'#5b7e3a'},     // Gartenanlage
+  '65': {fill:'#7aaa4a', stroke:'#6a9a3a'},     // Obstgarten
+  '72': {fill:'#3090d0', stroke:'#2080c0', a:0.8}, // Quelle — bluer
+  '83': {fill:'#9a9888', stroke:'#8a8878'},     // Fels
+  '84': {fill:'#8a8878', stroke:'#7a7868'},     // Geröll
+  '92': {fill:'#6a9a5a', stroke:'#5a8a4a'},     // Hochalm
+  '96': {fill:'#2888c8', stroke:'#1878b8', a:0.8}, // Gewässer — vivid blue
+};
+const LANDUSE_POLY_DEFAULT = {fill:'#5a8a40', stroke:'#4a7a30'};
+
+function drawLandusePolygons(ctx) {
+  const W = gc.width, H = gc.height;
+  for (const f of G.landusePolys) {
+    const geom = f.geometry;
+    if (!geom) continue;
+    const code = f.properties.landuse_code || '';
+    const colors = LANDUSE_POLY_COLORS[code] || LANDUSE_POLY_DEFAULT;
+    const rings = geom.type === 'MultiPolygon'
+      ? geom.coordinates.flatMap(p => p)
+      : geom.coordinates;
+
+    // Project first ring to check visibility
+    const outerPts = rings[0].map(c => toScreen(c[0], c[1]));
+    let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+    for (const pt of outerPts) {
+      if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
+      if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
+    }
+    if (maxX < -20 || minX > W+20 || maxY < -20 || minY > H+20) continue;
+    // Skip tiny polygons
+    if ((maxX-minX) < 2 && (maxY-minY) < 2) continue;
+
+    ctx.beginPath();
+    for (let ri = 0; ri < rings.length; ri++) {
+      const pts = ri === 0 ? outerPts : rings[ri].map(c => toScreen(c[0], c[1]));
+      for (let i = 0; i < pts.length; i++) {
+        i === 0 ? ctx.moveTo(pts[i][0], pts[i][1]) : ctx.lineTo(pts[i][0], pts[i][1]);
+      }
+      ctx.closePath();
+    }
+    ctx.fillStyle = colors.fill;
+    ctx.globalAlpha = colors.a || 0.55;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Subtle stroke for terrain borders
+    if ((maxX-minX) > 5 || (maxY-minY) > 5) {
+      ctx.strokeStyle = colors.stroke;
+      ctx.lineWidth = code === '48' ? 1 : 0.5;  // Roads get thicker border
+      ctx.globalAlpha = code === '48' ? 0.6 : 0.4;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+// ================= REAL BUILDING FOOTPRINTS =================
+const ROOF_COLORS = [
+  {roof:'#a05030', wall:'#7a6a58', border:'#6a3020'},  // Classic red-brown
+  {roof:'#8a4828', wall:'#6a5a48', border:'#5a2818'},  // Dark terracotta
+  {roof:'#b06040', wall:'#8a7a68', border:'#7a4030'},  // Light terracotta
+  {roof:'#907060', wall:'#706050', border:'#605040'},  // Gray-brown
+  {roof:'#706868', wall:'#585050', border:'#484040'},  // Slate gray
+];
+
+function drawBuildingFootprints(ctx) {
+  const W = gc.width, H = gc.height;
+  const zoom = G.cam.zoom;
+  if (zoom < 15) return;
+
+  for (const f of G.buildingFootprints) {
+    const geom = f.geometry;
+    if (!geom || geom.type !== 'Polygon') continue;
+
+    const coords = geom.coordinates[0];
+    const pts = coords.map(c => toScreen(c[0], c[1]));
+
+    // Bounding box visibility check
+    let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+    for (const pt of pts) {
+      if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
+      if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
+    }
+    if (maxX < -10 || minX > W+10 || maxY < -10 || minY > H+10) continue;
+    if ((maxX-minX) < 1.5 && (maxY-minY) < 1.5) continue;
+
+    const bw = maxX - minX;
+    const bh = maxY - minY;
+    const area = bw * bh;
+
+    // Pick roof style based on building size & hash
+    const hash = Math.round(coords[0][0] * 100000) ^ Math.round(coords[0][1] * 100000);
+    const colorIdx = (Math.abs(hash) % ROOF_COLORS.length);
+    // Large buildings (>600px area) get industrial/slate colors
+    const rc = area > 600 ? ROOF_COLORS[3 + (Math.abs(hash) % 2)] : ROOF_COLORS[colorIdx % 3];
+
+    // 3D roof offset scales with building size
+    const roofOff = Math.max(2, Math.min(8, Math.sqrt(area) * 0.12));
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath();
+    for (let i=0; i<pts.length; i++) {
+      const x = pts[i][0]+roofOff*0.6, y = pts[i][1]+roofOff*0.6;
+      i===0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Wall (side) — draw extruded shape for visible edges
+    ctx.fillStyle = rc.wall;
+    ctx.beginPath();
+    for (let i=0; i<pts.length; i++) {
+      const j = (i+1) % pts.length;
+      if (pts[i][1] >= pts[j][1] - 0.5) {
+        ctx.moveTo(pts[i][0], pts[i][1]);
+        ctx.lineTo(pts[j][0], pts[j][1]);
+        ctx.lineTo(pts[j][0], pts[j][1]-roofOff);
+        ctx.lineTo(pts[i][0], pts[i][1]-roofOff);
+        ctx.closePath();
+      }
+    }
+    ctx.fill();
+
+    // Roof (top face, offset up)
+    ctx.fillStyle = rc.roof;
+    ctx.beginPath();
+    for (let i=0; i<pts.length; i++) {
+      const x = pts[i][0], y = pts[i][1]-roofOff;
+      i===0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Roof highlight (subtle light gradient effect)
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fill();
+
+    // Roof border
+    ctx.strokeStyle = rc.border;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+
+    // Windows (if building is large enough)
+    if (bw > 12 && bh > 10 && zoom >= 17) {
+      const cx = (minX+maxX)/2;
+      const cy = (minY+maxY)/2 - roofOff;
+      ctx.fillStyle = '#e8d880';
+      const ws = Math.max(1.5, Math.min(3, bw*0.06));
+      const gap = ws * 3;
+      const count = Math.min(5, Math.floor(bw / (gap)));
+      const startX = cx - (count-1)*gap/2;
+      for (let i=0; i<count; i++) {
+        ctx.fillRect(Math.round(startX + i*gap - ws/2), Math.round(cy - ws/2), ws, ws);
+      }
+    }
+
+    // Door on larger buildings
+    if (bw > 14 && bh > 12 && zoom >= 17) {
+      ctx.fillStyle = '#3a2818';
+      const dw = Math.max(2, Math.min(3.5, bw*0.08));
+      const dh = dw * 1.4;
+      ctx.fillRect(Math.round((minX+maxX)/2 - dw/2), Math.round(maxY - roofOff - dh - 1), dw, dh);
+    }
+  }
+}
+
 function drawParcelPoly(ctx, f, claimMap) {
   const p = f.properties;
   const geom = f.geometry;
@@ -1185,18 +1425,19 @@ function drawParcelPoly(ctx, f, claimMap) {
   // Settlers-style fill with variation
   const hash = simpleHash(parcelId || '');
   ctx.fillStyle = terrain[Math.abs(hash) % terrain.length];
-  ctx.globalAlpha = 0.85;
+  // More transparent when real landuse polys provide terrain backdrop
+  ctx.globalAlpha = G.landusePolys.length > 0 ? 0.35 : 0.85;
   ctx.fill();
   ctx.globalAlpha = 1;
 
   // Border - thin dark line like terrain boundaries in Settlers
-  ctx.strokeStyle = claim ? (G.pcolors[claim.player_id]||'#fff') : 'rgba(20,40,10,0.4)';
-  ctx.lineWidth = claim ? 2 : 0.7;
+  ctx.strokeStyle = claim ? (G.pcolors[claim.player_id]||'#fff') : 'rgba(20,40,10,0.35)';
+  ctx.lineWidth = claim ? 2 : 0.5;
   ctx.stroke();
 
-  // Draw building sprites on parcels with building landuse
+  // Draw building sprites on parcels with building landuse (only if no real footprints loaded)
   const parsed = parseLanduseSummary(p.landuse_summary);
-  if (parsed.buildingCount > 0 && (maxX - minX) > 8 && (maxY - minY) > 8) {
+  if (G.buildingFootprints.length === 0 && parsed.buildingCount > 0 && (maxX - minX) > 8 && (maxY - minY) > 8) {
     const pxArea = (maxX - minX) * (maxY - minY);
     const numBuildings = Math.min(6, Math.max(1, Math.floor(parsed.buildingCount * Math.min(1, pxArea / 3000))));
     const bHash = Math.abs(hash);

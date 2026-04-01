@@ -73,9 +73,10 @@ input[type=text]:focus { border-color:var(--gold); }
 .welcome-bg {
   position:absolute; inset:0;
   background:
-    repeating-linear-gradient(60deg, transparent, transparent 40px, rgba(40,60,20,.08) 40px, rgba(40,60,20,.08) 80px),
-    repeating-linear-gradient(-60deg, transparent, transparent 40px, rgba(40,60,20,.06) 40px, rgba(40,60,20,.06) 80px);
+    linear-gradient(180deg, rgba(30,25,15,.55) 0%, rgba(30,25,15,.35) 40%, rgba(30,25,15,.55) 100%),
+    url('/static/game-bg.jpg') center/cover no-repeat;
   pointer-events:none;
+  filter:blur(1.5px) saturate(0.8);
 }
 .welcome-content { position:relative; z-index:1; text-align:center; }
 .logo-art { margin-bottom:30px; }
