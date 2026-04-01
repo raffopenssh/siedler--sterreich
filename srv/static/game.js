@@ -592,7 +592,7 @@ function drawMuniPoly(ctx, feature, isHover) {
   }
 }
 
-function simpleHash(s) { let h=0; for(let i=0;i<s.length;i++) h=((h<<5)-h)+s.charCodeAt(i); return h; }
+function simpleHash(s) { let h=0; for(let i=0;i<s.length;i++) h=((h<<5)-h)+s.charCodeAt(i); return h>>>0; }
 
 function centroidOf(ring) {
   let sx=0, sy=0;
@@ -1741,24 +1741,51 @@ function drawFlag(ctx, x, y, color, isBio) {
 }
 
 function drawForestSprites(ctx, claimMap) {
-  // Draw little tree sprites on forest parcels
-  const polys = G.parcelPolys.filter(f => {
-    const t = getParcelTerrain(f.properties, claimMap[f.properties.parcel_id]);
-    return t === TERRAIN.forest;
-  });
+  // Draw tree sprites on forest, reforested, orchard and scrub parcels
+  // Determine tree style per parcel: 'forest' | 'reforested' | 'orchard' | 'krummholz'
+  function getTreeStyle(f) {
+    const claim = claimMap[f.properties.parcel_id];
+    if (claim?.converted_to === 'forest') return 'reforested';
+    const t = getParcelTerrain(f.properties, claim);
+    if (t !== TERRAIN.forest && t !== TERRAIN.garden) return null;
+    const luCode = extractLuCode('', f.properties);
+    if (luCode === '63') return 'orchard';  // Obstgarten
+    if (luCode === '57') return 'krummholz'; // Krummholz/Latschen
+    if (t === TERRAIN.forest) return 'forest';
+    return null;
+  }
+
+  const treePolys = G.parcelPolys.map(f => ({ f, style: getTreeStyle(f) })).filter(x => x.style);
 
   ctx.save();
-  for (const f of polys) {
+  for (const { f, style } of treePolys) {
     const coords = f.geometry.coordinates[0];
     const b = geoBounds(f.geometry);
     const [sx1,sy1] = toScreen(b.w, b.n);
     const [sx2,sy2] = toScreen(b.e, b.s);
     if (sx2 < 0 || sx1 > gc.width || sy2 < 0 || sy1 > gc.height) continue;
 
-    // Scatter trees
     const area = f.properties.area_sqm || 1000;
-    const treeCount = Math.min(15, Math.max(2, Math.floor(area / 500)));
     const hash = simpleHash(f.properties.parcel_id||'');
+
+    let treeCount, variantFn;
+    if (style === 'orchard') {
+      // Orchards: sparser, always deciduous/fruit variant
+      treeCount = Math.min(8, Math.max(1, Math.floor(area / 800)));
+      variantFn = (i) => 4; // fruit tree
+    } else if (style === 'krummholz') {
+      // Krummholz: dense low scrub
+      treeCount = Math.min(12, Math.max(2, Math.floor(area / 400)));
+      variantFn = (i) => 2; // bush variant
+    } else if (style === 'reforested') {
+      // Reforested: young trees, mix of saplings
+      treeCount = Math.min(12, Math.max(2, Math.floor(area / 500)));
+      variantFn = (i) => (hash + i) % 2 === 0 ? 3 : 0; // young pine / sapling
+    } else {
+      // Normal forest
+      treeCount = Math.min(15, Math.max(2, Math.floor(area / 500)));
+      variantFn = (i) => (hash + i) % 3;
+    }
 
     for (let i = 0; i < treeCount; i++) {
       const t = (hash + i * 7919) % 10000 / 10000;
@@ -1767,14 +1794,15 @@ function drawForestSprites(ctx, claimMap) {
       const lat = b.s + (b.n - b.s) * u;
       if (!pip(lon, lat, coords)) continue;
       const [tx, ty] = toScreen(lon, lat);
-      drawTree(ctx, tx, ty, (hash+i) % 3);
+      drawTree(ctx, tx, ty, variantFn(i));
     }
   }
   ctx.restore();
 }
 
 function drawTree(ctx, x, y, variant) {
-  // Settlers IV style conifer - layered triangles
+  // Settlers IV style trees
+  // Variants: 0=pine, 1=deciduous, 2=bush, 3=young sapling, 4=fruit tree
   const scale = G.cam.zoom > 16 ? 1.2 : 0.8;
   x = Math.round(x);
   y = Math.round(y);
@@ -1785,12 +1813,10 @@ function drawTree(ctx, x, y, variant) {
   ctx.ellipse(x+3, y+2, 5*scale, 2*scale, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // Trunk
-  ctx.fillStyle = '#5a3a20';
-  ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
-
   if (variant === 0) {
     // Pine tree - dark pointed
+    ctx.fillStyle = '#5a3a20';
+    ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
     ctx.fillStyle = '#1a5a1a';
     drawTriangle(ctx, x, y-18*scale, 8*scale, 8*scale);
     ctx.fillStyle = '#226622';
@@ -1799,6 +1825,8 @@ function drawTree(ctx, x, y, variant) {
     drawTriangle(ctx, x, y-8*scale, 12*scale, 8*scale);
   } else if (variant === 1) {
     // Deciduous - round
+    ctx.fillStyle = '#5a3a20';
+    ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
     ctx.fillStyle = '#2a7a2a';
     ctx.beginPath();
     ctx.arc(x, y-12*scale, 7*scale, 0, Math.PI*2);
@@ -1807,16 +1835,42 @@ function drawTree(ctx, x, y, variant) {
     ctx.beginPath();
     ctx.arc(x-2, y-14*scale, 5*scale, 0, Math.PI*2);
     ctx.fill();
-  } else {
-    // Bush
-    ctx.fillStyle = '#3a8a3a';
+  } else if (variant === 2) {
+    // Bush / Krummholz scrub - low and wide
+    ctx.fillStyle = '#4a6a20';
     ctx.beginPath();
-    ctx.arc(x, y-6*scale, 6*scale, 0, Math.PI*2);
+    ctx.arc(x, y-5*scale, 7*scale, 0, Math.PI*2);
     ctx.fill();
-    ctx.fillStyle = '#4a9a4a';
+    ctx.fillStyle = '#5a7a28';
     ctx.beginPath();
-    ctx.arc(x+2, y-8*scale, 4*scale, 0, Math.PI*2);
+    ctx.arc(x-3, y-7*scale, 5*scale, 0, Math.PI*2);
     ctx.fill();
+    ctx.fillStyle = '#3a5a18';
+    ctx.beginPath();
+    ctx.arc(x+3, y-6*scale, 4*scale, 0, Math.PI*2);
+    ctx.fill();
+  } else if (variant === 3) {
+    // Young sapling (reforested) - thin pine, lighter green
+    ctx.fillStyle = '#5a3a20';
+    ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
+    ctx.fillStyle = '#2a7a2a';
+    drawTriangle(ctx, x, y-14*scale, 6*scale, 7*scale);
+    ctx.fillStyle = '#38a038';
+    drawTriangle(ctx, x, y-10*scale, 8*scale, 7*scale);
+  } else if (variant === 4) {
+    // Fruit tree (orchard) - round canopy, pink/white blossom hint
+    ctx.fillStyle = '#7a4a28';
+    ctx.fillRect(x-1*scale, y-5*scale, 2*scale, 6*scale);
+    // Canopy
+    ctx.fillStyle = '#3a8a2a';
+    ctx.beginPath();
+    ctx.arc(x, y-13*scale, 7*scale, 0, Math.PI*2);
+    ctx.fill();
+    // Blossom dots
+    ctx.fillStyle = 'rgba(255,200,200,0.7)';
+    ctx.beginPath(); ctx.arc(x-2, y-15*scale, 2*scale, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3, y-12*scale, 1.5*scale, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x-1, y-11*scale, 1.5*scale, 0, Math.PI*2); ctx.fill();
   }
 }
 
