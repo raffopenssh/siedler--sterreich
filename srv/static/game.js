@@ -172,6 +172,19 @@ function esc(s) { const d=document.createElement('div'); d.textContent=s; return
   if (saved && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
       `Zuletzt: <a onclick="quickLogin()">${esc(savedName)}</a> — <a onclick="quickLogin()">Weiterspielen</a>`;
+    // Load active session to show invite link
+    GET('/api/player/'+saved+'/sessions').then(sessions => {
+      if (sessions?.length > 0) {
+        const s = sessions[0];
+        const inviteUrl = location.origin + '/join/' + s.invite_code;
+        document.getElementById('quick-rejoin').innerHTML =
+          `<div>Zuletzt: <a onclick="quickLogin()">${esc(savedName)}</a> — <a onclick="quickLogin()">Weiterspielen</a></div>` +
+          `<div class="invite-share">`+
+            `<span class="invite-label">⚔️ Freunde einladen:</span> `+
+            `<span class="invite-link" onclick="navigator.clipboard.writeText('${inviteUrl}');this.textContent='📋 Kopiert!';setTimeout(()=>this.textContent='${inviteUrl}',2000)">${inviteUrl}</span>`+
+          `</div>`;
+      }
+    }).catch(()=>{});
   }
 
   // Check invite in URL
