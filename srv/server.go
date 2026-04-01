@@ -1,6 +1,7 @@
 package srv
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -111,7 +112,32 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/cadastre/", s.handleCadastreProxy)
 
 	slog.Info("starting Siedler Österreich", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, gzipMiddleware(mux))
+}
+
+// ---- Gzip Middleware ----
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.gz.Write(b)
+}
+
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		defer gz.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, gz: gz}, r)
+	})
 }
 
 // ---- Helpers ----

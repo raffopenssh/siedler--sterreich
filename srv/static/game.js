@@ -649,6 +649,11 @@ function geoContains(geom, lon, lat) {
   for (const ring of rings) { if (pip(lon, lat, ring)) return true; }
   return false;
 }
+function polyCentroid(ring) {
+  let sx=0,sy=0;
+  for (const c of ring) { sx+=c[0]; sy+=c[1]; }
+  return [sx/ring.length, sy/ring.length];
+}
 function pip(x, y, poly) {
   let inside = false;
   for (let i=0,j=poly.length-1; i<poly.length; j=i++) {
@@ -832,6 +837,14 @@ async function startGameWithLoading() {
   setLoadProgress(45);
   await fetchKGPolygonsBlocking();
   buildEZIndex();
+  // If parcels were empty (bbox failed) but we loaded polygon data, synthesize point parcels
+  if (G.parcels.length === 0 && G.parcelPolys.length > 0) {
+    for (const f of G.parcelPolys) {
+      const p = f.properties;
+      const c = polyCentroid(f.geometry.coordinates[0]);
+      G.parcels.push({type:'Feature', properties:{...p, lon:c[0], lat:c[1]}, geometry:{type:'Point', coordinates:c}});
+    }
+  }
   setLoadStep('ls-kg', 'done');
   setLoadProgress(65);
 
@@ -922,6 +935,21 @@ async function loadParcels() {
       }));
     }
   } catch(e) { console.error(e); }
+
+  // Fallback: if bbox returned nothing, discover KGs from municipality and load polygons directly
+  if (G.parcels.length === 0 && G.session.municipality_name) {
+    try {
+      const res = await GET(CAD+'/search/kg?gemeinde='+encodeURIComponent(G.session.municipality_name)+'&limit=50');
+      const kgs = res.data || [];
+      for (const kg of kgs) {
+        if (kg.kg_code && !G.kgsLoaded.has(kg.kg_code)) {
+          G.kgsLoaded.add(kg.kg_code);
+          G.municipalityKGs = G.municipalityKGs || [];
+          G.municipalityKGs.push(kg.kg_code);
+        }
+      }
+    } catch(e) { console.error('KG lookup fallback failed:', e); }
+  }
 }
 
 async function loadMoreParcels() {
@@ -949,6 +977,11 @@ async function fetchKGPolygonsBlocking() {
   for (const f of G.parcels) {
     const kg = f.properties.kg_code;
     if (kg && !G.kgsLoaded.has(kg)) kgs.add(kg);
+  }
+  // Also include KGs discovered via municipality fallback
+  if (G.municipalityKGs) {
+    for (const kg of G.municipalityKGs) kgs.add(kg);
+    G.municipalityKGs = null;
   }
   const total = kgs.size || 1;
   let done = 0;
@@ -1948,9 +1981,9 @@ function initGameInput() {
   document.getElementById('btn-zoomin').onclick = () => { G.cam.zoom=Math.min(20,G.cam.zoom+0.5); render(); renderMini(); };
   document.getElementById('btn-zoomout').onclick = () => { G.cam.zoom=Math.max(13,G.cam.zoom-0.5); render(); renderMini(); };
   document.getElementById('btn-gearth').onclick = () => {
-    // Map game zoom (13-20) to Google Earth eye altitude (roughly 10000m at z13, 50m at z20)
-    const alt = Math.round(10000 / Math.pow(2, G.cam.zoom - 13));
-    const url = 'https://earth.google.com/web/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+alt+'a,0h,0t,0r';
+    // Open Google Maps satellite view at current camera position
+    const z = Math.round(G.cam.zoom);
+    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+z+'z/data=!3m1!1e1';
     window.open(url, '_blank');
   };
 
