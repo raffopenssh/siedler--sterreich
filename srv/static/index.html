@@ -88,7 +88,7 @@
       </div>
       <div class="welcome-panel">
         <div class="name-row">
-          <input type="text" id="input-name" placeholder="Wähle Pseudonym..." maxlength="30" autocomplete="off">
+          <input type="text" id="input-name" placeholder="Dein Pseudonym..." maxlength="30" autocomplete="off">
           <button class="btn btn-small btn-reroll" id="btn-reroll" title="Neuer Vorschlag">🎲</button>
         </div>
         <div class="btn-row">
@@ -141,18 +141,32 @@
   <!-- ===================== LOADING ===================== -->
   <div id="screen-loading" class="screen">
     <div class="loading-wrap">
-      <div class="loading-castle">🏰</div>
+      <div class="loading-ring-area">
+        <svg class="loading-ring" viewBox="0 0 120 120">
+          <defs>
+            <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#4a9e38" />
+              <stop offset="50%" stop-color="#7ac44a" />
+              <stop offset="100%" stop-color="#d4a843" />
+            </linearGradient>
+          </defs>
+          <circle class="ring-bg" cx="60" cy="60" r="52" />
+          <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52" />
+          <!-- animated sparkle dots on the ring -->
+          <circle class="ring-sparkle" cx="60" cy="8" r="2.5">
+            <animateTransform attributeName="transform" type="rotate" from="0 60 60" to="360 60 60" dur="3s" repeatCount="indefinite"/>
+          </circle>
+        </svg>
+        <div class="loading-ring-pct" id="loading-ring-pct">0%</div>
+      </div>
       <h2 class="loading-title">Siedlung wird vorbereitet...</h2>
       <div class="loading-muni" id="loading-muni"></div>
-      <div class="loading-bar-wrap">
-        <div class="loading-bar" id="loading-bar"></div>
-      </div>
-      <div class="loading-countdown" id="loading-countdown"></div>
+      <div class="loading-sub" id="loading-sub"></div>
       <div class="loading-steps" id="loading-steps">
         <div class="load-step" id="ls-session"><span class="ls-icon">⏳</span> Spielsitzung erstellen</div>
         <div class="load-step" id="ls-parcels"><span class="ls-icon">⏳</span> Kataster-Parzellen &amp; EZ-Daten laden</div>
         <div class="load-step" id="ls-kg"><span class="ls-icon">⏳</span> Polygone, Gebäude &amp; Nutzungsflächen laden</div>
-        <div class="load-step" id="ls-treasures"><span class="ls-icon">⏳</span> Schätze &amp; Aufgaben platzieren</div>
+        <div class="load-step" id="ls-treasures"><span class="ls-icon">⏳</span> Arten &amp; Schätze platzieren</div>
         <div class="load-step" id="ls-ready"><span class="ls-icon">⏳</span> Karte rendern</div>
       </div>
       <div class="loading-info" id="loading-info">
@@ -169,16 +183,16 @@
           <div class="tip-text"><b>Wirtschaft &amp; Strategie</b><br>Du startest mit 10.000 Münzen. Kaufe klug — dicht bebaute Parzellen kosten mehr als ländliche Flächen!</div>
         </div>
         <div class="loading-tip" id="tip-3">
-          <div class="tip-icon">💎</div>
-          <div class="tip-text"><b>Versteckte Schätze</b><br>Auf der Karte findest du Schatztruhen mit Münzen, Erfahrungspunkten und seltenen Gegenständen. Klicke sie an!</div>
+          <div class="tip-icon">🦎</div>
+          <div class="tip-text"><b>Seltene Arten entdecken</b><br>Auf der Karte verstecken sich bedrohte Tierarten aus der Europäischen Roten Liste — Luchs, Steinadler, Apollofalter und mehr. Finde sie und lerne über Artenschutz!</div>
         </div>
         <div class="loading-tip" id="tip-4">
           <div class="tip-icon">⚔️</div>
           <div class="tip-text"><b>Multiplayer</b><br>Lade Freunde über einen Einladungslink ein und siedelt gemeinsam — oder gegeneinander — in derselben Gemeinde!</div>
         </div>
         <div class="loading-tip" id="tip-5">
-          <div class="tip-icon">📋</div>
-          <div class="tip-text"><b>Einlagezahl (EZ)</b><br>Im Grundbuch fasst eine EZ mehrere Parzellen zusammen. Kaufe eine ganze EZ auf einmal und spare 20% — eine mächtige Strategie!</div>
+          <div class="tip-icon">🐟</div>
+          <div class="tip-text"><b>Europäische Rote Liste</b><br>Die Artenfunde basieren auf der EU-Roten-Liste gefährdeter Arten. Der Huchen (stark gefährdet) und der Sterlet (gefährdet) leben in Österreichs Flüssen — hilf, ihren Lebensraum zu schützen!</div>
         </div>
       </div>
       <div class="loading-invite" id="loading-invite" style="display:none">

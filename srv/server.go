@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -206,24 +207,16 @@ func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?error=invalid_token", http.StatusFound)
 		return
 	}
-	// Set cookie and redirect
-	http.SetCookie(w, &http.Cookie{
-		Name:     "player_id",
-		Value:    player.ID,
-		Path:     "/",
-		MaxAge:   86400 * 365,
-		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     "player_name",
-		Value:    player.Name,
-		Path:     "/",
-		MaxAge:   86400 * 365,
-		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-	})
-	http.Redirect(w, r, "/", http.StatusFound)
+	// Find player's most recent session
+	sessions, _ := s.Q.GetPlayerSessions(r.Context(), player.ID)
+	q := url.Values{}
+	q.Set("pid", player.ID)
+	q.Set("pname", player.Name)
+	q.Set("rejoin", token)
+	if len(sessions) > 0 {
+		q.Set("sid", sessions[0].ID)
+	}
+	http.Redirect(w, r, "/?"+q.Encode(), http.StatusFound)
 }
 
 // ---- Auth ----
@@ -984,18 +977,25 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 
 	// Get treasure value and award
 	var value int64
-	var ttype string
+	var ttype, speciesName, speciesGerman, speciesCat string
 	s.DB.QueryRowContext(r.Context(),
-		"SELECT value, treasure_type FROM treasures WHERE id = ?", req.TreasureID).Scan(&value, &ttype)
+		"SELECT value, treasure_type, species_name, species_german, species_category FROM treasures WHERE id = ?", req.TreasureID).Scan(&value, &ttype, &speciesName, &speciesGerman, &speciesCat)
 
 	if ttype == "xp" {
 		s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{Xp: value, ID: req.PlayerID})
 	} else {
+		// species and coins both award coins
 		s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{Coins: value, ID: req.PlayerID})
 	}
 
 	player, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
-	jsonResp(w, map[string]any{"success": true, "type": ttype, "value": value, "player": player})
+	resp := map[string]any{"success": true, "type": ttype, "value": value, "player": player}
+	if speciesName != "" {
+		resp["species_name"] = speciesName
+		resp["species_german"] = speciesGerman
+		resp["species_category"] = speciesCat
+	}
+	jsonResp(w, resp)
 }
 
 func (s *Server) handleCompleteChallenge(w http.ResponseWriter, r *http.Request) {
@@ -1380,19 +1380,72 @@ func calculatePrice(areaSqm float64, landuse string, buildingCount int, totalBui
 	return price
 }
 
-func (s *Server) generateTreasures(ctx context.Context, sessionID string, lon, lat float64) {
-	types := []string{"coins", "coins", "coins", "xp", "xp", "rare_seed", "ancient_map"}
-	values := []int64{50, 100, 200, 75, 150, 500, 1000}
+// European Red List species found in Austria — used as treasure encounters
+var redListSpecies = []struct {
+	Name, German, Category, Group string
+	Value                         int64
+}{
+	{"Lynx lynx", "Eurasischer Luchs", "LC", "mammal", 300},
+	{"Barbastella barbastellus", "Mopsfledermaus", "VU", "mammal", 400},
+	{"Cricetus cricetus", "Feldhamster", "LC", "mammal", 250},
+	{"Bison bonasus", "Wisent", "VU", "mammal", 500},
+	{"Aquila chrysaetos", "Steinadler", "LC", "bird", 350},
+	{"Bubo bubo", "Uhu", "LC", "bird", 300},
+	{"Ciconia nigra", "Schwarzstorch", "LC", "bird", 350},
+	{"Otis tarda", "Großtrappe", "LC", "bird", 400},
+	{"Tetrao urogallus", "Auerhahn", "LC", "bird", 350},
+	{"Coenonympha hero", "Wald-Wiesenvögelchen", "VU", "butterfly", 200},
+	{"Colias chrysotheme", "Goldene Acht", "VU", "butterfly", 200},
+	{"Parnassius apollo", "Apollofalter", "NT", "butterfly", 250},
+	{"Bombina bombina", "Rotbauchunke", "LC", "amphibian", 200},
+	{"Vipera ursinii", "Wiesenotter", "VU", "reptile", 350},
+	{"Triturus dobrogicus", "Donau-Kammmolch", "NT", "amphibian", 250},
+	{"Coenagrion ornatum", "Vogel-Azurjungfer", "NT", "dragonfly", 200},
+	{"Cordulegaster heros", "Große Quelljungfer", "NT", "dragonfly", 200},
+	{"Hucho hucho", "Huchen", "EN", "fish", 500},
+	{"Acipenser ruthenus", "Sterlet", "VU", "fish", 400},
+	{"Gulo gulo", "Vielfraß", "VU", "mammal", 450},
+}
 
-	for i := range types {
-		dLon := (float64(i)*0.001 - 0.003) + float64(i%3)*0.0005
-		dLat := (float64(i)*0.0008 - 0.002) + float64(i%2)*0.0004
+func (s *Server) generateTreasures(ctx context.Context, sessionID string, lon, lat float64) {
+	// Generate a mix: some classic coin/xp treasures + species encounters
+	type treasure struct {
+		tType                          string
+		value                          int64
+		speciesName, speciesGerman, speciesCat string
+	}
+	var treasures []treasure
+
+	// 3 classic treasures
+	treasures = append(treasures,
+		treasure{"coins", 100, "", "", ""},
+		treasure{"coins", 200, "", "", ""},
+		treasure{"xp", 150, "", "", ""},
+	)
+
+	// 7 species encounters (pick pseudo-random from list using session ID hash)
+	hash := uint64(0)
+	for _, c := range sessionID {
+		hash = hash*31 + uint64(c)
+	}
+	for i := 0; i < 7; i++ {
+		idx := int((hash + uint64(i)*7919) % uint64(len(redListSpecies)))
+		sp := redListSpecies[idx]
+		treasures = append(treasures, treasure{"species", sp.Value, sp.Name, sp.German, sp.Category})
+	}
+
+	for i, t := range treasures {
+		dLon := (float64(i)*0.0012 - 0.005) + float64(i%3)*0.0006
+		dLat := (float64(i)*0.0009 - 0.004) + float64(i%2)*0.0005
 		s.Q.CreateTreasure(ctx, dbgen.CreateTreasureParams{
-			SessionID:    sessionID,
-			Lon:          lon + dLon,
-			Lat:          lat + dLat,
-			TreasureType: types[i],
-			Value:        values[i],
+			SessionID:       sessionID,
+			Lon:             lon + dLon,
+			Lat:             lat + dLat,
+			TreasureType:    t.tType,
+			Value:           t.value,
+			SpeciesName:     t.speciesName,
+			SpeciesGerman:   t.speciesGerman,
+			SpeciesCategory: t.speciesCat,
 		})
 	}
 }

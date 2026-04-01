@@ -1,0 +1,218 @@
+[
+  {
+    "scientificName": "Bombina bombina",
+    "germanName": "Rotbauchunke",
+    "group": "Amphibians_Reptiles",
+    "category": "LC",
+    "spriteType": "amphibian",
+    "spriteVariant": "frog",
+    "habitat": "Within Europe this species is associated with lowland areas of marshy or grassy wetlands, often along river valleys, with small, shallow, often-tempor"
+  },
+  {
+    "scientificName": "Triturus dobrogicus",
+    "germanName": "Donau-Kammmolch",
+    "group": "Amphibians_Reptiles",
+    "category": "NT",
+    "spriteType": "amphibian",
+    "spriteVariant": "newt",
+    "habitat": "It is found in open habitats with mixed deciduous forests and groves, bushlands, flooded meadows and swamps, and also in agricultural landscapes and v"
+  },
+  {
+    "scientificName": "Vipera ursinii",
+    "germanName": "Wiesenotter",
+    "group": "Amphibians_Reptiles",
+    "category": "VU",
+    "spriteType": "reptile",
+    "spriteVariant": "snake",
+    "habitat": "It is primarily associated with open meadows and hillsides. Upland subspecies are generally found on well drained rocky hillsides, steppe and meadows,"
+  },
+  {
+    "scientificName": "Aquila chrysaetos",
+    "germanName": "Steinadler",
+    "group": "Birds",
+    "category": "LC",
+    "spriteType": "bird",
+    "spriteVariant": "eagle",
+    "habitat": "This is the most widespread of the Aquila eagles, ranging across the Nearctic and Palearctic (70\u00b0N to 20\u00b0S). It is uncommon to scarce across its range"
+  },
+  {
+    "scientificName": "Bubo bubo",
+    "germanName": "Uhu",
+    "group": "Birds",
+    "category": "LC",
+    "spriteType": "bird",
+    "spriteVariant": "owl",
+    "habitat": "This species inhabits mainly rocky country with cliffs and ravines, caves, patches of woodland, scattered trees or groves, generally in undisturbed wi"
+  },
+  {
+    "scientificName": "Ciconia nigra",
+    "germanName": "Schwarzstorch",
+    "group": "Birds",
+    "category": "LC",
+    "spriteType": "bird",
+    "spriteVariant": "stork",
+    "habitat": "The species inhabits old, undisturbed, open forests&#160;from sea-level up to mountainous regions (e.g. 2,000\u20132,500 m in altitude) (Snow and Perrins 1"
+  },
+  {
+    "scientificName": "Otis tarda",
+    "germanName": "Gro\u00dftrappe",
+    "group": "Birds",
+    "category": "LC",
+    "spriteType": "bird",
+    "spriteVariant": "bustard",
+    "habitat": "The species occurs in open, flat, undulating short-grass plains, usually clear of trees, although it uses cork oak (<em>Quercus suber</em>) savanna an"
+  },
+  {
+    "scientificName": "Tetrao urogallus",
+    "germanName": "Auerhahn",
+    "group": "Birds",
+    "category": "LC",
+    "spriteType": "bird",
+    "spriteVariant": "capercaillie",
+    "habitat": "The species inhabits forest and woodland, mainly coniferous or mixed coniferous deciduous (de Juana and Kirwan 2012). It prefers extensive areas of ol"
+  },
+  {
+    "scientificName": "Coenonympha hero",
+    "germanName": "Wald-Wiesenv\u00f6gelchen",
+    "group": "Butterflies",
+    "category": "VU",
+    "spriteType": "butterfly",
+    "spriteVariant": "butterfly_brown",
+    "habitat": "The Scarce Heath occurs in damp to wet grassy meadows in or at the edges of woods. Sometimes, they occur away from woods in drier places or in flower-"
+  },
+  {
+    "scientificName": "Colias chrysotheme",
+    "germanName": "Goldene Acht",
+    "group": "Butterflies",
+    "category": "VU",
+    "spriteType": "butterfly",
+    "spriteVariant": "butterfly_yellow",
+    "habitat": "The Lesser Clouded Yellow is found on open, dry, steppe-like grassland and rocky slopes. Its main foodplant is the Milk-vetch (Astragalus austriacus),"
+  },
+  {
+    "scientificName": "Lopinga achine",
+    "germanName": "Gelbringfalter",
+    "group": "Butterflies",
+    "category": "VU",
+    "spriteType": "butterfly",
+    "spriteVariant": "butterfly_ring",
+    "habitat": "The Woodland Brown is fond of warm, open places in damp, deciduous or mixed woods with well-developed shrub and herbaceous layers. These habitats may "
+  },
+  {
+    "scientificName": "Parnassius apollo",
+    "germanName": "Apollofalter",
+    "group": "Butterflies",
+    "category": "NT",
+    "spriteType": "butterfly",
+    "spriteVariant": "butterfly_white",
+    "habitat": "The Apollo occurs in mountainous areas on steep, sunny slopes with sparse vegetation. In Europe, there are many different sub-species, forms and aberr"
+  },
+  {
+    "scientificName": "Coenagrion ornatum",
+    "germanName": "Vogel-Azurjungfer",
+    "group": "Dragonflies",
+    "category": "NT",
+    "spriteType": "dragonfly",
+    "spriteVariant": "dragonfly",
+    "habitat": "Coenagrion ornatum is a specialized species confined to seepage waters with a thin water film and small sunny brooks, streamlets and ditches with orga"
+  },
+  {
+    "scientificName": "Cordulegaster heros",
+    "germanName": "Gro\u00dfe Quelljungfer",
+    "group": "Dragonflies",
+    "category": "NT",
+    "spriteType": "dragonfly",
+    "spriteVariant": "dragonfly_large",
+    "habitat": "C. heros is found at shaded streams in mountains and hills, with sandy and rocky beds (Lang et al. 2001)."
+  },
+  {
+    "scientificName": "Acipenser ruthenus",
+    "germanName": "Sterlet",
+    "group": "Freshwater_Fishes",
+    "category": "VU",
+    "spriteType": "fish",
+    "spriteVariant": "sturgeon",
+    "habitat": "The Sterlet is found in large rivers, usually in the current and in deep water. As water level rises, it moves to flooded areas to feed. It spawns on "
+  },
+  {
+    "scientificName": "Hucho hucho",
+    "germanName": "Huchen",
+    "group": "Freshwater_Fishes",
+    "category": "EN",
+    "spriteType": "fish",
+    "spriteVariant": "huchen",
+    "habitat": "Habitat: Montane and submontane reaches of large streams and swift rivers with gravel beds, well oxygenated, fast-flowing water and temperatures rarel"
+  },
+  {
+    "scientificName": "Barbastella barbastellus",
+    "germanName": "Mopsfledermaus",
+    "group": "Mammals",
+    "category": "VU",
+    "spriteType": "mammal",
+    "spriteVariant": "bat",
+    "habitat": "Forages in mature woodland, woodland edge (and agricultural edge). Feeds on small moths. Summer roosts: usually older mature woodland with maternity s"
+  },
+  {
+    "scientificName": "Bison bonasus",
+    "germanName": "Wisent",
+    "group": "Mammals",
+    "category": "VU",
+    "spriteType": "mammal",
+    "spriteVariant": "bison",
+    "habitat": "Optimal habitats for the European bison are deciduous and mixed forests, but the range should include about 20% of grassland habitats (meadows) (Pucek"
+  },
+  {
+    "scientificName": "Cricetus cricetus",
+    "germanName": "Feldhamster",
+    "group": "Mammals",
+    "category": "LC",
+    "spriteType": "mammal",
+    "spriteVariant": "hamster",
+    "habitat": "Its original habitat was fertile steppe and grassland, but it has successfully spread into a variety of anthropogenic habitats including meadows, crop"
+  },
+  {
+    "scientificName": "Gulo gulo",
+    "germanName": "Vielfra\u00df",
+    "group": "Mammals",
+    "category": "VU",
+    "spriteType": "mammal",
+    "spriteVariant": "wolverine",
+    "habitat": "Wolverines inhabit a variety of habitats in the alpine, tundra, taiga, and boreal forest zones. They are found in coniferous, mixed, and deciduous woo"
+  },
+  {
+    "scientificName": "Lynx lynx",
+    "germanName": "Eurasischer Luchs",
+    "group": "Mammals",
+    "category": "LC",
+    "spriteType": "mammal",
+    "spriteVariant": "lynx",
+    "habitat": "Throughout Europe and Siberia, lynx are associated primarily with forested areas which have good ungulate populations (Nowell and Jackson 1996). In Ce"
+  },
+  {
+    "scientificName": "Myotis emarginatus",
+    "germanName": "Wimperfledermaus",
+    "group": "Mammals",
+    "category": "LC",
+    "spriteType": "mammal",
+    "spriteVariant": "bat",
+    "habitat": "It forages over scrub and grassland. Diet unique in Europe as it mainly feeds on spiders and flies. In summer, it roosts in underground habitats and, "
+  },
+  {
+    "scientificName": "Aesculus hippocastanum",
+    "germanName": "Rosskastanie",
+    "group": "Medicinal_Plants",
+    "category": "NT",
+    "spriteType": "tree",
+    "spriteVariant": "chestnut",
+    "habitat": "Horse Chestnut is a long lived monoecious broad-leaved deciduous tree found in deciduous and broad-leaved forests of the Pindus Mountain mixed forests"
+  },
+  {
+    "scientificName": "Fraxinus excelsior",
+    "germanName": "Gemeine Esche",
+    "group": "Medicinal_Plants",
+    "category": "NT",
+    "spriteType": "tree",
+    "spriteVariant": "ash_tree",
+    "habitat": "This is a wind pollinated tree of deciduous broadleaved Tilio-Acerion forests but also found in scrub, hedgerows, rock scars and cliffs, and stable sc"
+  }
+]

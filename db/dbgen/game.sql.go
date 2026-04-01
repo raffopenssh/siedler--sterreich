@@ -219,15 +219,18 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) er
 }
 
 const createTreasure = `-- name: CreateTreasure :exec
-INSERT INTO treasures (session_id, lon, lat, treasure_type, value) VALUES (?, ?, ?, ?, ?)
+INSERT INTO treasures (session_id, lon, lat, treasure_type, value, species_name, species_german, species_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateTreasureParams struct {
-	SessionID    string  `json:"session_id"`
-	Lon          float64 `json:"lon"`
-	Lat          float64 `json:"lat"`
-	TreasureType string  `json:"treasure_type"`
-	Value        int64   `json:"value"`
+	SessionID       string  `json:"session_id"`
+	Lon             float64 `json:"lon"`
+	Lat             float64 `json:"lat"`
+	TreasureType    string  `json:"treasure_type"`
+	Value           int64   `json:"value"`
+	SpeciesName     string  `json:"species_name"`
+	SpeciesGerman   string  `json:"species_german"`
+	SpeciesCategory string  `json:"species_category"`
 }
 
 func (q *Queries) CreateTreasure(ctx context.Context, arg CreateTreasureParams) error {
@@ -237,6 +240,9 @@ func (q *Queries) CreateTreasure(ctx context.Context, arg CreateTreasureParams) 
 		arg.Lat,
 		arg.TreasureType,
 		arg.Value,
+		arg.SpeciesName,
+		arg.SpeciesGerman,
+		arg.SpeciesCategory,
 	)
 	return err
 }
@@ -953,7 +959,7 @@ func (q *Queries) GetSessionPlayers(ctx context.Context, sessionID string) ([]Pl
 }
 
 const getSessionTreasures = `-- name: GetSessionTreasures :many
-SELECT id, session_id, lon, lat, treasure_type, value, found_by, found_at, created_at FROM treasures WHERE session_id = ? AND found_by IS NULL
+SELECT id, session_id, lon, lat, treasure_type, value, found_by, found_at, created_at, species_name, species_german, species_category FROM treasures WHERE session_id = ? AND found_by IS NULL
 `
 
 func (q *Queries) GetSessionTreasures(ctx context.Context, sessionID string) ([]Treasure, error) {
@@ -975,6 +981,9 @@ func (q *Queries) GetSessionTreasures(ctx context.Context, sessionID string) ([]
 			&i.FoundBy,
 			&i.FoundAt,
 			&i.CreatedAt,
+			&i.SpeciesName,
+			&i.SpeciesGerman,
+			&i.SpeciesCategory,
 		); err != nil {
 			return nil, err
 		}

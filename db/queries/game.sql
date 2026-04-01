@@ -75,7 +75,7 @@ SELECT * FROM challenges WHERE session_id = ? AND player_id = ? AND completed = 
 UPDATE challenges SET completed = 1, completed_at = CURRENT_TIMESTAMP WHERE id = ?;
 
 -- name: CreateTreasure :exec
-INSERT INTO treasures (session_id, lon, lat, treasure_type, value) VALUES (?, ?, ?, ?, ?);
+INSERT INTO treasures (session_id, lon, lat, treasure_type, value, species_name, species_german, species_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetSessionTreasures :many
 SELECT * FROM treasures WHERE session_id = ? AND found_by IS NULL;

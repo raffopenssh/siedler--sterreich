@@ -232,12 +232,32 @@ function setUrlParams(obj) {
   const savedName = getUrlParam('pname');
 
   // Pre-fill name: from URL or random suggestion
-  inp.value = savedName || randomName();
+  inp.value = savedName || '';
   document.getElementById('btn-reroll').onclick = () => { inp.value = randomName(); inp.focus(); };
 
   if (savedPid && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
       `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b> gespielt — <a onclick="quickLogin()">Weiter ▸</a>`;
+  }
+
+  // Auto-rejoin: if sid is in URL, go directly to game
+  const autoSid = getUrlParam('sid');
+  if (savedPid && autoSid) {
+    (async () => {
+      try {
+        const p = await GET('/api/player/'+savedPid);
+        if (p.error) return;
+        G.player = p;
+        const sess = await GET('/api/session/'+autoSid);
+        if (sess.error) return;
+        G.session = sess;
+        show('loading');
+        document.getElementById('loading-muni').textContent = '📍 ' + (G.session.municipality_name||'');
+        startTipRotation();
+        startLoadingCountdown(20);
+        await startGameWithLoading();
+      } catch(e) { console.error('auto-rejoin failed', e); }
+    })();
   }
 
   async function registerAndProceed(goLucky) {
@@ -830,9 +850,21 @@ function setLoadStep(id, state) {
   if (state) el.classList.add(state);
 }
 
+let _loadPct = 0;
 function setLoadProgress(pct) {
-  const bar = document.getElementById('loading-bar');
-  if (bar) bar.style.width = Math.min(100, pct) + '%';
+  _loadPct = Math.min(100, pct);
+  // Circular ring
+  const ring = document.getElementById('ring-fg');
+  if (ring) {
+    const circumference = 2 * Math.PI * 52; // ~326.7
+    ring.style.strokeDashoffset = circumference * (1 - _loadPct / 100);
+  }
+  const pctEl = document.getElementById('loading-ring-pct');
+  if (pctEl) pctEl.textContent = Math.round(_loadPct) + '%';
+}
+function setLoadSub(text) {
+  const el = document.getElementById('loading-sub');
+  if (el) el.textContent = text;
 }
 
 let tipInterval = null;
@@ -850,28 +882,36 @@ function stopTipRotation() {
   if (tipInterval) { clearInterval(tipInterval); tipInterval = null; }
 }
 
-let _countdownInterval = null;
-function startLoadingCountdown(estimatedSec) {
-  if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
-  const el = document.getElementById('loading-countdown');
-  if (!el) return;
-  let remaining = estimatedSec;
+// Smooth progress animation — interpolates toward target
+let _smoothProgressRAF = null;
+let _smoothPctCurrent = 0;
+function startSmoothProgress() {
   function tick() {
-    if (!el) return;
-    if (remaining > 0) {
-      el.textContent = '⏱️ Etwa noch ' + remaining + ' Sekunde' + (remaining === 1 ? '' : 'n') + '...';
-      remaining--;
-    } else {
-      el.textContent = '⏳ Fast fertig...';
+    if (Math.abs(_smoothPctCurrent - _loadPct) > 0.2) {
+      _smoothPctCurrent += (_loadPct - _smoothPctCurrent) * 0.08;
+      const ring = document.getElementById('ring-fg');
+      if (ring) {
+        const circumference = 2 * Math.PI * 52;
+        ring.style.strokeDashoffset = circumference * (1 - _smoothPctCurrent / 100);
+      }
+      const pctEl = document.getElementById('loading-ring-pct');
+      if (pctEl) pctEl.textContent = Math.round(_smoothPctCurrent) + '%';
     }
+    _smoothProgressRAF = requestAnimationFrame(tick);
   }
   tick();
-  _countdownInterval = setInterval(tick, 1000);
 }
+function stopSmoothProgress() {
+  if (_smoothProgressRAF) { cancelAnimationFrame(_smoothProgressRAF); _smoothProgressRAF = null; }
+}
+
+// Legacy compatibility
+function startLoadingCountdown(sec) { startSmoothProgress(); }
 function stopLoadingCountdown() {
-  if (_countdownInterval) { clearInterval(_countdownInterval); _countdownInterval = null; }
-  const el = document.getElementById('loading-countdown');
-  if (el) el.textContent = '✅ Bereit!';
+  stopSmoothProgress();
+  // Snap to 100%
+  setLoadProgress(100);
+  setLoadSub('✅ Bereit!');
 }
 
 function showLoadingInvite(inviteCode) {
@@ -989,14 +1029,17 @@ async function startGameWithLoading() {
 
   // Step 2: Load parcels
   setLoadStep('ls-parcels', 'active');
-  setLoadProgress(20);
+  setLoadProgress(15);
+  setLoadSub('Parzellen-Punkte werden geladen...');
   await loadParcels();
+  setLoadSub(G.parcels.length + ' Parzellen gefunden');
   setLoadStep('ls-parcels', 'done');
-  setLoadProgress(40);
+  setLoadProgress(25);
 
-  // Step 3: Load KG polygons
+  // Step 3: Load KG polygons — the longest step, with fine-grained progress
   setLoadStep('ls-kg', 'active');
-  setLoadProgress(45);
+  setLoadProgress(28);
+  setLoadSub('Katastralgemeinden werden ermittelt...');
   await fetchKGPolygonsBlocking();
   buildEZIndex();
   // If parcels were empty (bbox failed) but we loaded polygon data, synthesize point parcels
@@ -1007,19 +1050,24 @@ async function startGameWithLoading() {
       G.parcels.push({type:'Feature', properties:{...p, lon:c[0], lat:c[1]}, geometry:{type:'Point', coordinates:c}});
     }
   }
+  setLoadSub(G.parcelPolys.length + ' Polygon-Geometrien, ' + G.buildingFootprints.length + ' Gebäude geladen');
   setLoadStep('ls-kg', 'done');
-  setLoadProgress(65);
+  setLoadProgress(75);
 
-  // Step 4: Load treasures, challenges, etc.
+  // Step 4: Load treasures/species, challenges, etc.
   setLoadStep('ls-treasures', 'active');
-  setLoadProgress(70);
+  setLoadProgress(78);
+  setLoadSub('Bedrohte Arten und Schätze werden platziert...');
   await Promise.all([loadClaimed(), loadOffers(), loadTreasures(), loadChallenges(), loadPlayers(), loadBio(), loadChat()]);
+  const speciesCount = (G.treasures||[]).filter(t => t.treasure_type === 'species').length;
+  setLoadSub(speciesCount + ' seltene Arten versteckt, ' + (G.treasures||[]).length + ' Schätze total');
   setLoadStep('ls-treasures', 'done');
-  setLoadProgress(85);
+  setLoadProgress(88);
 
   // Step 5: Render
   setLoadStep('ls-ready', 'active');
-  setLoadProgress(90);
+  setLoadProgress(92);
+  setLoadSub('Karte wird gerendert...');
 
   // Pre-generate grass pattern
   createGrassPattern();
@@ -1027,6 +1075,7 @@ async function startGameWithLoading() {
 
   setLoadStep('ls-ready', 'done');
   setLoadProgress(100);
+  setLoadSub('✅ Bereit — Viel Spaß beim Siedeln!');
 
   // Ensure loading screen shows for at least 4s so users can read tips
   const elapsed = Date.now() - (G.loadStart || 0);
@@ -1181,7 +1230,9 @@ async function fetchKGPolygonsBlocking() {
           }
         }
         done++;
-        setLoadProgress(45 + Math.floor((done/total)*20));
+        const kgPct = done / total;
+        setLoadProgress(28 + Math.floor(kgPct * 47)); // 28–75% range
+        setLoadSub(`KG ${done}/${total} — ${G.parcelPolys.length} Parzellen, ${G.buildingFootprints.length} Gebäude, ${G.landusePolys.length} Nutzungen`);
       }).catch(e => { console.error('KG fetch failed:', kg, e); done++; })
     );
   }
@@ -1629,27 +1680,7 @@ function drawBuildingFootprints(ctx) {
     ctx.lineWidth = 0.7;
     ctx.stroke();
 
-    // Windows (if building is large enough)
-    if (bw > 12 && bh > 10 && zoom >= 17) {
-      const cx = (minX+maxX)/2;
-      const cy = (minY+maxY)/2 - roofOff;
-      ctx.fillStyle = '#e8d880';
-      const ws = Math.max(1.5, Math.min(3, bw*0.06));
-      const gap = ws * 3;
-      const count = Math.min(5, Math.floor(bw / (gap)));
-      const startX = cx - (count-1)*gap/2;
-      for (let i=0; i<count; i++) {
-        ctx.fillRect(Math.round(startX + i*gap - ws/2), Math.round(cy - ws/2), ws, ws);
-      }
-    }
 
-    // Door on larger buildings
-    if (bw > 14 && bh > 12 && zoom >= 17) {
-      ctx.fillStyle = '#3a2818';
-      const dw = Math.max(2, Math.min(3.5, bw*0.08));
-      const dh = dw * 1.4;
-      ctx.fillRect(Math.round((minX+maxX)/2 - dw/2), Math.round(maxY - roofOff - dh - 1), dw, dh);
-    }
   }
 }
 
@@ -1682,16 +1713,116 @@ function drawParcelPoly(ctx, f, claimMap) {
 
   // Settlers-style fill with variation
   const hash = simpleHash(parcelId || '');
+  const isBiodiversity = claim?.converted_to === 'biodiversity';
+  const isForest = claim?.converted_to === 'forest';
   ctx.fillStyle = terrain[Math.abs(hash) % terrain.length];
   // More transparent when real landuse polys provide terrain backdrop
-  ctx.globalAlpha = G.landusePolys.length > 0 ? 0.35 : 0.85;
+  // Biodiversity parcels get higher opacity for vibrancy
+  ctx.globalAlpha = isBiodiversity
+    ? (G.landusePolys.length > 0 ? 0.55 : 0.95)
+    : (G.landusePolys.length > 0 ? 0.35 : 0.85);
   ctx.fill();
   ctx.globalAlpha = 1;
 
+  // Biodiversity: soft green glow overlay
+  if (isBiodiversity) {
+    const pulse = 0.12 + Math.sin(Date.now() / 2000 + Math.abs(hash) * 0.1) * 0.04;
+    ctx.fillStyle = `rgba(60,200,80,${pulse})`;
+    ctx.fill();
+  }
+
   // Border - thin dark line like terrain boundaries in Settlers
+  if (isBiodiversity) {
+    // Nature reserve border: thick green dashed line
+    ctx.save();
+    ctx.strokeStyle = '#2a9a3a';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    // Inner glow border
+    ctx.strokeStyle = 'rgba(100,230,120,0.35)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+  } else if (isForest) {
+    // Reforested: subtle green border
+    ctx.strokeStyle = 'rgba(40,120,50,0.6)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+  // Normal border on top
   ctx.strokeStyle = claim ? (G.pcolors[claim.player_id]||'#fff') : 'rgba(20,40,10,0.35)';
   ctx.lineWidth = claim ? 2 : 0.5;
   ctx.stroke();
+
+  // Biodiversity: extra wildflower/butterfly sprites and sparkle particles
+  if (isBiodiversity && (maxX - minX) > 6 && (maxY - minY) > 6) {
+    const zoom = G.cam.zoom;
+    const absHash = Math.abs(hash);
+    // At zoom >= 16, draw extra wildflowers and butterflies inside the parcel
+    if (zoom >= 16) {
+      const pxArea = (maxX - minX) * (maxY - minY);
+      const extraCount = Math.min(12, Math.max(3, Math.floor(pxArea / 400)));
+      for (let i = 0; i < extraCount; i++) {
+        const t = ((absHash + i * 6197) % 10000) / 10000;
+        const u = ((absHash + i * 4253) % 10000) / 10000;
+        const sx = minX + (maxX - minX) * (0.1 + t * 0.8);
+        const sy = minY + (maxY - minY) * (0.1 + u * 0.8);
+        if (!pip(sx, sy, pts)) continue;
+        // Tiny wildflowers
+        const flColors = ['#e8e040','#e060a0','#a060e0','#60a0e8','#e08040','#ff7070','#70e070'];
+        const fc = flColors[(absHash + i) % flColors.length];
+        const fs = zoom > 17 ? 1.0 : 0.65;
+        // Stem
+        ctx.strokeStyle = '#4a8a2a';
+        ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx + ((absHash+i)%3-1)*fs, sy - 5*fs);
+        ctx.stroke();
+        // Flower
+        ctx.fillStyle = fc;
+        ctx.beginPath();
+        ctx.arc(sx + ((absHash+i)%3-1)*fs, sy - 5*fs - 1*fs, 1.3*fs, 0, Math.PI*2);
+        ctx.fill();
+        // Extra butterfly every 4th sprite
+        if (i % 4 === 0) {
+          const bt = (Date.now() / 900 + absHash + i) % (Math.PI*2);
+          const bx = sx + Math.sin(bt) * 4*fs;
+          const by = sy - 10*fs + Math.cos(bt*1.3) * 2*fs;
+          const wing = Math.abs(Math.sin(Date.now()/180 + absHash + i)) * 2*fs + 0.8*fs;
+          ctx.fillStyle = flColors[(absHash + i + 3) % flColors.length];
+          ctx.beginPath(); ctx.ellipse(bx - wing*0.4, by, wing, 0.8*fs, -0.3, 0, Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(bx + wing*0.4, by, wing, 0.8*fs, 0.3, 0, Math.PI*2); ctx.fill();
+        }
+      }
+    }
+    // Animated sparkle particles (nature magic / healing) — visible at any zoom
+    const sparkCount = Math.min(5, Math.max(2, Math.floor((maxX-minX)*(maxY-minY) / 800)));
+    for (let i = 0; i < sparkCount; i++) {
+      const phase = (Date.now() / 1500 + absHash * 0.3 + i * 1.7) % 1.0; // 0..1 cycle
+      const t = ((absHash + i * 8831) % 10000) / 10000;
+      const sx = minX + (maxX - minX) * (0.15 + t * 0.7);
+      const baseY = maxY - (maxY - minY) * 0.15;
+      const sy = baseY - phase * (maxY - minY) * 0.8;
+      const sparkAlpha = phase < 0.2 ? phase / 0.2 : phase > 0.8 ? (1 - phase) / 0.2 : 1.0;
+      const sparkSize = 1.0 + Math.sin(Date.now() / 300 + i) * 0.4;
+      ctx.fillStyle = `rgba(200,255,180,${(sparkAlpha * 0.7).toFixed(2)})`;
+      ctx.beginPath();
+      ctx.arc(sx + Math.sin(Date.now() / 700 + i * 2) * 2, sy, sparkSize, 0, Math.PI*2);
+      ctx.fill();
+      // Sparkle cross
+      ctx.strokeStyle = `rgba(220,255,200,${(sparkAlpha * 0.5).toFixed(2)})`;
+      ctx.lineWidth = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(sx - sparkSize*1.5, sy);
+      ctx.lineTo(sx + sparkSize*1.5, sy);
+      ctx.moveTo(sx, sy - sparkSize*1.5);
+      ctx.lineTo(sx, sy + sparkSize*1.5);
+      ctx.stroke();
+    }
+  }
 
   // Draw building sprites on parcels with building landuse (only if no real footprints loaded)
   const parsed = parseLanduseSummary(p.landuse_summary);
@@ -1996,22 +2127,141 @@ function drawVineyardSprite(ctx, x, y, v) {
 function drawGardenSprite(ctx, x, y, v, seed) {
   const s = G.cam.zoom > 17 ? 1.0 : 0.7;
   x = Math.round(x); y = Math.round(y);
-  // Garden rows with vegetables
-  const rowColors = ['#3a7a2a','#4a8a3a','#5a6a2a','#3a8a30','#4a7a38'];
-  // Small raised bed patches
-  ctx.fillStyle = '#5a4a30'; // soil
-  ctx.fillRect(x - 5*s, y - 1*s, 10*s, 3*s);
-  // Plant tops
-  ctx.fillStyle = rowColors[v];
-  for (let j = -2; j <= 2; j++) {
+  // Pick a vegetable type based on seed for diversity
+  const vegType = (seed + v) % 8;
+
+  // Soil bed
+  ctx.fillStyle = '#5a4a30';
+  ctx.fillRect(x - 6*s, y - 1*s, 12*s, 3*s);
+  // Soil furrows
+  ctx.fillStyle = '#4a3a20';
+  ctx.fillRect(x - 6*s, y, 12*s, 0.5*s);
+
+  if (vegType === 0) {
+    // Tomatoes — green bush with red/orange fruit
+    for (let j = -2; j <= 2; j++) {
+      const ox = x + j*3*s;
+      ctx.fillStyle = '#3a7a2a';
+      ctx.beginPath(); ctx.arc(ox, y - 4*s, 2.2*s, 0, Math.PI*2); ctx.fill();
+      // Tomato fruits
+      ctx.fillStyle = j%2===0 ? '#e03030' : '#e86020';
+      ctx.beginPath(); ctx.arc(ox + 0.5*s, y - 2.5*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+    }
+    // Stake
+    ctx.strokeStyle = '#8a7050'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(x, y+1*s); ctx.lineTo(x, y-7*s); ctx.stroke();
+  } else if (vegType === 1) {
+    // Carrots — feathery green tops, orange root tips peeking out
+    for (let j = -2; j <= 2; j++) {
+      const ox = x + j*2.5*s;
+      // Feathery tops
+      ctx.strokeStyle = '#4a9a2a'; ctx.lineWidth = 0.7;
+      for (let k = -1; k <= 1; k++) {
+        ctx.beginPath(); ctx.moveTo(ox, y - 1*s);
+        ctx.lineTo(ox + k*1.5*s, y - 5*s - Math.abs(k)*s);
+        ctx.stroke();
+      }
+      // Orange root tip
+      ctx.fillStyle = '#e88020';
+      ctx.beginPath(); ctx.moveTo(ox - 0.8*s, y - 0.5*s);
+      ctx.lineTo(ox, y + 1.5*s);
+      ctx.lineTo(ox + 0.8*s, y - 0.5*s);
+      ctx.closePath(); ctx.fill();
+    }
+  } else if (vegType === 2) {
+    // Cabbage/Kohlrabi — round blue-green heads
+    for (let j = -2; j <= 1; j++) {
+      const ox = x + j*3.5*s + 1.5*s;
+      ctx.fillStyle = '#5a9a6a';
+      ctx.beginPath(); ctx.arc(ox, y - 2*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#6aaa7a';
+      ctx.beginPath(); ctx.arc(ox - 0.5*s, y - 3*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+      // Outer leaves
+      ctx.fillStyle = '#4a8a5a';
+      ctx.beginPath();
+      ctx.ellipse(ox + 2*s, y - 1*s, 1.5*s, 2*s, 0.4, 0, Math.PI*2);
+      ctx.fill();
+    }
+  } else if (vegType === 3) {
+    // Lettuce/Salat — bright light-green rosettes
+    for (let j = -2; j <= 2; j++) {
+      const ox = x + j*2.8*s;
+      ctx.fillStyle = '#7ac050';
+      ctx.beginPath(); ctx.arc(ox, y - 2.5*s, 2*s, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#8ad060';
+      ctx.beginPath(); ctx.arc(ox, y - 3.5*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+    }
+  } else if (vegType === 4) {
+    // Pumpkins/Zucchini — large yellow-orange on vine
+    // Vine
+    ctx.strokeStyle = '#3a7a20'; ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(x + j*3*s, y - 3*s, 2*s, 0, Math.PI*2);
-    ctx.fill();
-  }
-  // Occasional red/orange dot (tomato/pepper)
-  if (v % 2 === 0) {
-    ctx.fillStyle = (seed%2===0) ? '#e04040' : '#e08030';
-    ctx.beginPath(); ctx.arc(x + (seed%3-1)*3*s, y - 2*s, 1*s, 0, Math.PI*2); ctx.fill();
+    ctx.moveTo(x - 6*s, y - 1*s);
+    ctx.quadraticCurveTo(x, y - 3*s, x + 6*s, y - 1*s);
+    ctx.stroke();
+    // Big leaves
+    for (let j = -1; j <= 1; j++) {
+      ctx.fillStyle = '#3a8a28';
+      ctx.beginPath(); ctx.ellipse(x + j*4*s, y - 3*s, 2*s, 1.5*s, j*0.3, 0, Math.PI*2); ctx.fill();
+    }
+    // Pumpkins
+    ctx.fillStyle = '#e8a020';
+    ctx.beginPath(); ctx.ellipse(x - 2*s, y - 1*s, 2.5*s, 1.8*s, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#d09018';
+    ctx.beginPath(); ctx.ellipse(x + 3*s, y - 1*s, 2*s, 1.5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Stripes on pumpkin
+    ctx.strokeStyle = '#c08010'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x-2*s, y-2.8*s); ctx.lineTo(x-2*s, y+0.8*s); ctx.stroke();
+  } else if (vegType === 5) {
+    // Beans/Peas — climbing up sticks
+    for (let j = -1; j <= 1; j++) {
+      const ox = x + j*4*s;
+      // Stick
+      ctx.strokeStyle = '#8a7050'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ox, y+1*s); ctx.lineTo(ox, y-8*s); ctx.stroke();
+      // Winding vine
+      ctx.strokeStyle = '#4a8a30'; ctx.lineWidth = 0.8;
+      for (let k = 0; k < 4; k++) {
+        const ky = y - k*2*s;
+        ctx.beginPath();
+        ctx.moveTo(ox, ky);
+        ctx.quadraticCurveTo(ox + (k%2===0?2:-2)*s, ky - 1*s, ox, ky - 2*s);
+        ctx.stroke();
+      }
+      // Bean pods
+      ctx.fillStyle = '#4a9a30';
+      ctx.beginPath(); ctx.ellipse(ox + 1.5*s, y - 4*s, 0.8*s, 2*s, 0.3, 0, Math.PI*2); ctx.fill();
+    }
+  } else if (vegType === 6) {
+    // Sunflowers — tall with big yellow heads
+    for (let j = -1; j <= 1; j++) {
+      const ox = x + j*4*s;
+      const h = (8 + (seed+j)%3) * s;
+      // Stem
+      ctx.strokeStyle = '#4a8a30'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(ox, y); ctx.lineTo(ox, y - h); ctx.stroke();
+      // Leaves on stem
+      ctx.fillStyle = '#4a9a28';
+      ctx.beginPath(); ctx.ellipse(ox - 2*s, y - h*0.4, 2*s, 1*s, -0.4, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(ox + 2*s, y - h*0.6, 2*s, 1*s, 0.3, 0, Math.PI*2); ctx.fill();
+      // Flower head
+      ctx.fillStyle = '#e8c020';
+      ctx.beginPath(); ctx.arc(ox, y - h - 1*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+      // Center
+      ctx.fillStyle = '#8a6020';
+      ctx.beginPath(); ctx.arc(ox, y - h - 1*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+    }
+  } else {
+    // Radishes/Beets — small red/pink dots with tiny green tops
+    for (let j = -2; j <= 2; j++) {
+      const ox = x + j*2.5*s;
+      // Green tufts
+      ctx.fillStyle = '#4a8a30';
+      ctx.beginPath(); ctx.arc(ox, y - 3*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+      // Radish body poking out
+      ctx.fillStyle = j%2===0 ? '#d03050' : '#c84060';
+      ctx.beginPath(); ctx.arc(ox, y - 1*s, 1.3*s, 0, Math.PI*2); ctx.fill();
+    }
   }
 }
 
@@ -2129,25 +2379,44 @@ function drawForestSprites(ctx, claimMap) {
     let treeCount, variantFn;
     if (style === 'orchard') {
       // Orchards: sparser, always fruit tree
-      treeCount = Math.min(8, Math.max(1, Math.floor(area / 800)));
+      treeCount = Math.min(12, Math.max(2, Math.floor(area / 500)));
       variantFn = (i) => 4;
     } else if (style === 'krummholz') {
       // Krummholz: dense low scrub
-      treeCount = Math.min(12, Math.max(2, Math.floor(area / 400)));
+      treeCount = Math.min(20, Math.max(3, Math.floor(area / 250)));
       variantFn = (i) => 2;
     } else if (style === 'reforested') {
-      // Reforested: young saplings mixed with firs
-      treeCount = Math.min(12, Math.max(2, Math.floor(area / 500)));
-      variantFn = (i) => (hash + i) % 3 === 0 ? 3 : 5; // sapling or fir
+      // Reforested: dense mix of saplings, young firs, birch — vibrant new growth
+      treeCount = Math.min(28, Math.max(4, Math.floor(area / 200)));
+      const rv = [3, 5, 3, 6, 3, 5, 3, 6, 5, 3]; // heavy on saplings + birch
+      variantFn = (i) => rv[(hash + i) % rv.length];
     } else if (style === 'plantation') {
-      // Managed forest — dense, mix of conifers
-      treeCount = Math.min(20, Math.max(4, Math.floor(area / 300)));
+      // Managed forest — very dense, rows of conifers
+      treeCount = Math.min(35, Math.max(6, Math.floor(area / 180)));
       variantFn = (i) => (hash + i) % 3 === 0 ? 5 : 7;
     } else {
-      // Normal mixed forest: oak, beech, fir, birch (Austrian mixed Mischwald)
-      treeCount = Math.min(18, Math.max(2, Math.floor(area / 500)));
-      const v = [0, 1, 5, 6, 1, 0]; // weighted toward deciduous (beech/oak)
+      // Normal mixed forest: oak, beech, fir, birch — dense Austrian Mischwald
+      treeCount = Math.min(30, Math.max(4, Math.floor(area / 250)));
+      const v = [0, 1, 5, 6, 1, 0, 5, 1, 0, 6]; // weighted toward deciduous
       variantFn = (i) => v[(hash + i) % v.length];
+    }
+
+    // Draw bright green underglow for reforested parcels
+    if (style === 'reforested') {
+      const pts = coords.map(c => toScreen(c[0], c[1]));
+      ctx.beginPath();
+      pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
+      ctx.closePath();
+      // Vibrant green overlay with pulse
+      const pulse = 0.12 + Math.sin(Date.now()/1200 + hash) * 0.04;
+      ctx.fillStyle = `rgba(80,220,60,${pulse})`;
+      ctx.fill();
+      // Sparkle border to show active growth
+      ctx.strokeStyle = 'rgba(120,255,80,0.4)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     for (let i = 0; i < treeCount; i++) {
@@ -2159,8 +2428,51 @@ function drawForestSprites(ctx, claimMap) {
       const [tx, ty] = toScreen(lon, lat);
       drawTree(ctx, tx, ty, variantFn(i), hash + i);
     }
+
+    // Draw growth indicators on reforested parcels (small sprouts between trees)
+    if (style === 'reforested') {
+      const sproutCount = Math.min(8, Math.max(2, Math.floor(area / 1000)));
+      for (let i = 0; i < sproutCount; i++) {
+        const t = (hash + (i+50) * 6151) % 10000 / 10000;
+        const u = (hash + (i+50) * 4337) % 10000 / 10000;
+        const lon2 = b.w + (b.e - b.w) * t;
+        const lat2 = b.s + (b.n - b.s) * u;
+        if (!pip(lon2, lat2, coords)) continue;
+        const [sx, sy] = toScreen(lon2, lat2);
+        drawSprout(ctx, sx, sy, hash + i);
+      }
+    }
   }
   ctx.restore();
+}
+
+function drawSprout(ctx, x, y, seed) {
+  // Small bright green sprout — sign of new growth
+  const s = G.cam.zoom > 16 ? 1.0 : 0.6;
+  const sway = Math.sin(Date.now()/1500 + seed*0.4) * 1.0 * s;
+  // Stem
+  ctx.strokeStyle = '#4ac838';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.quadraticCurveTo(x + sway, y - 5*s, x + sway*0.5, y - 8*s);
+  ctx.stroke();
+  // Two tiny leaves
+  ctx.fillStyle = '#5edc4a';
+  ctx.beginPath();
+  ctx.ellipse(x + sway*0.5 - 2*s, y - 7*s, 2.5*s, 1.2*s, -0.5, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#4ecc3a';
+  ctx.beginPath();
+  ctx.ellipse(x + sway*0.5 + 2*s, y - 8*s, 2.5*s, 1.2*s, 0.5, 0, Math.PI*2);
+  ctx.fill();
+  // Tiny dewdrop sparkle
+  if ((seed % 3) === 0) {
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.beginPath();
+    ctx.arc(x + sway*0.5 - 1*s, y - 8.5*s, 0.8*s, 0, Math.PI*2);
+    ctx.fill();
+  }
 }
 
 function drawTree(ctx, x, y, variant, seedOffset) {
@@ -2323,8 +2635,15 @@ function drawTreasure(ctx, t) {
   const [x, y] = toScreen(t.lon, t.lat);
   if (x < -20 || x > gc.width+20 || y < -20 || y > gc.height+20) return;
 
-  const frame = Math.floor(Date.now() / 400) % 3;
+  if (t.treasure_type === 'species' && t.species_name) {
+    drawSpeciesTreasure(ctx, x, y, t);
+  } else {
+    drawChestTreasure(ctx, x, y, t);
+  }
+}
 
+function drawChestTreasure(ctx, x, y, t) {
+  const frame = Math.floor(Date.now() / 400) % 3;
   // Chest body
   ctx.fillStyle = '#6b4020';
   ctx.fillRect(x-7, y-3, 14, 9);
@@ -2344,6 +2663,469 @@ function drawTreasure(ctx, t) {
   ctx.fillRect(sx, sy, 2, 2);
   ctx.fillRect(sx-1, sy+1, 1, 1);
   ctx.fillRect(sx+2, sy+1, 1, 1);
+}
+
+// Map species names to sprite drawing groups
+const SPECIES_SPRITE_MAP = {
+  'Lynx lynx':                  'lynx',
+  'Barbastella barbastellus':   'bat',
+  'Cricetus cricetus':          'hamster',
+  'Bison bonasus':              'bison',
+  'Gulo gulo':                  'wolverine',
+  'Aquila chrysaetos':          'eagle',
+  'Bubo bubo':                  'owl',
+  'Ciconia nigra':              'stork',
+  'Otis tarda':                 'bustard',
+  'Tetrao urogallus':           'capercaillie',
+  'Coenonympha hero':           'butterfly_brown',
+  'Colias chrysotheme':         'butterfly_yellow',
+  'Parnassius apollo':          'butterfly_white',
+  'Bombina bombina':            'frog',
+  'Vipera ursinii':             'snake',
+  'Triturus dobrogicus':        'newt',
+  'Coenagrion ornatum':         'dragonfly',
+  'Cordulegaster heros':        'dragonfly_large',
+  'Hucho hucho':                'fish',
+  'Acipenser ruthenus':         'sturgeon',
+};
+
+function drawSpeciesTreasure(ctx, x, y, t) {
+  const sprite = SPECIES_SPRITE_MAP[t.species_name] || 'butterfly_white';
+  const time = Date.now();
+  const s = G.cam.zoom > 16 ? 1.4 : 1.0;
+  const bob = Math.sin(time / 600 + x * 0.01) * 2;
+
+  ctx.save();
+
+  // Soft glow circle underneath
+  const glowPulse = 0.3 + Math.sin(time / 800) * 0.1;
+  const catColor = {'EN':'rgba(220,60,60,','VU':'rgba(220,160,40,','NT':'rgba(100,180,220,','LC':'rgba(100,200,100,'};
+  const gBase = catColor[t.species_category] || 'rgba(200,200,100,';
+  ctx.fillStyle = gBase + glowPulse + ')';
+  ctx.beginPath(); ctx.arc(x, y + 2, 12*s, 0, Math.PI*2); ctx.fill();
+
+  const by = y + bob;
+
+  if (sprite === 'lynx') {
+    // Pixel-art lynx face: tufted ears, spotted
+    ctx.fillStyle = '#c8a060'; // body
+    ctx.beginPath(); ctx.ellipse(x, by - 4*s, 7*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Ears with tufts
+    ctx.fillStyle = '#c8a060';
+    ctx.beginPath(); ctx.moveTo(x-5*s, by-8*s); ctx.lineTo(x-3*s, by-14*s); ctx.lineTo(x-1*s, by-8*s); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x+5*s, by-8*s); ctx.lineTo(x+3*s, by-14*s); ctx.lineTo(x+1*s, by-8*s); ctx.fill();
+    // Ear tufts (black tips)
+    ctx.fillStyle = '#2a2a2a';
+    ctx.beginPath(); ctx.moveTo(x-3*s, by-14*s); ctx.lineTo(x-3.5*s, by-17*s); ctx.lineTo(x-2.5*s, by-14*s); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x+3*s, by-14*s); ctx.lineTo(x+3.5*s, by-17*s); ctx.lineTo(x+2.5*s, by-14*s); ctx.fill();
+    // Eyes
+    ctx.fillStyle = '#e8c840'; ctx.beginPath(); ctx.arc(x-2.5*s, by-5*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+2.5*s, by-5*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x-2.5*s, by-5*s, 0.7*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+2.5*s, by-5*s, 0.7*s, 0, Math.PI*2); ctx.fill();
+    // Nose
+    ctx.fillStyle = '#d08080'; ctx.beginPath(); ctx.arc(x, by-2*s, 1*s, 0, Math.PI*2); ctx.fill();
+    // Spots
+    ctx.fillStyle = '#a08040';
+    ctx.beginPath(); ctx.arc(x-4*s, by-2*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3*s, by-1*s, 0.7*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'bat') {
+    // Bat with outstretched wings
+    const wingFlap = Math.sin(time / 200) * 0.3;
+    ctx.fillStyle = '#3a3040';
+    // Body
+    ctx.beginPath(); ctx.ellipse(x, by-4*s, 3*s, 4*s, 0, 0, Math.PI*2); ctx.fill();
+    // Wings
+    ctx.beginPath();
+    ctx.moveTo(x-3*s, by-4*s);
+    ctx.quadraticCurveTo(x-10*s, by - (8+wingFlap*8)*s, x-12*s, by-2*s);
+    ctx.quadraticCurveTo(x-8*s, by+1*s, x-3*s, by-1*s);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x+3*s, by-4*s);
+    ctx.quadraticCurveTo(x+10*s, by - (8+wingFlap*8)*s, x+12*s, by-2*s);
+    ctx.quadraticCurveTo(x+8*s, by+1*s, x+3*s, by-1*s);
+    ctx.fill();
+    // Eyes
+    ctx.fillStyle = '#e0c040';
+    ctx.beginPath(); ctx.arc(x-1.5*s, by-6*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+1.5*s, by-6*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    // Ears
+    ctx.fillStyle = '#3a3040';
+    ctx.beginPath(); ctx.moveTo(x-1*s, by-8*s); ctx.lineTo(x-2*s, by-12*s); ctx.lineTo(x, by-8*s); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x+1*s, by-8*s); ctx.lineTo(x+2*s, by-12*s); ctx.lineTo(x, by-8*s); ctx.fill();
+  } else if (sprite === 'hamster') {
+    // Cute round hamster with cheek pouches
+    ctx.fillStyle = '#c8963c';
+    ctx.beginPath(); ctx.ellipse(x, by-3*s, 6*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // White belly
+    ctx.fillStyle = '#f0e8d0';
+    ctx.beginPath(); ctx.ellipse(x, by-1*s, 4*s, 3*s, 0, 0, Math.PI*2); ctx.fill();
+    // Cheek pouches
+    ctx.fillStyle = '#d8a848';
+    ctx.beginPath(); ctx.arc(x-4*s, by-3*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+4*s, by-3*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+    // Eyes
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(x-2*s, by-5*s, 1*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+2*s, by-5*s, 1*s, 0, Math.PI*2); ctx.fill();
+    // Nose
+    ctx.fillStyle = '#e08080'; ctx.beginPath(); ctx.arc(x, by-3.5*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    // Ears
+    ctx.fillStyle = '#b88838';
+    ctx.beginPath(); ctx.arc(x-4*s, by-7*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+4*s, by-7*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'bison') {
+    // European bison — large, bulky, shaggy
+    ctx.fillStyle = '#5a3818';
+    // Body
+    ctx.beginPath(); ctx.ellipse(x+2*s, by-3*s, 10*s, 6*s, 0, 0, Math.PI*2); ctx.fill();
+    // Hump
+    ctx.fillStyle = '#4a2e12';
+    ctx.beginPath(); ctx.ellipse(x-3*s, by-8*s, 5*s, 4*s, -0.3, 0, Math.PI*2); ctx.fill();
+    // Head
+    ctx.fillStyle = '#5a3818';
+    ctx.beginPath(); ctx.ellipse(x-8*s, by-4*s, 4*s, 3.5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Horns
+    ctx.strokeStyle = '#d8c898'; ctx.lineWidth = 1.5*s;
+    ctx.beginPath(); ctx.arc(x-9*s, by-8*s, 3*s, Math.PI*0.8, Math.PI*1.5); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x-7*s, by-8*s, 3*s, Math.PI*1.5, Math.PI*2.2); ctx.stroke();
+    // Eye
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x-9*s, by-5*s, 0.7*s, 0, Math.PI*2); ctx.fill();
+    // Legs
+    ctx.fillStyle = '#4a2e12';
+    for (const lx of [-2, 3, 6, 9]) ctx.fillRect(x+lx*s-1*s, by+2*s, 2*s, 4*s);
+  } else if (sprite === 'wolverine') {
+    // Stocky, dark with lighter stripe
+    ctx.fillStyle = '#2a2018';
+    ctx.beginPath(); ctx.ellipse(x, by-3*s, 8*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Lighter side stripe
+    ctx.fillStyle = '#8a7040';
+    ctx.beginPath(); ctx.ellipse(x, by-2*s, 7*s, 2*s, 0, 0, Math.PI*2); ctx.fill();
+    // Head
+    ctx.fillStyle = '#2a2018';
+    ctx.beginPath(); ctx.ellipse(x-6*s, by-4*s, 3.5*s, 3*s, 0, 0, Math.PI*2); ctx.fill();
+    // Eyes
+    ctx.fillStyle = '#c0a030'; ctx.beginPath(); ctx.arc(x-7*s, by-5*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    // Legs
+    ctx.fillStyle = '#2a2018';
+    for (const lx of [-3, 0, 3, 5]) ctx.fillRect(x+lx*s-0.8*s, by+1*s, 1.6*s, 3*s);
+  } else if (sprite === 'eagle') {
+    // Golden eagle soaring
+    const wingAngle = Math.sin(time / 400) * 0.15;
+    ctx.fillStyle = '#5a3818';
+    // Body
+    ctx.beginPath(); ctx.ellipse(x, by-4*s, 4*s, 3*s, 0, 0, Math.PI*2); ctx.fill();
+    // Wings
+    ctx.beginPath();
+    ctx.moveTo(x-4*s, by-4*s);
+    ctx.quadraticCurveTo(x-10*s, by-(10+wingAngle*5)*s, x-14*s, by-6*s);
+    ctx.lineTo(x-12*s, by-3*s);
+    ctx.quadraticCurveTo(x-8*s, by-2*s, x-4*s, by-3*s);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x+4*s, by-4*s);
+    ctx.quadraticCurveTo(x+10*s, by-(10+wingAngle*5)*s, x+14*s, by-6*s);
+    ctx.lineTo(x+12*s, by-3*s);
+    ctx.quadraticCurveTo(x+8*s, by-2*s, x+4*s, by-3*s);
+    ctx.fill();
+    // Head
+    ctx.fillStyle = '#c8a040';
+    ctx.beginPath(); ctx.ellipse(x, by-7*s, 2.5*s, 2*s, 0, 0, Math.PI*2); ctx.fill();
+    // Beak
+    ctx.fillStyle = '#e8c030';
+    ctx.beginPath(); ctx.moveTo(x, by-7*s); ctx.lineTo(x, by-4.5*s); ctx.lineTo(x+1.5*s, by-6.5*s); ctx.fill();
+    // Eye
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x-0.8*s, by-7.5*s, 0.6*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'owl') {
+    // Eurasian Eagle-Owl: big round head, orange eyes, tufts
+    ctx.fillStyle = '#8a6830';
+    ctx.beginPath(); ctx.ellipse(x, by-3*s, 6*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Facial disc
+    ctx.fillStyle = '#c8a868';
+    ctx.beginPath(); ctx.ellipse(x, by-6*s, 5*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Ear tufts
+    ctx.fillStyle = '#7a5828';
+    ctx.beginPath(); ctx.moveTo(x-3*s, by-10*s); ctx.lineTo(x-4*s, by-15*s); ctx.lineTo(x-1*s, by-10*s); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x+3*s, by-10*s); ctx.lineTo(x+4*s, by-15*s); ctx.lineTo(x+1*s, by-10*s); ctx.fill();
+    // Big orange eyes
+    ctx.fillStyle = '#e88020';
+    ctx.beginPath(); ctx.arc(x-2*s, by-6*s, 2*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+2*s, by-6*s, 2*s, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(x-2*s, by-6*s, 1*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+2*s, by-6*s, 1*s, 0, Math.PI*2); ctx.fill();
+    // Beak
+    ctx.fillStyle = '#555';
+    ctx.beginPath(); ctx.moveTo(x-1*s, by-4*s); ctx.lineTo(x, by-2*s); ctx.lineTo(x+1*s, by-4*s); ctx.fill();
+    // Breast feather marks
+    ctx.strokeStyle = '#6a4820'; ctx.lineWidth = 0.5;
+    for (let i = 0; i < 5; i++) {
+      const fy = by - 1*s + i*1.5*s;
+      ctx.beginPath(); ctx.moveTo(x-2*s, fy); ctx.lineTo(x, fy+0.8*s); ctx.lineTo(x+2*s, fy); ctx.stroke();
+    }
+  } else if (sprite === 'stork') {
+    // Black stork — dark body, red beak, long legs
+    // Legs
+    ctx.strokeStyle = '#d04030'; ctx.lineWidth = 1.5*s;
+    ctx.beginPath(); ctx.moveTo(x-2*s, by+1*s); ctx.lineTo(x-2*s, by+8*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+2*s, by+1*s); ctx.lineTo(x+2*s, by+8*s); ctx.stroke();
+    // Body
+    ctx.fillStyle = '#1a1a2a';
+    ctx.beginPath(); ctx.ellipse(x, by-3*s, 6*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // White belly
+    ctx.fillStyle = '#e8e0d8';
+    ctx.beginPath(); ctx.ellipse(x, by, 4*s, 2.5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Head
+    ctx.fillStyle = '#1a1a2a';
+    ctx.beginPath(); ctx.arc(x, by-9*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+    // Beak
+    ctx.fillStyle = '#d04030';
+    ctx.beginPath(); ctx.moveTo(x+2.5*s, by-9*s); ctx.lineTo(x+7*s, by-8.5*s); ctx.lineTo(x+2.5*s, by-8*s); ctx.fill();
+    // Eye
+    ctx.fillStyle = '#d03020'; ctx.beginPath(); ctx.arc(x+0.5*s, by-9.5*s, 0.6*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'bustard') {
+    // Great bustard — large, puffed chest
+    ctx.fillStyle = '#b8963c';
+    ctx.beginPath(); ctx.ellipse(x, by-2*s, 7*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Neck
+    ctx.fillStyle = '#888890';
+    ctx.fillRect(x-1.5*s, by-10*s, 3*s, 6*s);
+    // Head
+    ctx.fillStyle = '#888890';
+    ctx.beginPath(); ctx.arc(x, by-12*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+    // Whiskers
+    ctx.strokeStyle = '#a08040'; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(x+2*s, by-12*s); ctx.lineTo(x+6*s, by-14*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+2*s, by-11*s); ctx.lineTo(x+5*s, by-10*s); ctx.stroke();
+    // Eye & beak
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x-0.5*s, by-12.5*s, 0.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#a0a068';
+    ctx.beginPath(); ctx.moveTo(x-2*s, by-12*s); ctx.lineTo(x-5*s, by-11.5*s); ctx.lineTo(x-2*s, by-11*s); ctx.fill();
+    // Legs
+    ctx.strokeStyle = '#8a7a60'; ctx.lineWidth = 1.5*s;
+    ctx.beginPath(); ctx.moveTo(x-3*s, by+2*s); ctx.lineTo(x-3*s, by+7*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+3*s, by+2*s); ctx.lineTo(x+3*s, by+7*s); ctx.stroke();
+  } else if (sprite === 'capercaillie') {
+    // Western capercaillie — dark body, red eyebrow, fan tail
+    ctx.fillStyle = '#1a2a1a';
+    ctx.beginPath(); ctx.ellipse(x, by-3*s, 7*s, 5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Fan tail
+    ctx.fillStyle = '#2a3a2a';
+    for (let i = -3; i <= 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(x+5*s, by-2*s);
+      ctx.lineTo(x+12*s + i*s, by - 5*s + Math.abs(i)*s);
+      ctx.lineTo(x+5*s, by);
+      ctx.fill();
+    }
+    // Head
+    ctx.fillStyle = '#1a2a1a';
+    ctx.beginPath(); ctx.arc(x-5*s, by-7*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+    // Red eyebrow
+    ctx.fillStyle = '#e02020';
+    ctx.beginPath(); ctx.ellipse(x-5*s, by-9*s, 2*s, 1*s, 0, 0, Math.PI*2); ctx.fill();
+    // Beak
+    ctx.fillStyle = '#c8c8a0';
+    ctx.beginPath(); ctx.moveTo(x-7*s, by-7*s); ctx.lineTo(x-10*s, by-6.5*s); ctx.lineTo(x-7*s, by-6*s); ctx.fill();
+    // Eye
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x-5*s, by-7.5*s, 0.6*s, 0, Math.PI*2); ctx.fill();
+    // Legs
+    ctx.strokeStyle = '#6a6050'; ctx.lineWidth = 1.2*s;
+    ctx.beginPath(); ctx.moveTo(x-2*s, by+2*s); ctx.lineTo(x-2*s, by+6*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+2*s, by+2*s); ctx.lineTo(x+2*s, by+6*s); ctx.stroke();
+  } else if (sprite.startsWith('butterfly_')) {
+    // Butterflies — color varies by species
+    const colors = {
+      'butterfly_brown':  ['#8a6030','#a07838','#6a4820'],
+      'butterfly_yellow': ['#e8c820','#f0d840','#d0b018'],
+      'butterfly_white':  ['#f0e8e0','#e8e0d0','#d8d0c0'],
+      'butterfly_ring':   ['#c89838','#a88028','#e8b848'],
+    };
+    const cols = colors[sprite] || colors.butterfly_white;
+    const wingFlap = Math.abs(Math.sin(time / 250 + x * 0.1));
+    const wingW = (6 + wingFlap * 4) * s;
+    const wingH = 6 * s;
+    // Upper wings
+    ctx.fillStyle = cols[0];
+    ctx.beginPath(); ctx.ellipse(x - wingW*0.6, by - 5*s, wingW, wingH, -0.3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + wingW*0.6, by - 5*s, wingW, wingH, 0.3, 0, Math.PI*2); ctx.fill();
+    // Lower wings (smaller)
+    ctx.fillStyle = cols[1];
+    ctx.beginPath(); ctx.ellipse(x - wingW*0.5, by - 1*s, wingW*0.7, wingH*0.6, -0.4, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + wingW*0.5, by - 1*s, wingW*0.7, wingH*0.6, 0.4, 0, Math.PI*2); ctx.fill();
+    // Wing patterns (eye spots for apollo/ring)
+    if (sprite === 'butterfly_white' || sprite === 'butterfly_ring') {
+      ctx.fillStyle = '#d04040';
+      ctx.beginPath(); ctx.arc(x - wingW*0.4, by - 5*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + wingW*0.4, by - 5*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+    }
+    // Body
+    ctx.fillStyle = cols[2];
+    ctx.beginPath(); ctx.ellipse(x, by - 3*s, 1.5*s, 4*s, 0, 0, Math.PI*2); ctx.fill();
+    // Antennae
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 0.6;
+    ctx.beginPath(); ctx.moveTo(x-0.5*s, by-7*s); ctx.quadraticCurveTo(x-3*s, by-12*s, x-4*s, by-13*s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+0.5*s, by-7*s); ctx.quadraticCurveTo(x+3*s, by-12*s, x+4*s, by-13*s); ctx.stroke();
+    ctx.fillStyle = '#333';
+    ctx.beginPath(); ctx.arc(x-4*s, by-13*s, 0.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+4*s, by-13*s, 0.5*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'frog') {
+    // Bombina bombina — green frog with orange belly
+    ctx.fillStyle = '#4a8a30';
+    ctx.beginPath(); ctx.ellipse(x, by-2*s, 6*s, 4*s, 0, 0, Math.PI*2); ctx.fill();
+    // Orange belly peeking
+    ctx.fillStyle = '#e87030';
+    ctx.beginPath(); ctx.ellipse(x, by+1*s, 4*s, 1.5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Eyes (big, bulging)
+    ctx.fillStyle = '#c8e040';
+    ctx.beginPath(); ctx.arc(x-3*s, by-5*s, 2*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3*s, by-5*s, 2*s, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(x-3*s, by-5*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3*s, by-5*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+    // Dark spots
+    ctx.fillStyle = '#2a6a18';
+    ctx.beginPath(); ctx.arc(x-2*s, by-1*s, 1*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3*s, by-2*s, 0.8*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'snake') {
+    // Vipera ursinii — zigzag pattern
+    const sway2 = Math.sin(time / 800 + y * 0.01) * 2 * s;
+    ctx.strokeStyle = '#7a7a60'; ctx.lineWidth = 3*s;
+    ctx.beginPath();
+    ctx.moveTo(x - 8*s, by);
+    for (let i = 0; i < 6; i++) {
+      ctx.quadraticCurveTo(
+        x + (-5 + i*3)*s + sway2*(i%2===0?1:-1),
+        by - (i%2===0 ? 3 : -1)*s,
+        x + (-3 + i*3)*s,
+        by - 1*s
+      );
+    }
+    ctx.stroke();
+    // Zigzag dorsal pattern
+    ctx.strokeStyle = '#3a3a30'; ctx.lineWidth = 1.5*s;
+    ctx.beginPath();
+    ctx.moveTo(x - 7*s, by-1*s);
+    for (let i = 0; i < 5; i++) {
+      ctx.lineTo(x + (-5+i*3)*s, by - (i%2===0?3:0)*s);
+    }
+    ctx.stroke();
+    // Head
+    ctx.fillStyle = '#7a7a60';
+    ctx.beginPath(); ctx.ellipse(x+8*s, by-1*s, 2*s, 1.5*s, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(x+9*s, by-2*s, 0.5*s, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'newt') {
+    // Donau-Kammmolch — dark with orange belly, crested
+    ctx.fillStyle = '#2a3a2a';
+    ctx.beginPath(); ctx.ellipse(x, by-2*s, 8*s, 3*s, 0, 0, Math.PI*2); ctx.fill();
+    // Orange belly
+    ctx.fillStyle = '#e87030';
+    ctx.beginPath(); ctx.ellipse(x, by, 6*s, 1.5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Crest (dorsal)
+    ctx.fillStyle = '#1a2a1a';
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      ctx.lineTo(x + (-4+i*2)*s, by - (i%2===0?5:3)*s);
+    }
+    ctx.closePath(); ctx.fill();
+    // Head
+    ctx.fillStyle = '#2a3a2a';
+    ctx.beginPath(); ctx.ellipse(x-7*s, by-2*s, 2.5*s, 2*s, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x-8*s, by-3*s, 0.5*s, 0, Math.PI*2); ctx.fill();
+    // Tail
+    ctx.strokeStyle = '#2a3a2a'; ctx.lineWidth = 2*s;
+    ctx.beginPath();
+    ctx.moveTo(x+8*s, by-2*s);
+    ctx.quadraticCurveTo(x+12*s, by-4*s, x+14*s, by-2*s);
+    ctx.stroke();
+  } else if (sprite === 'dragonfly' || sprite === 'dragonfly_large') {
+    // Dragonfly — long body, 4 transparent wings
+    const isLarge = sprite === 'dragonfly_large';
+    const ds = isLarge ? 1.3 : 1.0;
+    const wingBeat = Math.sin(time / 150) * 0.2;
+    // Body
+    ctx.fillStyle = isLarge ? '#2a5a3a' : '#3080c0';
+    ctx.beginPath(); ctx.ellipse(x, by-2*s*ds, 2*s*ds, 8*s*ds, Math.PI*0.5, 0, Math.PI*2); ctx.fill();
+    // Head
+    ctx.beginPath(); ctx.arc(x-8*s*ds, by-2*s*ds, 2*s*ds, 0, Math.PI*2); ctx.fill();
+    // Wings (transparent, iridescent)
+    ctx.fillStyle = 'rgba(180,220,255,0.35)';
+    ctx.beginPath(); ctx.ellipse(x-2*s*ds, by-(5+wingBeat*3)*s*ds, 7*s*ds, 2.5*s*ds, -0.2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x-2*s*ds, by+(1+wingBeat*3)*s*ds, 7*s*ds, 2.5*s*ds, 0.2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x+1*s*ds, by-(4+wingBeat*2)*s*ds, 5*s*ds, 2*s*ds, -0.15, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x+1*s*ds, by+(0+wingBeat*2)*s*ds, 5*s*ds, 2*s*ds, 0.15, 0, Math.PI*2); ctx.fill();
+    // Wing veins
+    ctx.strokeStyle = 'rgba(100,160,200,0.3)'; ctx.lineWidth = 0.3;
+    ctx.beginPath(); ctx.moveTo(x-8*s*ds, by-5*s*ds); ctx.lineTo(x+4*s*ds, by-5*s*ds); ctx.stroke();
+    // Eyes
+    ctx.fillStyle = isLarge ? '#80c060' : '#60a0e0';
+    ctx.beginPath(); ctx.arc(x-9*s*ds, by-3*s*ds, 1.2*s*ds, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x-9*s*ds, by-1*s*ds, 1.2*s*ds, 0, Math.PI*2); ctx.fill();
+  } else if (sprite === 'fish' || sprite === 'sturgeon') {
+    // Fish / Sturgeon in water
+    const swim = Math.sin(time / 500 + x * 0.02) * 3 * s;
+    const isSturgeon = sprite === 'sturgeon';
+    // Water ripple under
+    ctx.strokeStyle = 'rgba(100,160,220,0.3)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(x, by + 3*s, 10*s, 2*s, 0, 0, Math.PI*2); ctx.stroke();
+    // Body
+    ctx.fillStyle = isSturgeon ? '#6a7a8a' : '#8a5a3a';
+    ctx.beginPath();
+    ctx.ellipse(x + swim*0.3, by - 2*s, isSturgeon ? 10*s : 8*s, 3*s, 0, 0, Math.PI*2);
+    ctx.fill();
+    // Belly
+    ctx.fillStyle = isSturgeon ? '#b0b8c0' : '#d8c8a0';
+    ctx.beginPath(); ctx.ellipse(x + swim*0.3, by, isSturgeon ? 8*s : 6*s, 1.5*s, 0, 0, Math.PI*2); ctx.fill();
+    // Tail fin
+    ctx.fillStyle = isSturgeon ? '#5a6a7a' : '#7a4a2a';
+    ctx.beginPath();
+    ctx.moveTo(x + (isSturgeon?10:8)*s + swim*0.3, by - 2*s);
+    ctx.lineTo(x + (isSturgeon?15:12)*s + swim, by - 5*s);
+    ctx.lineTo(x + (isSturgeon?15:12)*s + swim, by + 1*s);
+    ctx.closePath(); ctx.fill();
+    // Eye
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(x - (isSturgeon?8:6)*s + swim*0.2, by - 3*s, 0.7*s, 0, Math.PI*2); ctx.fill();
+    // Sturgeon: bony scutes (plates along body)
+    if (isSturgeon) {
+      ctx.fillStyle = '#8a9aaa';
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.arc(x + (-6+i*3.5)*s + swim*0.3, by - 3.5*s, 1*s, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // Barbels (whiskers)
+      ctx.strokeStyle = '#6a7a8a'; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(x-10*s, by-1*s); ctx.lineTo(x-13*s, by+1*s); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x-9*s, by-0.5*s); ctx.lineTo(x-12*s, by+2*s); ctx.stroke();
+    }
+    // Huchen: red spots
+    if (!isSturgeon) {
+      ctx.fillStyle = '#c04040';
+      for (let i = 0; i < 4; i++) {
+        ctx.beginPath();
+        ctx.arc(x + (-4+i*3)*s + swim*0.3, by - 2*s, 0.6*s, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // Species label at higher zoom
+  if (G.cam.zoom >= 17 && t.species_german) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.font = `${8*s}px "VT323", monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText(t.species_german, x, by + 14*s);
+    // Red list category badge
+    const catColors = {'EN':'#d04040','VU':'#e0a020','NT':'#60a0d0','LC':'#60b060'};
+    const cc = catColors[t.species_category] || '#888';
+    ctx.fillStyle = cc;
+    ctx.fillText(t.species_category, x, by + 22*s);
+  }
+
+  ctx.restore();
 }
 
 function drawEZHighlight(ctx) {
@@ -3107,8 +3889,14 @@ window.doRespondOffer = async function(offerId, accept) {
 async function claimTreasure(t) {
   const res = await POST('/api/claim-treasure', {player_id:G.player.id, treasure_id:t.id});
   if (res.error) { toast(res.error,'err'); return; }
-  const emoji = {xp:'⚡',rare_seed:'🌱',ancient_map:'🗺️',coins:'🪙'}[res.type]||'🪙';
-  toast('💎 Schatz! +'+res.value+emoji,'ok');
+  if (res.type === 'species' && res.species_german) {
+    const catLabels = {'EN':'Stark gefährdet','VU':'Gefährdet','NT':'Potenziell gefährdet','LC':'Nicht gefährdet'};
+    const catEmoji = {'EN':'🔴','VU':'🟠','NT':'🔵','LC':'🟢'};
+    toast(`🦎 Artenfund: ${res.species_german} (${res.species_name})\n${catEmoji[res.species_category]||''} ${catLabels[res.species_category]||res.species_category} — +${res.value}🪙`, 'ok');
+  } else {
+    const emoji = {xp:'⚡',rare_seed:'🌱',ancient_map:'🗺️',coins:'🪙'}[res.type]||'🪙';
+    toast('💎 Schatz! +'+res.value+emoji,'ok');
+  }
   G.player = res.player; updateStats();
   G.treasures = G.treasures.filter(tr=>tr.id!==t.id);
   render(); loadChallenges();

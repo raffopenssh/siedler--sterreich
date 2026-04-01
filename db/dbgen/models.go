@@ -106,15 +106,18 @@ type SessionPlayer struct {
 }
 
 type Treasure struct {
-	ID           int64      `json:"id"`
-	SessionID    string     `json:"session_id"`
-	Lon          float64    `json:"lon"`
-	Lat          float64    `json:"lat"`
-	TreasureType string     `json:"treasure_type"`
-	Value        int64      `json:"value"`
-	FoundBy      *string    `json:"found_by"`
-	FoundAt      *time.Time `json:"found_at"`
-	CreatedAt    time.Time  `json:"created_at"`
+	ID              int64      `json:"id"`
+	SessionID       string     `json:"session_id"`
+	Lon             float64    `json:"lon"`
+	Lat             float64    `json:"lat"`
+	TreasureType    string     `json:"treasure_type"`
+	Value           int64      `json:"value"`
+	FoundBy         *string    `json:"found_by"`
+	FoundAt         *time.Time `json:"found_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	SpeciesName     string     `json:"species_name"`
+	SpeciesGerman   string     `json:"species_german"`
+	SpeciesCategory string     `json:"species_category"`
 }
 
 type Visitor struct {
