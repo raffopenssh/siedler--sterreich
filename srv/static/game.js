@@ -128,6 +128,7 @@ const G = {
   ezIndex: {},          // kg_code+ez → [parcel features] for quick grouping
   ezHighlight: null,    // {kg, ez} of currently highlighted EZ group
   claimed: [],          // from our DB
+  offers: [],           // pending parcel offers
   treasures: [], challenges: [], players: [], chatMsgs: [],
   sse: null,
   // Map view
@@ -236,7 +237,7 @@ function setUrlParams(obj) {
 
   if (savedPid && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
-      `Zuletzt: <a onclick="quickLogin()">${esc(savedName)}</a> — <a onclick="quickLogin()">Weiterspielen</a>`;
+      `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b> gespielt — <a onclick="quickLogin()">Weiter ▸</a>`;
   }
 
   async function registerAndProceed(goLucky) {
@@ -261,17 +262,6 @@ function setUrlParams(obj) {
     await startLucky();
   };
 
-  document.getElementById('btn-login').onclick = async () => {
-    const name = inp.value.trim();
-    if (!name) { err.textContent='Name eingeben!'; return; }
-    const res = await POST('/api/login', {name});
-    if (res.error) { err.textContent=res.error; return; }
-    savePlayer(res.player);
-    const sessions = await GET('/api/player/'+res.player.id+'/sessions');
-    if (sessions?.length > 0) { G.session = sessions[0]; startGame(); }
-    else show('pick');
-  };
-
   inp.addEventListener('keydown', e => {
     if (e.key==='Enter') document.getElementById('btn-register').click();
   });
@@ -285,8 +275,17 @@ window.quickLogin = async function() {
     if (p.error) { setUrlParams({pid:null,pname:null,rejoin:null}); return; }
     G.player = p;
     const sessions = await GET('/api/player/'+id+'/sessions');
-    if (sessions?.length > 0) { G.session = sessions[0]; startGame(); }
-    else show('pick');
+    if (sessions?.length > 0) {
+      G.session = sessions[0];
+      // Go directly to loading screen
+      show('loading');
+      document.getElementById('loading-muni').textContent = '📍 ' + (G.session.municipality_name||'') + ' (' + (G.session.municipality_code||'') + ')';
+      startTipRotation();
+      startLoadingCountdown(20);
+      await startGameWithLoading();
+    } else {
+      show('pick');
+    }
   } catch(e) { setUrlParams({pid:null,pname:null,rejoin:null}); }
 };
 
@@ -1014,7 +1013,7 @@ async function startGameWithLoading() {
   // Step 4: Load treasures, challenges, etc.
   setLoadStep('ls-treasures', 'active');
   setLoadProgress(70);
-  await Promise.all([loadClaimed(), loadTreasures(), loadChallenges(), loadPlayers(), loadBio(), loadChat()]);
+  await Promise.all([loadClaimed(), loadOffers(), loadTreasures(), loadChallenges(), loadPlayers(), loadBio(), loadChat()]);
   setLoadStep('ls-treasures', 'done');
   setLoadProgress(85);
 
@@ -1218,6 +1217,7 @@ async function fetchKGPolygons() {
 }
 
 async function loadClaimed() { G.claimed = await GET('/api/session/'+G.session.id+'/parcels') || []; updateParcelCount(); }
+async function loadOffers() { try { G.offers = await GET('/api/session/'+G.session.id+'/offers') || []; } catch(e) { G.offers = []; } }
 
 /** Build EZ index from loaded parcel polygons — groups parcels by kg_code + ez */
 function buildEZIndex() {
@@ -1332,6 +1332,27 @@ function handleEvent(d) {
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed': toast('🏆 '+d.player+' Aufgabe!','ok'); break;
+    case 'offer_made':
+      if (d.seller_id === G.player.id) toast('📨 '+d.buyer+' bietet '+d.offer_price+'🪙 für deine Parzelle!','ok');
+      loadOffers().then(()=>{ if(G.sel) showParcelPopup(G.sel); });
+      break;
+    case 'offer_accepted':
+      toast('✅ '+d.buyer+' kauft Parzelle von '+d.seller+' für '+d.offer_price+'🪙','ok');
+      Promise.all([loadClaimed(), loadOffers()]).then(()=>{render(); if(G.sel) showParcelPopup(G.sel);});
+      // Refresh own player data
+      if (d.buyer_id === G.player.id || d.seller_id === G.player.id) {
+        GET('/api/player/'+G.player.id).then(p=>{if(!p.error){G.player=p;updateStats();}});
+      }
+      break;
+    case 'offer_rejected':
+      if (d.buyer_id === G.player.id) toast('❌ Dein Angebot wurde abgelehnt','err');
+      loadOffers().then(()=>{ if(G.sel) showParcelPopup(G.sel); });
+      break;
+    case 'offer_funds_needed':
+      if (d.buyer_id === G.player.id) {
+        toast('⚠️ Du brauchst '+d.offer_price+'🪙 aber hast nur '+d.buyer_coins+'🪙 — verkaufe Parzellen!','err');
+      }
+      break;
   }
 }
 
@@ -1384,6 +1405,9 @@ function render() {
       drawParcelPoint(ctx, f, claimMap);
     }
   }
+
+  // ---- Landuse sprites (crops, flowers, reeds, vines) ----
+  drawLanduseSprites(ctx, claimMap);
 
   // ---- Trees on forest parcels ----
   drawForestSprites(ctx, claimMap);
@@ -1833,6 +1857,239 @@ function drawFlag(ctx, x, y, color, isBio) {
   }
 }
 
+// ================= LANDUSE SPRITES (crops, flowers, reeds, vines, etc.) =================
+function drawLanduseSprites(ctx, claimMap) {
+  if (G.cam.zoom < 16) return; // Only show at close zoom
+  ctx.save();
+  for (const f of G.parcelPolys) {
+    const p = f.properties;
+    const geom = f.geometry;
+    if (!geom || geom.type !== 'Polygon') continue;
+    const claim = claimMap[p.parcel_id];
+    const terrain = getParcelTerrain(p, claim);
+    const luCode = extractLuCode('', p);
+    const area = p.area_sqm || 0;
+    if (area < 100) continue;
+
+    const coords = geom.coordinates[0];
+    const b = geoBounds(geom);
+    const [sx1,sy1] = toScreen(b.w, b.n);
+    const [sx2,sy2] = toScreen(b.e, b.s);
+    if (sx2 < 0 || sx1 > gc.width || sy2 < 0 || sy1 > gc.height) continue;
+    if ((sx2-sx1) < 10 || (sy2-sy1) < 10) continue;
+
+    const hash = simpleHash(p.parcel_id || '');
+    let spriteType = null;
+
+    // Determine sprite type from landuse
+    if (luCode === '50' || luCode === '51') spriteType = 'crops';
+    else if (luCode === '52' || luCode === '53' || luCode === '54') spriteType = 'meadow';
+    else if (luCode === '60') spriteType = 'vineyard';
+    else if (luCode === '62') spriteType = 'garden';
+    else if (luCode === '63') continue; // orchards handled by tree sprites
+    else if (terrain === TERRAIN.farm) spriteType = 'crops';
+    else if (terrain === TERRAIN.meadow && luCode !== '55') spriteType = 'meadow';
+    else if (terrain === TERRAIN.water) spriteType = 'water';
+    else if (terrain === TERRAIN.wetland) spriteType = 'reeds';
+    else if (claim?.converted_to === 'biodiversity') spriteType = 'wildflower';
+    else continue;
+
+    const count = Math.min(14, Math.max(2, Math.floor(area / 600)));
+    for (let i = 0; i < count; i++) {
+      const t = ((hash + i * 7919) % 10000) / 10000;
+      const u = ((hash + i * 3571) % 10000) / 10000;
+      const lon = b.w + (b.e - b.w) * (0.1 + t * 0.8);
+      const lat = b.s + (b.n - b.s) * (0.1 + u * 0.8);
+      if (!pip(lon, lat, coords)) continue;
+      const [sx, sy] = toScreen(lon, lat);
+      const v = (hash + i) % 5;
+      switch (spriteType) {
+        case 'crops': drawCropSprite(ctx, sx, sy, v, hash+i); break;
+        case 'meadow': drawMeadowSprite(ctx, sx, sy, v, hash+i); break;
+        case 'vineyard': drawVineyardSprite(ctx, sx, sy, v); break;
+        case 'garden': drawGardenSprite(ctx, sx, sy, v, hash+i); break;
+        case 'water': drawWaterSprite(ctx, sx, sy, v, hash+i); break;
+        case 'reeds': drawReedSprite(ctx, sx, sy, v, hash+i); break;
+        case 'wildflower': drawWildflowerSprite(ctx, sx, sy, v, hash+i); break;
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawCropSprite(ctx, x, y, v, seed) {
+  const s = G.cam.zoom > 17 ? 1.2 : 0.8;
+  x = Math.round(x); y = Math.round(y);
+  // Wheat/grain stalks in rows
+  const colors = ['#c8a830','#d0b038','#b89828','#d8b840','#c0a028'];
+  const stalkColor = colors[v];
+  for (let j = -2; j <= 2; j++) {
+    const ox = x + j * 3 * s;
+    // Stalk
+    ctx.strokeStyle = '#8a7a30';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(ox, y);
+    ctx.lineTo(ox + (seed%3-1)*0.5, y - 10*s);
+    ctx.stroke();
+    // Grain head
+    ctx.fillStyle = stalkColor;
+    ctx.fillRect(ox - 1*s, y - 12*s, 2*s, 4*s);
+    // Awns (tiny lines at top)
+    ctx.strokeStyle = stalkColor;
+    ctx.beginPath();
+    ctx.moveTo(ox, y - 12*s);
+    ctx.lineTo(ox - 1.5*s, y - 14*s);
+    ctx.moveTo(ox, y - 12*s);
+    ctx.lineTo(ox + 1.5*s, y - 14*s);
+    ctx.stroke();
+  }
+}
+
+function drawMeadowSprite(ctx, x, y, v, seed) {
+  const s = G.cam.zoom > 17 ? 1.0 : 0.7;
+  x = Math.round(x); y = Math.round(y);
+  // Grass tufts with occasional small flowers
+  // Grass blades
+  ctx.strokeStyle = ['#5a9e3a','#4e9234','#62a240','#52963a','#6aaa48'][v];
+  ctx.lineWidth = 1;
+  for (let j = -2; j <= 2; j++) {
+    const ox = x + j * 2.5 * s;
+    const h = (5 + (seed+j)%4) * s;
+    ctx.beginPath();
+    ctx.moveTo(ox, y);
+    ctx.quadraticCurveTo(ox + ((seed+j)%3-1)*2*s, y - h*0.6, ox + ((seed+j)%5-2)*s, y - h);
+    ctx.stroke();
+  }
+  // Small flower on some
+  if ((seed+v) % 4 === 0) {
+    const fc = ['#fff','#f8e0a0','#e8a0c0','#a0c8f0','#f0f080'][(seed)%5];
+    ctx.fillStyle = fc;
+    ctx.beginPath();
+    ctx.arc(x + ((seed%3)-1)*2, y - 8*s, 1.5*s, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawVineyardSprite(ctx, x, y, v) {
+  const s = G.cam.zoom > 17 ? 1.2 : 0.8;
+  x = Math.round(x); y = Math.round(y);
+  // Vine post with green canopy
+  ctx.fillStyle = '#6a5030';
+  ctx.fillRect(x - 0.5*s, y - 8*s, 1*s, 9*s); // post
+  // Wire
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(x - 6*s, y - 6*s); ctx.lineTo(x + 6*s, y - 6*s); ctx.stroke();
+  // Leaves
+  ctx.fillStyle = ['#3a8a2a','#4a9a3a','#358a28','#4aa038','#3a8828'][v];
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 7*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 2*s, y - 8*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+  // Grape clusters
+  if (v < 3) {
+    ctx.fillStyle = '#6a2878';
+    ctx.beginPath(); ctx.arc(x - 2*s, y - 4*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x - 1*s, y - 3*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function drawGardenSprite(ctx, x, y, v, seed) {
+  const s = G.cam.zoom > 17 ? 1.0 : 0.7;
+  x = Math.round(x); y = Math.round(y);
+  // Garden rows with vegetables
+  const rowColors = ['#3a7a2a','#4a8a3a','#5a6a2a','#3a8a30','#4a7a38'];
+  // Small raised bed patches
+  ctx.fillStyle = '#5a4a30'; // soil
+  ctx.fillRect(x - 5*s, y - 1*s, 10*s, 3*s);
+  // Plant tops
+  ctx.fillStyle = rowColors[v];
+  for (let j = -2; j <= 2; j++) {
+    ctx.beginPath();
+    ctx.arc(x + j*3*s, y - 3*s, 2*s, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // Occasional red/orange dot (tomato/pepper)
+  if (v % 2 === 0) {
+    ctx.fillStyle = (seed%2===0) ? '#e04040' : '#e08030';
+    ctx.beginPath(); ctx.arc(x + (seed%3-1)*3*s, y - 2*s, 1*s, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function drawWaterSprite(ctx, x, y, v, seed) {
+  const s = G.cam.zoom > 17 ? 1.0 : 0.7;
+  x = Math.round(x); y = Math.round(y);
+  // Animated ripple rings
+  const t = (Date.now() / 1500 + seed * 0.7) % 1;
+  ctx.strokeStyle = 'rgba(160,210,255,0.3)';
+  ctx.lineWidth = 0.8;
+  const r = (3 + t * 8) * s;
+  ctx.beginPath();
+  ctx.ellipse(x, y, r, r * 0.5, 0, 0, Math.PI*2);
+  ctx.stroke();
+  // Sparkle
+  if (t < 0.3) {
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.beginPath(); ctx.arc(x + 2*s, y - 1*s, 1*s, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function drawReedSprite(ctx, x, y, v, seed) {
+  const s = G.cam.zoom > 17 ? 1.1 : 0.75;
+  x = Math.round(x); y = Math.round(y);
+  const sway = Math.sin(Date.now()/2000 + seed*0.5) * 1.5 * s;
+  // Tall reed stalks
+  for (let j = -2; j <= 2; j++) {
+    const ox = x + j * 2.5 * s;
+    const h = (10 + (seed+j)%5) * s;
+    ctx.strokeStyle = '#8a9a50';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(ox, y);
+    ctx.quadraticCurveTo(ox + sway*0.5, y - h*0.5, ox + sway, y - h);
+    ctx.stroke();
+    // Fuzzy cattail top
+    if ((seed+j) % 3 === 0) {
+      ctx.fillStyle = '#6a4a20';
+      ctx.beginPath();
+      ctx.ellipse(ox + sway, y - h - 2*s, 1.5*s, 3*s, 0, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawWildflowerSprite(ctx, x, y, v, seed) {
+  const s = G.cam.zoom > 17 ? 1.0 : 0.7;
+  x = Math.round(x); y = Math.round(y);
+  // Dense wildflower patch (biodiversity)
+  const flowerColors = ['#e8e040','#e060a0','#a060e0','#60a0e8','#e08040','#ff7070','#70e070'];
+  // Stems
+  for (let j = -3; j <= 3; j++) {
+    const ox = x + j * 2 * s;
+    const h = (6 + (seed+j)%4) * s;
+    ctx.strokeStyle = '#4a8a2a';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(ox, y);
+    ctx.lineTo(ox + ((seed+j)%3-1)*s, y - h);
+    ctx.stroke();
+    // Flower head
+    ctx.fillStyle = flowerColors[(seed+j+v) % flowerColors.length];
+    ctx.beginPath();
+    ctx.arc(ox + ((seed+j)%3-1)*s, y - h - 1*s, 1.5*s, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // Butterfly on some (animated)
+  if (v === 0) {
+    const bt = (Date.now() / 800 + seed) % (Math.PI*2);
+    const bx = x + Math.sin(bt) * 5*s;
+    const by = y - 12*s + Math.cos(bt*1.5) * 2*s;
+    const wing = Math.abs(Math.sin(Date.now()/200 + seed)) * 2*s + 1*s;
+    ctx.fillStyle = flowerColors[(seed+2) % flowerColors.length];
+    ctx.beginPath(); ctx.ellipse(bx - wing*0.5, by, wing, 1*s, -0.3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(bx + wing*0.5, by, wing, 1*s, 0.3, 0, Math.PI*2); ctx.fill();
+  }
+}
+
 function drawForestSprites(ctx, claimMap) {
   // Draw tree sprites on forest, reforested, orchard and scrub parcels
   // Determine tree style per parcel: 'forest' | 'reforested' | 'orchard' | 'krummholz'
@@ -1879,17 +2136,17 @@ function drawForestSprites(ctx, claimMap) {
       treeCount = Math.min(12, Math.max(2, Math.floor(area / 400)));
       variantFn = (i) => 2;
     } else if (style === 'reforested') {
-      // Reforested: young saplings or norway spruce (common replanting species)
+      // Reforested: young saplings mixed with firs
       treeCount = Math.min(12, Math.max(2, Math.floor(area / 500)));
-      variantFn = (i) => (hash + i) % 3 === 0 ? 3 : 5; // sapling or spruce
+      variantFn = (i) => (hash + i) % 3 === 0 ? 3 : 5; // sapling or fir
     } else if (style === 'plantation') {
-      // Spruce plantation (Fichtenforst) — dense uniform rows
+      // Managed forest — dense, mix of conifers
       treeCount = Math.min(20, Math.max(4, Math.floor(area / 300)));
-      variantFn = (i) => 7;
+      variantFn = (i) => (hash + i) % 3 === 0 ? 5 : 7;
     } else {
-      // Normal mixed forest: pine, deciduous, norway spruce, birch
+      // Normal mixed forest: oak, beech, fir, birch (Austrian mixed Mischwald)
       treeCount = Math.min(18, Math.max(2, Math.floor(area / 500)));
-      const v = [0, 1, 5, 6, 5]; // weighted toward spruce (common in Austria)
+      const v = [0, 1, 5, 6, 1, 0]; // weighted toward deciduous (beech/oak)
       variantFn = (i) => v[(hash + i) % v.length];
     }
 
@@ -1907,139 +2164,147 @@ function drawForestSprites(ctx, claimMap) {
 }
 
 function drawTree(ctx, x, y, variant, seedOffset) {
-  // Settlers IV style trees
-  // Variants: 0=pine, 1=deciduous, 2=bush/krummholz, 3=young sapling,
-  //           4=fruit tree, 5=norway spruce, 6=birch, 7=spruce plantation
+  // Settlers IV style trees — warm, chunky, painterly
+  // Variants: 0=oak, 1=beech, 2=bush/krummholz, 3=young sapling,
+  //           4=fruit tree, 5=fir (Tanne), 6=birch, 7=mixed conifer
   const scale = G.cam.zoom > 16 ? 1.2 : 0.8;
   x = Math.round(x);
   y = Math.round(y);
 
-  // Animated sway for tall trees (variants 5,6,7) — very subtle
-  const t = (Date.now() / 2200 + (seedOffset||0) * 0.37) % (Math.PI * 2);
-  const sway = (variant === 5 || variant === 6 || variant === 7) ? Math.sin(t) * 1.2 * scale : 0;
+  const t = (Date.now() / 3000 + (seedOffset||0) * 0.37) % (Math.PI * 2);
+  const sway = Math.sin(t) * 0.8 * scale;
 
   // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
   ctx.beginPath();
-  ctx.ellipse(x+3, y+2, 5*scale, 2*scale, 0, 0, Math.PI*2);
+  ctx.ellipse(x+2, y+1, 6*scale, 2.5*scale, 0.2, 0, Math.PI*2);
   ctx.fill();
 
   if (variant === 0) {
-    // Pine tree - classic Settlers IV dark pointed
-    ctx.fillStyle = '#5a3a20';
-    ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
-    ctx.fillStyle = '#1a5a1a';
-    drawTriangle(ctx, x, y-18*scale, 8*scale, 8*scale);
-    ctx.fillStyle = '#226622';
-    drawTriangle(ctx, x, y-13*scale, 10*scale, 8*scale);
-    ctx.fillStyle = '#2a7a2a';
-    drawTriangle(ctx, x, y-8*scale, 12*scale, 8*scale);
+    // Oak — thick trunk, big lumpy canopy (Settlers IV classic)
+    ctx.fillStyle = '#5a3a1a';
+    ctx.fillRect(x-1.5*scale, y-5*scale, 3*scale, 6*scale);
+    // Main canopy — layered circles for lumpy look
+    ctx.fillStyle = '#2a6a22';
+    ctx.beginPath(); ctx.arc(x+sway*0.2, y-13*scale, 8*scale, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#348a2c';
+    ctx.beginPath(); ctx.arc(x-3*scale+sway*0.3, y-15*scale, 5.5*scale, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#3c9232';
+    ctx.beginPath(); ctx.arc(x+4*scale+sway*0.2, y-14*scale, 5*scale, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#449a38';
+    ctx.beginPath(); ctx.arc(x+sway*0.4, y-17*scale, 4*scale, 0, Math.PI*2); ctx.fill();
+    // Highlight
+    ctx.fillStyle = 'rgba(120,200,80,0.2)';
+    ctx.beginPath(); ctx.arc(x-2*scale, y-16*scale, 3*scale, 0, Math.PI*2); ctx.fill();
   } else if (variant === 1) {
-    // Deciduous - round oak/beech
+    // Beech — smooth oval canopy, warm green
     ctx.fillStyle = '#5a3a20';
     ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
-    ctx.fillStyle = '#2a7a2a';
-    ctx.beginPath();
-    ctx.arc(x, y-12*scale, 7*scale, 0, Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle = '#3a8a3a';
-    ctx.beginPath();
-    ctx.arc(x-2, y-14*scale, 5*scale, 0, Math.PI*2);
-    ctx.fill();
-    // Light highlight dot
-    ctx.fillStyle = 'rgba(100,200,80,0.3)';
-    ctx.beginPath();
-    ctx.arc(x-3, y-15*scale, 3*scale, 0, Math.PI*2);
-    ctx.fill();
+    ctx.fillStyle = '#3a8228';
+    ctx.beginPath(); ctx.ellipse(x+sway*0.2, y-13*scale, 7*scale, 9*scale, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#4a9438';
+    ctx.beginPath(); ctx.ellipse(x-2*scale+sway*0.3, y-15*scale, 5*scale, 6*scale, -0.2, 0, Math.PI*2); ctx.fill();
+    // Dappled light
+    ctx.fillStyle = 'rgba(140,210,80,0.2)';
+    ctx.beginPath(); ctx.arc(x-3*scale, y-16*scale, 2.5*scale, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+2*scale, y-12*scale, 2*scale, 0, Math.PI*2); ctx.fill();
   } else if (variant === 2) {
-    // Bush / Krummholz scrub - low and wide
+    // Bush / Krummholz — low, wide, multiple lumps
     ctx.fillStyle = '#4a6a20';
-    ctx.beginPath();
-    ctx.arc(x, y-5*scale, 7*scale, 0, Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, y-4*scale, 8*scale, 5*scale, 0, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = '#5a7a28';
-    ctx.beginPath();
-    ctx.arc(x-3, y-7*scale, 5*scale, 0, Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(x-4*scale, y-6*scale, 4*scale, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = '#3a5a18';
-    ctx.beginPath();
-    ctx.arc(x+3, y-6*scale, 4*scale, 0, Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3*scale, y-5*scale, 3.5*scale, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#6a8a30';
+    ctx.beginPath(); ctx.arc(x, y-7*scale, 3*scale, 0, Math.PI*2); ctx.fill();
   } else if (variant === 3) {
-    // Young sapling (reforested) - thin pine, lighter green
-    ctx.fillStyle = '#5a3a20';
-    ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
-    ctx.fillStyle = '#2a7a2a';
-    drawTriangle(ctx, x, y-14*scale, 6*scale, 7*scale);
-    ctx.fillStyle = '#38a038';
-    drawTriangle(ctx, x, y-10*scale, 8*scale, 7*scale);
+    // Young sapling — thin, light green, hopeful
+    ctx.fillStyle = '#6a4a28';
+    ctx.fillRect(x-0.5*scale, y-3*scale, 1*scale, 4*scale);
+    ctx.fillStyle = '#48a838';
+    ctx.beginPath(); ctx.ellipse(x+sway*0.3, y-10*scale, 4*scale, 6*scale, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#58b848';
+    ctx.beginPath(); ctx.arc(x-1*scale+sway*0.4, y-12*scale, 3*scale, 0, Math.PI*2); ctx.fill();
   } else if (variant === 4) {
-    // Fruit tree (orchard) - round canopy, pink/white blossom
-    ctx.fillStyle = '#7a4a28';
+    // Fruit tree — round, with visible fruit
+    ctx.fillStyle = '#7a4a20';
     ctx.fillRect(x-1*scale, y-5*scale, 2*scale, 6*scale);
     ctx.fillStyle = '#3a8a2a';
-    ctx.beginPath();
-    ctx.arc(x, y-13*scale, 7*scale, 0, Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,200,200,0.7)';
-    ctx.beginPath(); ctx.arc(x-2, y-15*scale, 2*scale, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x+3, y-12*scale, 1.5*scale, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x-1, y-11*scale, 1.5*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 5) {
-    // Norway Spruce (Fichte) — tall, very narrow spire, dark blue-green
-    // Trunk
-    ctx.fillStyle = '#4a2e10';
-    ctx.fillRect(x-1*scale+sway*0.1, y-3*scale, 2*scale, 4*scale);
-    // Four tiers, each slightly offset by sway
-    const spruceColors = ['#0e3d12','#145018','#1a5e1e','#226628'];
-    const tiers = [[5,5],[7,7],[9,8],[11,7]];
-    for (let i = 0; i < tiers.length; i++) {
-      const [w,h] = tiers[i];
-      const yo = y - 6*scale - i*7*scale;
-      ctx.fillStyle = spruceColors[i];
-      drawTriangle(ctx, x + sway*(i*0.15), yo, w*scale, h*scale);
+    ctx.beginPath(); ctx.arc(x+sway*0.2, y-13*scale, 7*scale, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#4a9a38';
+    ctx.beginPath(); ctx.arc(x-2*scale, y-15*scale, 5*scale, 0, Math.PI*2); ctx.fill();
+    // Fruit — red apples or pinkish blossoms
+    const fruitColors = ['#d04040','#e06040','#d05050','#c83838','#e05858'];
+    for (let i = 0; i < 4; i++) {
+      const fx = x + ((seedOffset+i)*7%11 - 5) * scale;
+      const fy = y - (10 + (seedOffset+i)*3%6) * scale;
+      ctx.fillStyle = fruitColors[(seedOffset+i)%5];
+      ctx.beginPath(); ctx.arc(fx, fy, 1.5*scale, 0, Math.PI*2); ctx.fill();
     }
-    // Tiny highlight on top tier
-    ctx.fillStyle = 'rgba(80,180,80,0.22)';
-    drawTriangle(ctx, x + sway*0.6, y - 6*scale - 3*tiers.length*scale, 3*scale, 3*scale);
+  } else if (variant === 5) {
+    // Fir / Tanne — classic conifer but rounder and warmer than a spruce
+    ctx.fillStyle = '#4a2e10';
+    ctx.fillRect(x-1*scale, y-3*scale, 2*scale, 4*scale);
+    // Rounded triangular tiers with warm dark green
+    const tierColors = ['#1a4e1a','#1e5a1e','#226622','#2a7228'];
+    const tierW = [5, 7.5, 10, 12];
+    const tierH = [5, 6, 7, 6];
+    for (let i = 3; i >= 0; i--) {
+      const yo = y - 5*scale - i*6*scale;
+      ctx.fillStyle = tierColors[i];
+      // Rounded triangle using a curved path
+      const hw = tierW[i]*scale*0.5;
+      const th = tierH[i]*scale;
+      ctx.beginPath();
+      ctx.moveTo(x+sway*(i*0.1), yo - th);
+      ctx.quadraticCurveTo(x + hw*0.3+sway*(i*0.1), yo - th*0.3, x + hw+sway*(i*0.05), yo);
+      ctx.quadraticCurveTo(x+sway*(i*0.1), yo + 1*scale, x - hw+sway*(i*0.05), yo);
+      ctx.quadraticCurveTo(x - hw*0.3+sway*(i*0.1), yo - th*0.3, x+sway*(i*0.1), yo - th);
+      ctx.fill();
+    }
+    // Snow cap on top (subtle light highlight)
+    ctx.fillStyle = 'rgba(140,200,100,0.2)';
+    ctx.beginPath(); ctx.arc(x+sway*0.4, y-28*scale, 2.5*scale, 0, Math.PI*2); ctx.fill();
   } else if (variant === 6) {
-    // Silver Birch (Birke) — white trunk, light airy canopy, gentle sway
-    // Trunk with white/grey pixel art
-    ctx.fillStyle = '#d0cec0';
+    // Silver Birch — white trunk, airy light canopy
+    ctx.fillStyle = '#d8d4c8';
     ctx.fillRect(x-1*scale+sway*0.05, y-4*scale, 2*scale, 6*scale);
-    // Black birch marks
-    ctx.fillStyle = '#444';
-    ctx.fillRect(x-1*scale+sway*0.05, y-3*scale, 2*scale, 1*scale);
-    ctx.fillRect(x-1*scale+sway*0.05, y-6*scale, 2*scale, 1*scale);
-    // Light canopy — sparse, yellowish-green
-    ctx.fillStyle = 'rgba(140,190,80,0.7)';
-    ctx.beginPath();
-    ctx.arc(x + sway, y-16*scale, 6*scale, 0, Math.PI*2);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(160,210,90,0.5)';
-    ctx.beginPath();
-    ctx.arc(x-4*scale + sway, y-13*scale, 4*scale, 0, Math.PI*2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(x+3*scale + sway, y-14*scale, 3.5*scale, 0, Math.PI*2);
-    ctx.fill();
+    // Bark marks
+    ctx.fillStyle = '#555';
+    ctx.fillRect(x-0.8*scale+sway*0.05, y-2*scale, 1.6*scale, 0.8*scale);
+    ctx.fillRect(x-0.8*scale+sway*0.05, y-5*scale, 1.6*scale, 0.6*scale);
+    // Airy canopy — transparent, warm yellow-green
+    ctx.fillStyle = 'rgba(150,200,70,0.6)';
+    ctx.beginPath(); ctx.arc(x+sway, y-14*scale, 6*scale, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(170,220,80,0.45)';
+    ctx.beginPath(); ctx.arc(x-3*scale+sway, y-12*scale, 4*scale, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+4*scale+sway, y-13*scale, 3.5*scale, 0, Math.PI*2); ctx.fill();
+    // Leaf shimmer
+    ctx.fillStyle = 'rgba(200,240,100,0.15)';
+    ctx.beginPath(); ctx.arc(x-2*scale+sway, y-16*scale, 2.5*scale, 0, Math.PI*2); ctx.fill();
   } else if (variant === 7) {
-    // Spruce plantation (Fichtenforst) — uniform tight rows, same-height spires
-    // A cluster of 2 tight spruces side by side — pixel art monoculture look
-    const offsets = [-4*scale, 4*scale];
-    const swayFactor = [0.8, 1.2];
+    // Mixed conifer group — two trees close together, different heights
+    const offsets = [-3.5*scale, 3.5*scale];
+    const heights = [0.9, 1.1];
     for (let j = 0; j < 2; j++) {
-      const ox = x + offsets[j] + sway * swayFactor[j] * 0.5;
+      const ox = x + offsets[j];
+      const hs = heights[j];
       // Trunk
-      ctx.fillStyle = '#3a2408';
-      ctx.fillRect(ox-1*scale, y-3*scale, 1.5*scale, 4*scale);
-      // Tiers — uniform height, very dark (plantation monoculture)
-      const pc = ['#0a3010','#0e3a14','#124018','#16481c'];
-      const pts = [[4,4],[6,5],[7,6],[8,5]];
-      for (let i = 0; i < pts.length; i++) {
-        const [w,h] = pts[i];
-        ctx.fillStyle = pc[i];
-        drawTriangle(ctx, ox, y - 5*scale - i*6*scale, w*scale, h*scale);
+      ctx.fillStyle = '#4a3018';
+      ctx.fillRect(ox-0.8*scale, y-3*scale, 1.5*scale, 4*scale);
+      // Rounded tiers
+      const tc = j===0 ? ['#1a4e1a','#1e5820','#226222'] : ['#1e5a22','#266228','#2a6e2e'];
+      for (let i = 0; i < 3; i++) {
+        const tw = (4 + i*2.5) * scale * hs;
+        const th = (4 + i) * scale * hs;
+        const yo = y - 5*scale - i*5.5*scale*hs;
+        ctx.fillStyle = tc[i];
+        ctx.beginPath();
+        ctx.moveTo(ox + sway*(i*0.08), yo - th);
+        ctx.quadraticCurveTo(ox + tw*0.5, yo, ox - tw*0.5, yo);
+        ctx.quadraticCurveTo(ox, yo - th*0.5, ox + sway*(i*0.08), yo - th);
+        ctx.fill();
       }
     }
   }
@@ -2549,12 +2814,45 @@ function showParcelPopup(f) {
   if (!claim) {
     act.innerHTML = `<button class="btn btn-primary btn-small" onclick="doClaim()">🏴 Kaufen (${price}🪙)</button>`;
   } else if (claim.player_id === G.player.id && !claim.converted_to) {
-    act.innerHTML = `
+    // My parcel — show convert/sell + any incoming offers
+    let html = `
       <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')">🌿 Naturschutz</button>
       <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>
       <button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
+    // Show incoming offers for this parcel
+    const incomingOffers = (G.offers||[]).filter(o => o.parcel_id === pid && o.seller_id === G.player.id && o.status === 'pending');
+    if (incomingOffers.length > 0) {
+      html += `<div style="width:100%;margin-top:8px;border-top:1px solid var(--panel-border);padding-top:8px">`;
+      html += `<span style="font:8px var(--font-pixel);color:var(--gold)">📨 Kaufangebote:</span>`;
+      for (const o of incomingOffers) {
+        html += `<div style="display:flex;align-items:center;gap:6px;margin-top:4px;font:18px VT323;color:var(--text)">`;
+        html += `<span>${esc(o.buyer_name)}: ${o.offer_price}🪙</span>`;
+        html += `<button class="btn btn-primary btn-small" style="padding:3px 8px;font-size:7px" onclick="doRespondOffer(${o.id},true)">✓</button>`;
+        html += `<button class="btn btn-danger btn-small" style="padding:3px 8px;font-size:7px" onclick="doRespondOffer(${o.id},false)">✗</button>`;
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+    act.innerHTML = html;
   } else if (claim.player_id === G.player.id) {
     act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${claim.converted_to}</span>`;
+  } else {
+    // Someone else's parcel — offer to buy
+    const myOffer = (G.offers||[]).find(o => o.parcel_id === pid && o.buyer_id === G.player.id && o.status === 'pending');
+    if (myOffer) {
+      act.innerHTML = `<span style="font:18px VT323;color:var(--gold)">📨 Angebot: ${myOffer.offer_price}🪙 (wartet)</span>`;
+    } else {
+      const suggestedPrice = Math.round(price * 1.5);
+      act.innerHTML = `
+        <div style="width:100%">
+          <span style="font:8px var(--font-pixel);color:var(--text-dim);display:block;margin-bottom:4px">Kaufangebot an ${esc(owner.name)}:</span>
+          <div style="display:flex;gap:6px;align-items:stretch">
+            <input type="number" id="offer-price-input" value="${suggestedPrice}" min="10" max="99999" 
+              style="flex:1;padding:6px 8px;font:20px VT323;background:var(--bg);color:var(--text-bright);border:2px solid var(--panel-border);width:80px">
+            <button class="btn btn-gold btn-small" onclick="doMakeOffer()">📨 Anbieten</button>
+          </div>
+        </div>`;
+    }
   }
 
   // EZ link — make the EZ field clickable to open separate EZ popup
@@ -2765,6 +3063,45 @@ window.doClaimEZ = async function(kgCode, ez) {
   await loadClaimed(); render();
   if (G.sel) showParcelPopup(G.sel);
   loadChallenges();
+};
+
+window.doMakeOffer = async function() {
+  if (!G.sel) return;
+  const priceInput = document.getElementById('offer-price-input');
+  if (!priceInput) return;
+  const offerPrice = parseInt(priceInput.value);
+  if (!offerPrice || offerPrice < 10) { toast('Mindestangebot: 10 Münzen','err'); return; }
+  if (offerPrice > G.player.coins) { toast('Nicht genug Münzen! Du hast '+G.player.coins+'🪙','err'); return; }
+  const p = G.sel.properties;
+  const res = await POST('/api/offer-parcel', {
+    session_id: G.session.id,
+    buyer_id: G.player.id,
+    parcel_id: p.parcel_id,
+    offer_price: offerPrice,
+  });
+  if (res.error) { toast(res.error, 'err'); return; }
+  toast('📨 Angebot gesendet: '+offerPrice+'🪙', 'ok');
+  await loadOffers();
+  showParcelPopup(G.sel);
+};
+
+window.doRespondOffer = async function(offerId, accept) {
+  const res = await POST('/api/offer-respond', {
+    offer_id: offerId,
+    player_id: G.player.id,
+    accept: accept,
+  });
+  if (res.error) { toast(res.error, 'err'); return; }
+  if (accept) {
+    toast('✅ Angebot angenommen! Parzelle verkauft.', 'ok');
+    if (res.seller) G.player = res.seller;
+  } else {
+    toast('❌ Angebot abgelehnt.', 'ok');
+  }
+  updateStats();
+  await Promise.all([loadClaimed(), loadOffers()]);
+  render();
+  if (G.sel) showParcelPopup(G.sel);
 };
 
 async function claimTreasure(t) {

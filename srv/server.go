@@ -104,6 +104,11 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/complete-challenge", s.handleCompleteChallenge)
 	mux.HandleFunc("POST /api/sell-parcel", s.handleSellParcel)
 
+	// Parcel offers (buy-back system)
+	mux.HandleFunc("POST /api/offer-parcel", s.handleOfferParcel)
+	mux.HandleFunc("POST /api/offer-respond", s.handleOfferRespond)
+	mux.HandleFunc("GET /api/session/{id}/offers", s.handleGetOffers)
+
 	// Player info
 	mux.HandleFunc("GET /api/player/{id}", s.handleGetPlayer)
 	mux.HandleFunc("GET /api/player/{id}/sessions", s.handleGetPlayerSessions)
@@ -762,6 +767,200 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 	})
 
 	jsonResp(w, map[string]any{"success": true, "sell_price": sellPrice, "player": player})
+}
+
+// ---- Parcel Offer System ----
+
+func (s *Server) handleOfferParcel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID  string `json:"session_id"`
+		BuyerID    string `json:"buyer_id"`
+		ParcelID   string `json:"parcel_id"`
+		OfferPrice int64  `json:"offer_price"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+	if req.OfferPrice < 10 {
+		jsonErr(w, "Mindestangebot: 10 Münzen", 400)
+		return
+	}
+
+	// Verify parcel is claimed
+	claim, err := s.Q.GetParcelClaim(r.Context(), dbgen.GetParcelClaimParams{
+		SessionID: req.SessionID,
+		ParcelID:  req.ParcelID,
+	})
+	if err != nil {
+		jsonErr(w, "Parzelle nicht gefunden", 404)
+		return
+	}
+	if claim.PlayerID == req.BuyerID {
+		jsonErr(w, "Du besitzt diese Parzelle bereits", 400)
+		return
+	}
+
+	// Verify buyer exists and has enough coins (soft check — coins aren't locked)
+	buyer, err := s.Q.GetPlayerByID(r.Context(), req.BuyerID)
+	if err != nil {
+		jsonErr(w, "Spieler nicht gefunden", 404)
+		return
+	}
+	if buyer.Coins < req.OfferPrice {
+		jsonErr(w, fmt.Sprintf("Nicht genug Münzen! Brauchst %d, hast %d", req.OfferPrice, buyer.Coins), 400)
+		return
+	}
+
+	// Create the offer
+	err = s.Q.CreateParcelOffer(r.Context(), dbgen.CreateParcelOfferParams{
+		SessionID:  req.SessionID,
+		ParcelID:   req.ParcelID,
+		ClaimID:    claim.ID,
+		BuyerID:    req.BuyerID,
+		SellerID:   claim.PlayerID,
+		OfferPrice: req.OfferPrice,
+	})
+	if err != nil {
+		slog.Error("create offer", "error", err)
+		jsonErr(w, "Angebot konnte nicht erstellt werden", 500)
+		return
+	}
+
+	// Notify seller via SSE
+	seller, _ := s.Q.GetPlayerByID(r.Context(), claim.PlayerID)
+	s.broadcast(req.SessionID, map[string]any{
+		"type":        "offer_made",
+		"parcel_id":   req.ParcelID,
+		"buyer":       buyer.Name,
+		"seller":      seller.Name,
+		"seller_id":   claim.PlayerID,
+		"offer_price": req.OfferPrice,
+	})
+
+	jsonResp(w, map[string]any{"success": true, "message": "Angebot gesendet!"})
+}
+
+func (s *Server) handleOfferRespond(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OfferID  int64  `json:"offer_id"`
+		PlayerID string `json:"player_id"` // must be seller
+		Accept   bool   `json:"accept"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+
+	offer, err := s.Q.GetOfferByID(r.Context(), req.OfferID)
+	if err != nil {
+		jsonErr(w, "Angebot nicht gefunden", 404)
+		return
+	}
+	if offer.Status != "pending" {
+		jsonErr(w, "Angebot nicht mehr gültig", 400)
+		return
+	}
+	if offer.SellerID != req.PlayerID {
+		jsonErr(w, "Nicht dein Angebot", 403)
+		return
+	}
+
+	if !req.Accept {
+		// Reject
+		s.Q.UpdateOfferStatus(r.Context(), dbgen.UpdateOfferStatusParams{
+			Status: "rejected",
+			ID:     req.OfferID,
+		})
+		s.broadcast(offer.SessionID, map[string]any{
+			"type":      "offer_rejected",
+			"parcel_id": offer.ParcelID,
+			"buyer_id":  offer.BuyerID,
+			"seller_id": offer.SellerID,
+		})
+		jsonResp(w, map[string]any{"success": true, "action": "rejected"})
+		return
+	}
+
+	// Accept — check buyer has enough coins
+	buyer, err := s.Q.GetPlayerByID(r.Context(), offer.BuyerID)
+	if err != nil {
+		jsonErr(w, "Käufer nicht gefunden", 404)
+		return
+	}
+	if buyer.Coins < offer.OfferPrice {
+		// Buyer doesn't have enough — they need to sell parcels first
+		// We notify them and keep the offer pending
+		s.broadcast(offer.SessionID, map[string]any{
+			"type":        "offer_funds_needed",
+			"parcel_id":   offer.ParcelID,
+			"buyer_id":    offer.BuyerID,
+			"offer_id":    offer.ID,
+			"offer_price": offer.OfferPrice,
+			"buyer_coins": buyer.Coins,
+			"shortfall":   offer.OfferPrice - buyer.Coins,
+		})
+		jsonErr(w, fmt.Sprintf("Käufer hat nur %d Münzen, braucht %d. Käufer muss Parzellen verkaufen!", buyer.Coins, offer.OfferPrice), 400)
+		return
+	}
+
+	// Execute the trade
+	// 1. Mark offer as accepted
+	s.Q.UpdateOfferStatus(r.Context(), dbgen.UpdateOfferStatusParams{
+		Status: "accepted",
+		ID:     req.OfferID,
+	})
+
+	// 2. Cancel other pending offers for this parcel
+	s.Q.CancelPendingOffersForParcel(r.Context(), dbgen.CancelPendingOffersForParcelParams{
+		ParcelID:  offer.ParcelID,
+		SessionID: offer.SessionID,
+	})
+
+	// 3. Transfer coins: buyer pays, seller receives
+	s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{
+		Coins: -offer.OfferPrice,
+		ID:    offer.BuyerID,
+	})
+	s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{
+		Coins: offer.OfferPrice,
+		ID:    offer.SellerID,
+	})
+
+	// 4. Transfer parcel ownership: update the claim in place
+	s.DB.ExecContext(r.Context(),
+		"UPDATE parcel_claims SET player_id = ?, purchase_price = ?, converted_to = NULL WHERE id = ?",
+		offer.BuyerID, offer.OfferPrice, offer.ClaimID)
+
+	// 5. Broadcast
+	seller, _ := s.Q.GetPlayerByID(r.Context(), offer.SellerID)
+	updatedBuyer, _ := s.Q.GetPlayerByID(r.Context(), offer.BuyerID)
+	s.broadcast(offer.SessionID, map[string]any{
+		"type":        "offer_accepted",
+		"parcel_id":   offer.ParcelID,
+		"buyer":       updatedBuyer.Name,
+		"buyer_id":    offer.BuyerID,
+		"seller":      seller.Name,
+		"seller_id":   offer.SellerID,
+		"offer_price": offer.OfferPrice,
+	})
+
+	jsonResp(w, map[string]any{
+		"success":   true,
+		"action":    "accepted",
+		"buyer":     updatedBuyer,
+		"seller":    seller,
+	})
+}
+
+func (s *Server) handleGetOffers(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	offers, err := s.Q.GetSessionOffers(r.Context(), sessionID)
+	if err != nil {
+		jsonErr(w, "error", 500)
+		return
+	}
+	jsonResp(w, offers)
 }
 
 func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {

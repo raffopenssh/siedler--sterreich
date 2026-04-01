@@ -72,6 +72,19 @@ type ParcelClaim struct {
 	Ez            string    `json:"ez"`
 }
 
+type ParcelOffer struct {
+	ID         int64      `json:"id"`
+	SessionID  string     `json:"session_id"`
+	ParcelID   string     `json:"parcel_id"`
+	ClaimID    int64      `json:"claim_id"`
+	BuyerID    string     `json:"buyer_id"`
+	SellerID   string     `json:"seller_id"`
+	OfferPrice int64      `json:"offer_price"`
+	Status     string     `json:"status"`
+	CreatedAt  *time.Time `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at"`
+}
+
 type Player struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`

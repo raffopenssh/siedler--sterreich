@@ -91,12 +91,20 @@ input[type=text]:focus { border-color:var(--gold); }
   min-width:380px; box-shadow:4px 4px 0 #000; text-align:left;
   background-image:linear-gradient(180deg, rgba(60,50,30,.15) 0%, transparent 100%);
 }
-.welcome-panel input { margin-bottom:14px; }
-.name-row { display:flex; gap:8px; align-items:stretch; margin-bottom:14px; }
-.name-row input { flex:1; margin-bottom:0; }
-.btn-reroll { font-size:20px; padding:6px 12px; line-height:1; flex-shrink:0; }
+.name-row { display:flex; align-items:stretch; margin-bottom:14px; position:relative; }
+.name-row input { flex:1; padding-right:48px; }
+.btn-reroll {
+  position:absolute; right:4px; top:50%; transform:translateY(-50%);
+  font-size:20px; padding:4px 8px; line-height:1;
+  background:transparent; border:none; cursor:pointer; color:var(--text-dim);
+  transition:color .15s;
+}
+.btn-reroll:hover { color:var(--gold); background:transparent; border:none; }
+.btn-reroll:active { transform:translateY(-50%) scale(0.9); }
 .btn-lucky { background:#7a3ea0; color:#fff; border-color:#9a5ec0; flex:1; }
 .btn-lucky:hover { background:#8a4eb0; }
+.welcome-panel .btn-row { justify-content:stretch; }
+.welcome-panel .btn-row .btn { flex:1; text-align:center; }
 .rejoin-box {
   margin-top:16px; padding:14px; background:rgba(0,0,0,.3); border:2px solid var(--green);
 }

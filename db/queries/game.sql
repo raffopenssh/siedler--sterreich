@@ -104,3 +104,49 @@ SELECT
     COALESCE(SUM(CASE WHEN converted_to = 'biodiversity' THEN area_sqm ELSE 0 END), 0) as bio_area,
     COALESCE(SUM(area_sqm), 0) as total_area
 FROM parcel_claims WHERE session_id = ?;
+
+-- name: CreateParcelOffer :exec
+INSERT INTO parcel_offers (session_id, parcel_id, claim_id, buyer_id, seller_id, offer_price)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: GetPendingOffersForParcel :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.parcel_id = ? AND po.status = 'pending'
+ORDER BY po.offer_price DESC;
+
+-- name: GetPendingOffersForSeller :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.seller_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC;
+
+-- name: GetPendingOffersForBuyer :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.buyer_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC;
+
+-- name: GetOfferByID :one
+SELECT * FROM parcel_offers WHERE id = ?;
+
+-- name: UpdateOfferStatus :exec
+UPDATE parcel_offers SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: CancelPendingOffersForParcel :exec
+UPDATE parcel_offers SET status = 'cancelled', resolved_at = CURRENT_TIMESTAMP
+WHERE parcel_id = ? AND session_id = ? AND status = 'pending';
+
+-- name: GetSessionOffers :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC;

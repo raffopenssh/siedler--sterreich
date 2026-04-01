@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+const cancelPendingOffersForParcel = `-- name: CancelPendingOffersForParcel :exec
+UPDATE parcel_offers SET status = 'cancelled', resolved_at = CURRENT_TIMESTAMP
+WHERE parcel_id = ? AND session_id = ? AND status = 'pending'
+`
+
+type CancelPendingOffersForParcelParams struct {
+	ParcelID  string `json:"parcel_id"`
+	SessionID string `json:"session_id"`
+}
+
+func (q *Queries) CancelPendingOffersForParcel(ctx context.Context, arg CancelPendingOffersForParcelParams) error {
+	_, err := q.db.ExecContext(ctx, cancelPendingOffersForParcel, arg.ParcelID, arg.SessionID)
+	return err
+}
+
 const claimParcel = `-- name: ClaimParcel :exec
 INSERT INTO parcel_claims (session_id, player_id, parcel_id, kg_code, gnr, ez, area_sqm, landuse, purchase_price)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -132,6 +147,32 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 	return i, err
 }
 
+const createParcelOffer = `-- name: CreateParcelOffer :exec
+INSERT INTO parcel_offers (session_id, parcel_id, claim_id, buyer_id, seller_id, offer_price)
+VALUES (?, ?, ?, ?, ?, ?)
+`
+
+type CreateParcelOfferParams struct {
+	SessionID  string `json:"session_id"`
+	ParcelID   string `json:"parcel_id"`
+	ClaimID    int64  `json:"claim_id"`
+	BuyerID    string `json:"buyer_id"`
+	SellerID   string `json:"seller_id"`
+	OfferPrice int64  `json:"offer_price"`
+}
+
+func (q *Queries) CreateParcelOffer(ctx context.Context, arg CreateParcelOfferParams) error {
+	_, err := q.db.ExecContext(ctx, createParcelOffer,
+		arg.SessionID,
+		arg.ParcelID,
+		arg.ClaimID,
+		arg.BuyerID,
+		arg.SellerID,
+		arg.OfferPrice,
+	)
+	return err
+}
+
 const createPlayer = `-- name: CreatePlayer :exec
 INSERT INTO players (id, name, rejoin_token, coins) VALUES (?, ?, ?, 10000)
 `
@@ -211,6 +252,28 @@ func (q *Queries) GetCachedData(ctx context.Context, cacheKey string) (string, e
 	return data, err
 }
 
+const getOfferByID = `-- name: GetOfferByID :one
+SELECT id, session_id, parcel_id, claim_id, buyer_id, seller_id, offer_price, status, created_at, resolved_at FROM parcel_offers WHERE id = ?
+`
+
+func (q *Queries) GetOfferByID(ctx context.Context, id int64) (ParcelOffer, error) {
+	row := q.db.QueryRowContext(ctx, getOfferByID, id)
+	var i ParcelOffer
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.ParcelID,
+		&i.ClaimID,
+		&i.BuyerID,
+		&i.SellerID,
+		&i.OfferPrice,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const getParcelClaim = `-- name: GetParcelClaim :one
 SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez FROM parcel_claims WHERE session_id = ? AND parcel_id = ?
 `
@@ -238,6 +301,201 @@ func (q *Queries) GetParcelClaim(ctx context.Context, arg GetParcelClaimParams) 
 		&i.Ez,
 	)
 	return i, err
+}
+
+const getPendingOffersForBuyer = `-- name: GetPendingOffersForBuyer :many
+SELECT po.id, po.session_id, po.parcel_id, po.claim_id, po.buyer_id, po.seller_id, po.offer_price, po.status, po.created_at, po.resolved_at, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.buyer_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC
+`
+
+type GetPendingOffersForBuyerParams struct {
+	SessionID string `json:"session_id"`
+	BuyerID   string `json:"buyer_id"`
+}
+
+type GetPendingOffersForBuyerRow struct {
+	ID         int64      `json:"id"`
+	SessionID  string     `json:"session_id"`
+	ParcelID   string     `json:"parcel_id"`
+	ClaimID    int64      `json:"claim_id"`
+	BuyerID    string     `json:"buyer_id"`
+	SellerID   string     `json:"seller_id"`
+	OfferPrice int64      `json:"offer_price"`
+	Status     string     `json:"status"`
+	CreatedAt  *time.Time `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at"`
+	BuyerName  string     `json:"buyer_name"`
+	SellerName string     `json:"seller_name"`
+}
+
+func (q *Queries) GetPendingOffersForBuyer(ctx context.Context, arg GetPendingOffersForBuyerParams) ([]GetPendingOffersForBuyerRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPendingOffersForBuyer, arg.SessionID, arg.BuyerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPendingOffersForBuyerRow{}
+	for rows.Next() {
+		var i GetPendingOffersForBuyerRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.ParcelID,
+			&i.ClaimID,
+			&i.BuyerID,
+			&i.SellerID,
+			&i.OfferPrice,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.BuyerName,
+			&i.SellerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPendingOffersForParcel = `-- name: GetPendingOffersForParcel :many
+SELECT po.id, po.session_id, po.parcel_id, po.claim_id, po.buyer_id, po.seller_id, po.offer_price, po.status, po.created_at, po.resolved_at, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.parcel_id = ? AND po.status = 'pending'
+ORDER BY po.offer_price DESC
+`
+
+type GetPendingOffersForParcelParams struct {
+	SessionID string `json:"session_id"`
+	ParcelID  string `json:"parcel_id"`
+}
+
+type GetPendingOffersForParcelRow struct {
+	ID         int64      `json:"id"`
+	SessionID  string     `json:"session_id"`
+	ParcelID   string     `json:"parcel_id"`
+	ClaimID    int64      `json:"claim_id"`
+	BuyerID    string     `json:"buyer_id"`
+	SellerID   string     `json:"seller_id"`
+	OfferPrice int64      `json:"offer_price"`
+	Status     string     `json:"status"`
+	CreatedAt  *time.Time `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at"`
+	BuyerName  string     `json:"buyer_name"`
+	SellerName string     `json:"seller_name"`
+}
+
+func (q *Queries) GetPendingOffersForParcel(ctx context.Context, arg GetPendingOffersForParcelParams) ([]GetPendingOffersForParcelRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPendingOffersForParcel, arg.SessionID, arg.ParcelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPendingOffersForParcelRow{}
+	for rows.Next() {
+		var i GetPendingOffersForParcelRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.ParcelID,
+			&i.ClaimID,
+			&i.BuyerID,
+			&i.SellerID,
+			&i.OfferPrice,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.BuyerName,
+			&i.SellerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPendingOffersForSeller = `-- name: GetPendingOffersForSeller :many
+SELECT po.id, po.session_id, po.parcel_id, po.claim_id, po.buyer_id, po.seller_id, po.offer_price, po.status, po.created_at, po.resolved_at, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.seller_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC
+`
+
+type GetPendingOffersForSellerParams struct {
+	SessionID string `json:"session_id"`
+	SellerID  string `json:"seller_id"`
+}
+
+type GetPendingOffersForSellerRow struct {
+	ID         int64      `json:"id"`
+	SessionID  string     `json:"session_id"`
+	ParcelID   string     `json:"parcel_id"`
+	ClaimID    int64      `json:"claim_id"`
+	BuyerID    string     `json:"buyer_id"`
+	SellerID   string     `json:"seller_id"`
+	OfferPrice int64      `json:"offer_price"`
+	Status     string     `json:"status"`
+	CreatedAt  *time.Time `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at"`
+	BuyerName  string     `json:"buyer_name"`
+	SellerName string     `json:"seller_name"`
+}
+
+func (q *Queries) GetPendingOffersForSeller(ctx context.Context, arg GetPendingOffersForSellerParams) ([]GetPendingOffersForSellerRow, error) {
+	rows, err := q.db.QueryContext(ctx, getPendingOffersForSeller, arg.SessionID, arg.SellerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPendingOffersForSellerRow{}
+	for rows.Next() {
+		var i GetPendingOffersForSellerRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.ParcelID,
+			&i.ClaimID,
+			&i.BuyerID,
+			&i.SellerID,
+			&i.OfferPrice,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.BuyerName,
+			&i.SellerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getPlayerByID = `-- name: GetPlayerByID :one
@@ -553,6 +811,66 @@ func (q *Queries) GetSessionByInvite(ctx context.Context, inviteCode string) (Ga
 	return i, err
 }
 
+const getSessionOffers = `-- name: GetSessionOffers :many
+SELECT po.id, po.session_id, po.parcel_id, po.claim_id, po.buyer_id, po.seller_id, po.offer_price, po.status, po.created_at, po.resolved_at, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC
+`
+
+type GetSessionOffersRow struct {
+	ID         int64      `json:"id"`
+	SessionID  string     `json:"session_id"`
+	ParcelID   string     `json:"parcel_id"`
+	ClaimID    int64      `json:"claim_id"`
+	BuyerID    string     `json:"buyer_id"`
+	SellerID   string     `json:"seller_id"`
+	OfferPrice int64      `json:"offer_price"`
+	Status     string     `json:"status"`
+	CreatedAt  *time.Time `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at"`
+	BuyerName  string     `json:"buyer_name"`
+	SellerName string     `json:"seller_name"`
+}
+
+func (q *Queries) GetSessionOffers(ctx context.Context, sessionID string) ([]GetSessionOffersRow, error) {
+	rows, err := q.db.QueryContext(ctx, getSessionOffers, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetSessionOffersRow{}
+	for rows.Next() {
+		var i GetSessionOffersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.ParcelID,
+			&i.ClaimID,
+			&i.BuyerID,
+			&i.SellerID,
+			&i.OfferPrice,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.BuyerName,
+			&i.SellerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSessionParcels = `-- name: GetSessionParcels :many
 SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez FROM parcel_claims WHERE session_id = ?
 `
@@ -698,6 +1016,20 @@ type SetCachedDataParams struct {
 
 func (q *Queries) SetCachedData(ctx context.Context, arg SetCachedDataParams) error {
 	_, err := q.db.ExecContext(ctx, setCachedData, arg.CacheKey, arg.Data, arg.ExpiresAt)
+	return err
+}
+
+const updateOfferStatus = `-- name: UpdateOfferStatus :exec
+UPDATE parcel_offers SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?
+`
+
+type UpdateOfferStatusParams struct {
+	Status string `json:"status"`
+	ID     int64  `json:"id"`
+}
+
+func (q *Queries) UpdateOfferStatus(ctx context.Context, arg UpdateOfferStatusParams) error {
+	_, err := q.db.ExecContext(ctx, updateOfferStatus, arg.Status, arg.ID)
 	return err
 }
 
