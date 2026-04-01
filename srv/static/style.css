@@ -362,8 +362,14 @@ input[type=text]:focus { border-color:var(--gold); }
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar { width:8px; }
 ::-webkit-scrollbar-track { background:var(--bg); }
-::-webkit-scrollbar-thumb { background:var(--panel-border); }
+::-webkit-scrollbar-thumb { background:var(--panel-border); border-radius:4px; }
 ::-webkit-scrollbar-thumb:hover { background:var(--gold); }
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-border) var(--bg);
+}
 
 /* ===== Tablet (769-1024px) ===== */
 @media (max-width:1024px) and (min-width:769px) {
@@ -434,9 +440,11 @@ input[type=text]:focus { border-color:var(--gold); }
   /* Popup */
   .popup {
     min-width:0; width:auto; padding:14px; max-width:calc(100vw - 16px);
+    max-height:45vh; /* Limit to 45% of viewport height to allow both popups without overlap */
+    overflow-y:auto; /* Enable scrolling */
   }
-  #parcel-popup { left:8px; bottom:60px; right:auto; }
-  #ez-popup { left:8px; top:60px; right:auto; bottom:auto; }
+  #parcel-popup { left:8px; bottom:70px; right:auto; } /* Moved up more */
+  #ez-popup { left:8px; top:70px; right:auto; bottom:auto; }
 
   /* Chat */
   .chat-input-row input { font-size:16px; }

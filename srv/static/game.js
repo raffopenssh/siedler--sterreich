@@ -2557,10 +2557,8 @@ async function claimTreasure(t) {
 
 document.getElementById('popup-close').onclick = () => {
   document.getElementById('parcel-popup').classList.remove('open');
-  document.getElementById('ez-popup').classList.remove('open');
   resetPopupPosition('parcel-popup');
-  resetPopupPosition('ez-popup');
-  G.sel=null; G.ezHighlight=null; render();
+  G.sel=null; render();
 };
 
 document.getElementById('ez-popup-close').onclick = () => {
