@@ -218,7 +218,7 @@ function setUrlParams(obj) {
 }
 
 // ================= WELCOME =================
-{
+(async () => {
   const inp = document.getElementById('input-name');
   const err = document.getElementById('welcome-error');
 
@@ -226,6 +226,24 @@ function setUrlParams(obj) {
   const invitePathMatch = location.pathname.match(/\/join\/([^/?]+)/);
   const inviteCode = invitePathMatch?.[1] || getUrlParam('invite');
   if (inviteCode) setUrlParams({invite: inviteCode});
+
+  // If invite code present, fetch session preview and show streamlined join UI
+  let invitePreview = null;
+  if (inviteCode) {
+    try {
+      invitePreview = await GET('/api/invite/' + encodeURIComponent(inviteCode));
+      if (!invitePreview.error && invitePreview.session) {
+        const banner = document.getElementById('invite-banner');
+        const creatorName = invitePreview.creator_name || '???';
+        const muniName = invitePreview.session.municipality_name || '';
+        banner.innerHTML = `⚔️ In <b style="color:var(--gold)">${esc(creatorName)}s</b> Spiel` +
+          (muniName ? `<div class="invite-muni">📍 ${esc(muniName)}</div>` : '');
+        banner.style.display = 'block';
+        document.getElementById('welcome-buttons-normal').style.display = 'none';
+        document.getElementById('welcome-buttons-invite').style.display = '';
+      }
+    } catch(e) { console.error('invite preview failed', e); }
+  }
 
   // Retrieve saved player from URL
   const savedPid = getUrlParam('pid');
@@ -282,10 +300,33 @@ function setUrlParams(obj) {
     await startLucky();
   };
 
+  // Join via invite button — register, join session, go straight to game
+  document.getElementById('btn-join-invite').onclick = async () => {
+    const p = await registerAndProceed(false);
+    if (!p) return;
+    if (!invitePreview?.session) { toast('Einladung ungültig', 'err'); return; }
+    try {
+      const res = await POST('/api/session/join', {player_id: p.id, invite_code: inviteCode});
+      if (res.error) { toast(res.error, 'err'); return; }
+      G.session = res.session;
+      setUrlParams({invite: null, sid: G.session.id});
+      // Go straight to loading
+      show('loading');
+      document.getElementById('loading-muni').textContent = '📍 ' + (G.session.municipality_name||'');
+      startTipRotation();
+      startLoadingCountdown(20);
+      await startGameWithLoading();
+    } catch(e) { toast('Fehler beim Beitreten: ' + e.message, 'err'); }
+  };
+
   inp.addEventListener('keydown', e => {
-    if (e.key==='Enter') document.getElementById('btn-register').click();
+    if (invitePreview?.session) {
+      if (e.key==='Enter') document.getElementById('btn-join-invite').click();
+    } else {
+      if (e.key==='Enter') document.getElementById('btn-register').click();
+    }
   });
-}
+})();
 
 window.quickLogin = async function() {
   const id = getUrlParam('pid');

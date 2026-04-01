@@ -86,6 +86,7 @@ func (s *Server) Serve(addr string) error {
 
 	// Game API
 	mux.HandleFunc("POST /api/session/create", s.handleCreateSession)
+	mux.HandleFunc("GET /api/invite/{code}", s.handleInvitePreview)
 	mux.HandleFunc("POST /api/session/join", s.handleJoinSession)
 	mux.HandleFunc("GET /api/session/{id}", s.handleGetSession)
 	mux.HandleFunc("GET /api/session/{id}/players", s.handleGetSessionPlayers)
@@ -331,6 +332,24 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"session":     session,
 		"invite_code": inviteCode,
 		"invite_url":  fmt.Sprintf("/join/%s", inviteCode),
+	})
+}
+
+func (s *Server) handleInvitePreview(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+	session, err := s.Q.GetSessionByInvite(r.Context(), code)
+	if err != nil {
+		jsonErr(w, "Invalid invite code", 404)
+		return
+	}
+	creator, _ := s.Q.GetPlayerByID(r.Context(), session.CreatedBy)
+	creatorName := "???"
+	if creator.Name != "" {
+		creatorName = creator.Name
+	}
+	jsonResp(w, map[string]any{
+		"session":      session,
+		"creator_name": creatorName,
 	})
 }
 

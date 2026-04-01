@@ -589,3 +589,21 @@ input[type=text]:focus { border-color:var(--gold); }
   flex:1; font: 16px 'VT323', monospace; color: var(--gold-light);
   word-break: break-all; min-width: 0;
 }
+
+/* Invite banner on welcome screen */
+.invite-banner {
+  text-align: center;
+  background: rgba(0,0,0,0.5);
+  border: 2px solid var(--gold);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  font: 18px 'VT323', monospace;
+  color: var(--gold-light);
+  line-height: 1.5;
+}
+.invite-banner .invite-muni {
+  font: 14px 'VT323', monospace;
+  color: var(--green-light);
+  margin-top: 4px;
+}
