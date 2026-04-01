@@ -247,7 +247,8 @@
       <div id="muni-toast" class="muni-toast"></div>
       <canvas id="game-canvas"></canvas>
       <div id="minimap"><canvas id="mini-canvas"></canvas></div>
-      <div id="parcel-popup" class="popup">
+      <div id="parcel-popup" class="popup draggable-popup">
+        <div class="popup-drag-handle" data-drag-target="parcel-popup">☰</div>
         <button class="popup-close" id="popup-close">✕</button>
         <h3 id="pp-title">-</h3>
         <div class="pp-grid">
@@ -260,12 +261,14 @@
           <span>Besitzer</span><b id="pp-owner">-</b>
           <span>Preis</span><b id="pp-price">-</b>
         </div>
-        <div id="pp-ez-info" class="pp-ez-info" style="display:none">
-          <div class="pp-ez-header"><span class="pixel-label">📋 Einlagezahl (EZ) — Grundbuch-Einheit</span></div>
-          <div class="pp-ez-stats" id="pp-ez-stats"></div>
-          <div id="pp-ez-actions"></div>
-        </div>
         <div id="pp-actions" class="pp-actions"></div>
+      </div>
+      <div id="ez-popup" class="popup draggable-popup ez-popup">
+        <div class="popup-drag-handle" data-drag-target="ez-popup">☰</div>
+        <button class="popup-close" id="ez-popup-close">✕</button>
+        <h3 id="ez-title">📋 Einlagezahl (EZ)</h3>
+        <div class="pp-grid" id="ez-stats"></div>
+        <div id="ez-actions" class="pp-actions"></div>
       </div>
       <div id="zoom-controls" class="zoom-controls">
         <button class="btn btn-small" id="btn-zoomin">+</button>

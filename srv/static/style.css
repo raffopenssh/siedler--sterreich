@@ -267,14 +267,23 @@ input[type=text]:focus { border-color:var(--gold); }
 
 /* Parcel popup */
 .popup {
-  display:none; position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
-  background:var(--panel); border:4px solid var(--gold); padding:18px 22px;
-  min-width:340px; z-index:100; box-shadow:4px 4px 0 #000;
+  display:none; position:absolute;
+  background:var(--panel); border:3px solid var(--gold); padding:16px 20px;
+  min-width:280px; max-width:400px; z-index:100; box-shadow:4px 4px 0 #000;
   background-image:linear-gradient(180deg, rgba(60,50,30,.2) 0%, transparent 100%);
+  border-radius:4px;
 }
 .popup.open { display:block; }
+.draggable-popup { cursor:default; }
+.popup-drag-handle {
+  position:absolute; top:4px; left:8px;
+  color:var(--text-dim); font-size:14px; cursor:grab; opacity:0.5;
+  user-select:none; line-height:1;
+}
+.popup-drag-handle:hover { opacity:0.9; }
+.popup-drag-handle:active { cursor:grabbing; }
 .popup-close {
-  position:absolute; top:6px; right:10px; background:none; border:none;
+  position:absolute; top:4px; right:10px; background:none; border:none;
   color:var(--red); font:14px var(--font-pixel); cursor:pointer;
 }
 .popup h3 { font:10px var(--font-pixel); color:var(--gold); margin-bottom:10px; }
@@ -285,23 +294,14 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-grid span { color:var(--text-dim); }
 .pp-grid b { color:var(--text); font-weight:normal; }
 .pp-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
-.pp-ez-info {
-  margin-top:10px; padding:10px; background:rgba(0,0,0,.3);
-  border:2px solid var(--panel-border); border-radius:4px;
+#parcel-popup { bottom:16px; left:16px; }
+#ez-popup { bottom:16px; right:16px; }
+.ez-popup h3 { color:var(--green-light); }
+.pp-ez-link {
+  color:var(--gold); cursor:pointer; text-decoration:underline;
+  text-decoration-style:dotted;
 }
-.pp-ez-stats {
-  font:18px var(--font-game); color:var(--text); margin:6px 0;
-  display:grid; grid-template-columns:auto 1fr; gap:1px 10px;
-}
-.pp-ez-stats span { color:var(--text-dim); }
-.pp-ez-stats b { color:var(--text); font-weight:normal; }
-.ez-highlight {
-  animation:ez-pulse 1.5s ease-in-out infinite;
-}
-@keyframes ez-pulse {
-  0%,100% { opacity:0.6; }
-  50% { opacity:1; }
-}
+.pp-ez-link:hover { color:#fff; }
 
 /* In-game address search */
 .game-search {
@@ -433,9 +433,10 @@ input[type=text]:focus { border-color:var(--gold); }
 
   /* Popup */
   .popup {
-    left:8px; right:8px; bottom:60px; transform:none;
-    min-width:0; width:auto; padding:14px;
+    min-width:0; width:auto; padding:14px; max-width:calc(100vw - 16px);
   }
+  #parcel-popup { left:8px; bottom:60px; right:auto; }
+  #ez-popup { left:8px; bottom:60px; right:auto; }
 
   /* Chat */
   .chat-input-row input { font-size:16px; }

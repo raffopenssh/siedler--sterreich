@@ -13,8 +13,8 @@ const TERRAIN = {
   water:    ['#2878b8','#3080c0','#2570a8','#3888c8','#2068a0'],
   farm:     ['#a8a040','#b0a848','#a09838','#b8b050','#989030'],
   meadow:   ['#5a9e3a','#62a240','#52963a','#6aaa48','#4e9234'],
-  building: ['#8b7058','#907560','#856b52','#957a65','#7e654c'],
-  road:     ['#787870','#808078','#707068','#888880','#686860'],
+  building: ['#c8b040','#d0b848','#bca838','#d8c050','#b4a030'],
+  road:     ['#484848','#505050','#444444','#525252','#404040'],
   garden:   ['#6b8e4a','#739650','#638644','#7b9e58','#5b7e3e'],
   wetland:  ['#3a7a5a','#428260','#327254','#4a8a68','#2a6a4e'],
   waste:    ['#5a5848','#625e50','#525040','#6a6658','#4a4838'],
@@ -549,6 +549,12 @@ function drawMuniPoly(ctx, feature, isHover) {
 
 function simpleHash(s) { let h=0; for(let i=0;i<s.length;i++) h=((h<<5)-h)+s.charCodeAt(i); return h; }
 
+function centroidOf(ring) {
+  let sx=0, sy=0;
+  for (const c of ring) { sx += c[0]; sy += c[1]; }
+  return [sx/ring.length, sy/ring.length];
+}
+
 function geoBounds(geom) {
   let w=Infinity,e=-Infinity,s=Infinity,n=-Infinity;
   const processCoord = c => { if(c[0]<w)w=c[0]; if(c[0]>e)e=c[0]; if(c[1]<s)s=c[1]; if(c[1]>n)n=c[1]; };
@@ -795,6 +801,27 @@ async function refreshLobby() {
 
 // ================= MAIN GAME =================
 let gc, gctx, mc, mctx;
+let _animFrame = null; // for smooth camera animation
+
+/** Smoothly animate camera to target lon/lat/zoom over durationMs */
+function animateCamera(targetLon, targetLat, targetZoom, durationMs) {
+  if (_animFrame) cancelAnimationFrame(_animFrame);
+  const startLon = G.cam.lon, startLat = G.cam.lat, startZoom = G.cam.zoom;
+  const startTime = performance.now();
+  durationMs = durationMs || 500;
+  function step(now) {
+    let t = Math.min(1, (now - startTime) / durationMs);
+    // ease-out cubic
+    t = 1 - Math.pow(1 - t, 3);
+    G.cam.lon = startLon + (targetLon - startLon) * t;
+    G.cam.lat = startLat + (targetLat - startLat) * t;
+    G.cam.zoom = startZoom + (targetZoom - startZoom) * t;
+    render(); renderMini();
+    if (t < 1) { _animFrame = requestAnimationFrame(step); }
+    else { _animFrame = null; loadMoreParcels(); }
+  }
+  _animFrame = requestAnimationFrame(step);
+}
 
 async function startGameWithLoading() {
   if (!G.loadStart) G.loadStart = Date.now();
@@ -1278,9 +1305,11 @@ function drawGrassTexture(ctx, W, H) {
 // ================= REAL LANDUSE POLYGONS =================
 // Map landuse_code to fill colors (Settlers-style terrain)
 const LANDUSE_POLY_COLORS = {
-  '40': {fill:'#5a8a40', stroke:'#4a7a30'},     // Baufläche begrünt
-  '42': {fill:'#8b7058', stroke:'#6a5040'},     // Gebäude
-  '48': {fill:'#b0a898', stroke:'#908880', a:0.7},  // Verkehr (roads) — lighter, more visible
+  '40': {fill:'#c8b040', stroke:'#a89830'},     // Baufläche begrünt — yellow
+  '41': {fill:'#d0b848', stroke:'#b09828'},     // Baufläche — yellow
+  '42': {fill:'#c0a838', stroke:'#a09028'},     // Gebäude — yellow
+  '43': {fill:'#b8a030', stroke:'#988820'},     // Keller — yellow
+  '48': {fill:'#404040', stroke:'#303030', a:0.8},  // Verkehr (roads) — dark grey tarmac
   '52': {fill:'#5a9e3a', stroke:'#4a8e2a'},     // Wiese
   '53': {fill:'#62a240', stroke:'#52923a'},     // Weide
   '56': {fill:'#1e5a1e', stroke:'#145014'},     // Wald
@@ -1296,6 +1325,8 @@ const LANDUSE_POLY_COLORS = {
   '72': {fill:'#3090d0', stroke:'#2080c0', a:0.8}, // Quelle — bluer
   '83': {fill:'#9a9888', stroke:'#8a8878'},     // Fels
   '84': {fill:'#8a8878', stroke:'#7a7868'},     // Geröll
+  '90': {fill:'#484848', stroke:'#383838', a:0.8}, // Verkehrsfläche — dark grey
+  '91': {fill:'#505050', stroke:'#404040', a:0.7}, // Parkplatz — dark grey
   '92': {fill:'#6a9a5a', stroke:'#5a8a4a'},     // Hochalm
   '96': {fill:'#2888c8', stroke:'#1878b8', a:0.8}, // Gewässer — vivid blue
 };
@@ -1784,8 +1815,8 @@ function drawEZHighlight(ctx) {
   if (parcels.length < 2) return;
   const selId = G.sel?.properties?.parcel_id;
   ctx.save();
-  // Pulse animation based on time
-  const pulse = 0.3 + 0.15 * Math.sin(Date.now() / 400);
+  // Subtle static glow — no pulsing
+  const alpha = 0.12;
   for (const f of parcels) {
     if (f.properties.parcel_id === selId) continue; // skip the selected one (drawn separately)
     if (f.geometry.type === 'Polygon') {
@@ -1800,13 +1831,13 @@ function drawEZHighlight(ctx) {
       ctx.beginPath();
       pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
       ctx.closePath();
-      // Fill with semi-transparent gold
-      ctx.fillStyle = 'rgba(212,168,67,' + pulse + ')';
+      // Subtle whitish glow fill
+      ctx.fillStyle = 'rgba(220,220,240,' + alpha + ')';
       ctx.fill();
-      // Gold dashed border
-      ctx.strokeStyle = '#d4a843';
+      // Soft white border
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
+      ctx.setLineDash([6, 4]);
       ctx.stroke();
       ctx.setLineDash([]);
     } else {
@@ -1814,11 +1845,11 @@ function drawEZHighlight(ctx) {
       const [x, y] = toScreen(p.lon || f.geometry.coordinates[0], p.lat || f.geometry.coordinates[1]);
       if (x < -30 || x > gc.width+30 || y < -30 || y > gc.height+30) continue;
       const sz = Math.max(8, Math.min(30, Math.sqrt(p.area_sqm||100) * mapScale() / 80000));
-      ctx.fillStyle = 'rgba(212,168,67,' + pulse + ')';
+      ctx.fillStyle = 'rgba(220,220,240,' + alpha + ')';
       ctx.fillRect(x-sz/2, y-sz/2, sz, sz);
-      ctx.strokeStyle = '#d4a843';
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
+      ctx.setLineDash([6, 4]);
       ctx.strokeRect(x-sz/2, y-sz/2, sz, sz);
       ctx.setLineDash([]);
     }
@@ -1981,9 +2012,9 @@ function initGameInput() {
   document.getElementById('btn-zoomout').onclick = () => { G.cam.zoom=Math.max(13,G.cam.zoom-0.5); render(); renderMini(); };
   document.getElementById('btn-gearth').onclick = () => {
     // Open Google Maps satellite view at current camera position
-    // Map game zoom (13-20) to Google Maps distance: z13≈8000m, z20≈50m
-    const dist = Math.round(8000 / Math.pow(2, G.cam.zoom - 13));
-    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+dist+'m/data=!3m1!1e3';
+    // Map game zoom (13-20) to Google Maps zoom: game z13→GM z13, game z20→GM z18
+    const gmZoom = Math.round(13 + (G.cam.zoom - 13) * 5/7);
+    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+gmZoom+'z/data=!3m1!1e3';
     window.open(url, '_blank');
   };
 
@@ -2171,6 +2202,9 @@ function onGameClick(e) {
   if (best) { showParcelPopup(best); return; }
 
   document.getElementById('parcel-popup').classList.remove('open');
+  document.getElementById('ez-popup').classList.remove('open');
+  resetPopupPosition('parcel-popup');
+  resetPopupPosition('ez-popup');
   G.sel = null; G.ezHighlight = null; render();
 }
 
@@ -2178,6 +2212,12 @@ function showParcelPopup(f) {
   G.sel = f;
   const p = f.properties;
   const pid = p.parcel_id;
+
+  // Smooth zoom to parcel (center on it, zoom to ~18 if further out)
+  const pLon = p.lon || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[0] : f.geometry.coordinates[0]);
+  const pLat = p.lat || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[1] : f.geometry.coordinates[1]);
+  const targetZoom = Math.max(G.cam.zoom, 17.5);
+  animateCamera(pLon, pLat, targetZoom, 400);
   // Enrich polygon data with point data (has building_count, total_building_area_sqm, landuse_codes)
   const pointF = G.parcels.find(pf => pf.properties.parcel_id === pid);
   if (pointF) {
@@ -2227,49 +2267,78 @@ function showParcelPopup(f) {
     act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${claim.converted_to}</span>`;
   }
 
-  // EZ info panel
-  const ezInfo = document.getElementById('pp-ez-info');
-  const ezStats = document.getElementById('pp-ez-stats');
-  const ezAct = document.getElementById('pp-ez-actions');
+  // EZ link — make the EZ field clickable to open separate EZ popup
+  const ezEl = document.getElementById('pp-ez');
   if (ez && p.kg_code) {
     const ezKey = p.kg_code + '-EZ' + ez;
     const ezParcels = G.ezIndex[ezKey] || [];
     if (ezParcels.length > 1) {
-      const claimMap = {};
-      for (const c of G.claimed) claimMap[c.parcel_id] = c;
-      const totalArea = ezParcels.reduce((s, pf) => s + (pf.properties.area_sqm || 0), 0);
-      const unclaimed = ezParcels.filter(pf => !claimMap[pf.properties.parcel_id]);
-      const myCount = ezParcels.filter(pf => claimMap[pf.properties.parcel_id]?.player_id === G.player.id).length;
-      const areaStr = totalArea > 10000 ? (totalArea/10000).toFixed(2)+' ha' : Math.round(totalArea)+' m²';
-      ezStats.innerHTML = `
-        <span>Parzellen</span><b>${ezParcels.length} (${unclaimed.length} frei)</b>
-        <span>Gesamtfläche</span><b>${areaStr}</b>
-        <span>Dein Besitz</span><b>${myCount} / ${ezParcels.length}</b>`;
-      ezAct.innerHTML = '';
-      if (unclaimed.length > 0) {
-        // Calculate total price with 20% discount
-        let totalPrice = 0;
-        for (const pf of unclaimed) {
-          const pp = pf.properties;
-          totalPrice += calcPrice(pp.area_sqm||0, extractLuCode('',pp), pp.building_count||0, pp.total_building_area_sqm||0);
-        }
-        const discountedPrice = Math.round(totalPrice * 0.8);
-        const savings = totalPrice - discountedPrice;
-        ezAct.innerHTML = `<button class="btn btn-gold btn-small" style="margin-top:8px;width:100%" onclick="doClaimEZ('${p.kg_code}','${ez}')">📋 Ganze EZ kaufen: ${discountedPrice}🪙 <span style='font-size:14px;color:#2a2'>(−20% = −${savings}🪙)</span></button>`;
-      }
-      ezInfo.style.display = '';
-      // Set EZ highlight for rendering
+      ezEl.innerHTML = `<span class="pp-ez-link" onclick="openEZPopup('${p.kg_code}','${ez}')">EZ ${ez} ▸ (${ezParcels.length} Parzellen)</span>`;
       G.ezHighlight = {kg: p.kg_code, ez: ez};
     } else {
-      ezInfo.style.display = 'none';
+      ezEl.textContent = ez ? 'EZ ' + ez : '-';
       G.ezHighlight = null;
     }
   } else {
-    ezInfo.style.display = 'none';
+    ezEl.textContent = '-';
     G.ezHighlight = null;
   }
 
+  // Close EZ popup if open (will reopen if user clicks link)
+  document.getElementById('ez-popup').classList.remove('open');
+
   document.getElementById('parcel-popup').classList.add('open');
+  // Position parcel popup at bottom-left
+  const pp = document.getElementById('parcel-popup');
+  if (!pp.dataset.userMoved) {
+    pp.style.left = '16px'; pp.style.bottom = '16px';
+    pp.style.right = ''; pp.style.top = '';
+  }
+  render();
+}
+
+window.openEZPopup = function openEZPopup(kgCode, ez) {
+  const ezKey = kgCode + '-EZ' + ez;
+  const ezParcels = G.ezIndex[ezKey] || [];
+  if (ezParcels.length < 1) return;
+
+  const claimMap = {};
+  for (const c of G.claimed) claimMap[c.parcel_id] = c;
+  const totalArea = ezParcels.reduce((s, pf) => s + (pf.properties.area_sqm || 0), 0);
+  const unclaimed = ezParcels.filter(pf => !claimMap[pf.properties.parcel_id]);
+  const myCount = ezParcels.filter(pf => claimMap[pf.properties.parcel_id]?.player_id === G.player.id).length;
+  const areaStr = totalArea > 10000 ? (totalArea/10000).toFixed(2)+' ha' : Math.round(totalArea)+' m\u00b2';
+
+  document.getElementById('ez-title').textContent = '\ud83d\udccb EZ ' + ez + ' \u2014 ' + kgCode;
+  document.getElementById('ez-stats').innerHTML = `
+    <span>Parzellen</span><b>${ezParcels.length} (${unclaimed.length} frei)</b>
+    <span>Gesamtfl\u00e4che</span><b>${areaStr}</b>
+    <span>Dein Besitz</span><b>${myCount} / ${ezParcels.length}</b>`;
+
+  const ezAct = document.getElementById('ez-actions');
+  ezAct.innerHTML = '';
+  if (unclaimed.length > 0) {
+    let totalPrice = 0;
+    for (const pf of unclaimed) {
+      const pp = pf.properties;
+      totalPrice += calcPrice(pp.area_sqm||0, extractLuCode('',pp), pp.building_count||0, pp.total_building_area_sqm||0);
+    }
+    const discountedPrice = Math.round(totalPrice * 0.8);
+    const savings = totalPrice - discountedPrice;
+    ezAct.innerHTML = `<button class="btn btn-gold btn-small" style="width:100%" onclick="doClaimEZ('${kgCode}','${ez}')">📋 Ganze EZ kaufen: ${discountedPrice}🪙 <span style='font-size:14px;color:#2a2'>(-20% = -${savings}🪙)</span></button>`;
+  }
+
+  G.ezHighlight = {kg: kgCode, ez: ez};
+  const popup = document.getElementById('ez-popup');
+  popup.classList.add('open');
+  // Position to the right of parcel popup if not manually moved
+  if (!popup.dataset.userMoved) {
+    const ppEl = document.getElementById('parcel-popup');
+    const ppRect = ppEl.getBoundingClientRect();
+    popup.style.left = (ppRect.right + 12) + 'px';
+    popup.style.bottom = '16px';
+    popup.style.right = ''; popup.style.top = '';
+  }
   render();
 }
 
@@ -2328,7 +2397,10 @@ window.doSell = async function(claimId) {
   toast('💰 Verkauft für '+res.sell_price+'🪙','ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render();
-  document.getElementById('parcel-popup').classList.remove('open'); G.sel=null;
+  document.getElementById('parcel-popup').classList.remove('open');
+  document.getElementById('ez-popup').classList.remove('open');
+  resetPopupPosition('parcel-popup'); resetPopupPosition('ez-popup');
+  G.sel=null; G.ezHighlight=null;
 };
 
 window.doClaimEZ = async function(kgCode, ez) {
@@ -2374,13 +2446,95 @@ async function claimTreasure(t) {
 }
 
 document.getElementById('popup-close').onclick = () => {
-  document.getElementById('parcel-popup').classList.remove('open'); G.sel=null; G.ezHighlight=null; render();
+  document.getElementById('parcel-popup').classList.remove('open');
+  document.getElementById('ez-popup').classList.remove('open');
+  resetPopupPosition('parcel-popup');
+  resetPopupPosition('ez-popup');
+  G.sel=null; G.ezHighlight=null; render();
 };
 
-// Sparkle animation + EZ pulse
+document.getElementById('ez-popup-close').onclick = () => {
+  document.getElementById('ez-popup').classList.remove('open');
+  resetPopupPosition('ez-popup');
+  G.ezHighlight=null; render();
+};
+
+// ---- Draggable popups ----
+(function initDraggablePopups() {
+  const handles = document.querySelectorAll('.popup-drag-handle');
+  handles.forEach(handle => {
+    let startX, startY, startLeft, startTop;
+    function onMouseDown(e) {
+      const targetId = handle.dataset.dragTarget;
+      const popup = document.getElementById(targetId);
+      if (!popup) return;
+      e.preventDefault();
+      const rect = popup.getBoundingClientRect();
+      startX = e.clientX; startY = e.clientY;
+      startLeft = rect.left; startTop = rect.top;
+      // Switch from bottom positioning to top positioning for dragging
+      popup.style.left = rect.left + 'px';
+      popup.style.top = rect.top + 'px';
+      popup.style.bottom = 'auto';
+      popup.style.right = 'auto';
+      popup.dataset.userMoved = '1';
+
+      function onMouseMove(e) {
+        const dx = e.clientX - startX, dy = e.clientY - startY;
+        popup.style.left = Math.max(0, startLeft + dx) + 'px';
+        popup.style.top = Math.max(0, startTop + dy) + 'px';
+      }
+      function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    }
+    handle.addEventListener('mousedown', onMouseDown);
+
+    // Touch support
+    handle.addEventListener('touchstart', e => {
+      const targetId = handle.dataset.dragTarget;
+      const popup = document.getElementById(targetId);
+      if (!popup || !e.touches[0]) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      const rect = popup.getBoundingClientRect();
+      startX = touch.clientX; startY = touch.clientY;
+      startLeft = rect.left; startTop = rect.top;
+      popup.style.left = rect.left + 'px';
+      popup.style.top = rect.top + 'px';
+      popup.style.bottom = 'auto';
+      popup.style.right = 'auto';
+      popup.dataset.userMoved = '1';
+
+      function onTouchMove(e) {
+        if (!e.touches[0]) return;
+        const dx = e.touches[0].clientX - startX, dy = e.touches[0].clientY - startY;
+        popup.style.left = Math.max(0, startLeft + dx) + 'px';
+        popup.style.top = Math.max(0, startTop + dy) + 'px';
+      }
+      function onTouchEnd() {
+        document.removeEventListener('touchmove', onTouchMove);
+        document.removeEventListener('touchend', onTouchEnd);
+      }
+      document.addEventListener('touchmove', onTouchMove, {passive:false});
+      document.addEventListener('touchend', onTouchEnd);
+    }, {passive:false});
+  });
+})();
+
+// Reset popup positions when closing
+function resetPopupPosition(id) {
+  const el = document.getElementById(id);
+  if (el) { delete el.dataset.userMoved; }
+}
+
+// Sparkle animation for treasures
 setInterval(() => {
   if (document.getElementById('screen-game').classList.contains('active') &&
-      (G.treasures.length>0 || G.ezHighlight)) render();
+      G.treasures.length>0) render();
 }, 800);
 
 // Auto-refresh
