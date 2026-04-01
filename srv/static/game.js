@@ -763,6 +763,10 @@ async function startGameWithLoading() {
   G.cam.lon = G.session.center_lon;
   G.cam.lat = G.session.center_lat;
   G.cam.zoom = 17;
+  // Track known municipalities so we only toast once per muni
+  G.knownMunis = new Set();
+  G.knownMunis.add(G.session.municipality_code);
+  G.homeMuni = G.session.municipality_name;
 
   // Step 2: Load parcels
   setLoadStep('ls-parcels', 'active');
@@ -829,6 +833,15 @@ async function startGameWithLoading() {
     sec.style.display = '';
     link.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(rejoinUrl); toast('🔑 Wiedereinstiegs-Link kopiert!','ok'); };
   }
+
+  // Show join/invite link in sidebar
+  if (G.session && G.session.invite_code) {
+    const sec = document.getElementById('sec-rejoin');
+    const joinLink = document.getElementById('join-ingame-link');
+    sec.style.display = '';
+    const joinUrl = location.origin + '/join/' + G.session.invite_code;
+    joinLink.onclick = (e) => { e.preventDefault(); navigator.clipboard.writeText(joinUrl); toast('⚔️ Einladungs-Link kopiert!','ok'); };
+  }
 }
 
 // Legacy startGame for lobby "Spiel starten" button
@@ -872,6 +885,9 @@ async function loadMoreParcels() {
     if (added > 0) { render(); renderMini(); }
     // Also fetch polygon data for any new KGs
     fetchKGPolygons();
+    // Check for adjacent municipality crossings
+    detectAdjacentMunicipalities();
+    checkViewportMunicipality();
   } catch(e) { console.error(e); }
 }
 
@@ -1591,9 +1607,156 @@ function initGameInput() {
 
   // Keyboard
   document.addEventListener('keydown', e => {
-    if (e.target.tagName==='INPUT') return;
+    if (e.target.tagName==='INPUT') {
+      // ESC closes search dropdown and blurs
+      if (e.key==='Escape' && e.target.id==='game-search-input') {
+        document.getElementById('game-search-results').classList.remove('open');
+        e.target.blur();
+      }
+      return;
+    }
     if (e.key==='c'||e.key==='C') document.getElementById('input-chat').focus();
+    if (e.key==='/') { e.preventDefault(); const si=document.getElementById('game-search-input'); if(si) si.focus(); }
   });
+
+  // In-game address search
+  initGameSearch();
+}
+
+// ================= FLY-TO ANIMATION =================
+let flyAnim = null;
+function flyTo(lon, lat, zoom) {
+  if (flyAnim) cancelAnimationFrame(flyAnim);
+  const start = { lon:G.cam.lon, lat:G.cam.lat, zoom:G.cam.zoom };
+  const t0 = performance.now();
+  const dur = 800;
+  function step(now) {
+    const t = Math.min((now - t0) / dur, 1);
+    // Ease in-out cubic
+    const e = t < 0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+    G.cam.lon = start.lon + (lon - start.lon) * e;
+    G.cam.lat = start.lat + (lat - start.lat) * e;
+    G.cam.zoom = start.zoom + (zoom - start.zoom) * e;
+    render(); renderMini();
+    if (t < 1) { flyAnim = requestAnimationFrame(step); }
+    else { flyAnim = null; clearTimeout(loadTimer); loadTimer = setTimeout(loadMoreParcels, 300); }
+  }
+  flyAnim = requestAnimationFrame(step);
+}
+
+// ================= IN-GAME ADDRESS SEARCH =================
+function initGameSearch() {
+  const inp = document.getElementById('game-search-input');
+  const dd = document.getElementById('game-search-results');
+  if (!inp || !dd) return;
+  let timer;
+  inp.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = inp.value.trim();
+    if (q.length < 2) { dd.classList.remove('open'); return; }
+    timer = setTimeout(async () => {
+      try {
+        const res = await GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=5');
+        const items = res.data || [];
+        if (!items.length) {
+          dd.innerHTML = '<div class="search-item"><small>Keine Ergebnisse</small></div>';
+        } else {
+          dd.innerHTML = items.map((a,i) =>
+            `<div class="search-item" data-idx="${i}">`+
+            esc(a.display_name)+'<br><small>'+(a.address?.municipality||a.address?.city||a.address?.town||'')+'</small></div>'
+          ).join('');
+          dd.querySelectorAll('.search-item').forEach(el => {
+            el.onclick = () => {
+              const idx = parseInt(el.dataset.idx);
+              const a = items[idx];
+              if (!a) return;
+              dd.classList.remove('open');
+              inp.value = a.display_name || '';
+              inp.blur();
+              flyTo(parseFloat(a.lon), parseFloat(a.lat), 18);
+            };
+          });
+        }
+        dd.classList.add('open');
+      } catch(e) { console.error('Search error:', e); }
+    }, 350);
+  });
+  // ESC and blur
+  inp.addEventListener('keydown', e => {
+    if (e.key==='Escape') { dd.classList.remove('open'); inp.blur(); }
+    if (e.key==='Enter') {
+      const first = dd.querySelector('.search-item[data-idx]');
+      if (first) first.click();
+    }
+  });
+  // Close dropdown on outside click
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#game-search')) dd.classList.remove('open');
+  });
+}
+
+// ================= ADJACENT MUNICIPALITY DETECTION =================
+G.knownMunis = new Set(); // Track municipality names we've seen parcels from
+G.homeMuni = null; // The session's home municipality name
+
+function detectAdjacentMunicipalities() {
+  if (!G.session) return;
+  if (!G.homeMuni) G.homeMuni = G.session.municipality_name;
+
+  // Check KG names for new municipalities
+  // KG codes have a prefix that maps to municipalities; we track by kg_code prefix (first 5 digits = gemeinde)
+  const newKGs = new Set();
+  for (const f of G.parcels) {
+    const kg = f.properties.kg_code;
+    if (kg && !G.knownMunis.has(kg)) {
+      G.knownMunis.add(kg);
+      newKGs.add(kg);
+    }
+  }
+  // Also check polygon data
+  for (const f of G.parcelPolys) {
+    const kg = f.properties.kg_code;
+    if (kg && !G.knownMunis.has(kg)) {
+      G.knownMunis.add(kg);
+      newKGs.add(kg);
+    }
+  }
+}
+
+async function checkViewportMunicipality() {
+  // Check corners of viewport for municipality crossings
+  const b = viewBounds();
+  const centerLon = (b.w + b.e) / 2;
+  const centerLat = (b.s + b.n) / 2;
+  try {
+    const res = await GET(CAD+'/search/municipalities?contains_lon='+centerLon+'&contains_lat='+centerLat+'&limit=1&format=json');
+    const items = res.data || [];
+    if (items.length > 0) {
+      const muniName = items[0].name || items[0].gemeinde_name;
+      if (muniName && G.homeMuni && muniName !== G.homeMuni && muniName !== G._lastMuniToast) {
+        G._lastMuniToast = muniName;
+        showMuniCrossingToast(muniName);
+      } else if (muniName === G.homeMuni) {
+        G._lastMuniToast = null;
+        hideMuniCrossingToast();
+      }
+    }
+  } catch(e) { /* ignore */ }
+}
+
+let muniToastTimer;
+function showMuniCrossingToast(name) {
+  const el = document.getElementById('muni-toast');
+  if (!el) return;
+  el.innerHTML = '\uD83D\uDDFA\uFE0F Du verlässt <span class="muni-name">'+esc(G.homeMuni)+'</span> — Parzellen aus <span class="muni-name">'+esc(name)+'</span> werden geladen';
+  el.classList.add('show');
+  clearTimeout(muniToastTimer);
+  muniToastTimer = setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+function hideMuniCrossingToast() {
+  const el = document.getElementById('muni-toast');
+  if (el) el.classList.remove('show');
 }
 
 function onGameClick(e) {
@@ -1633,17 +1796,37 @@ function showParcelPopup(f) {
   G.sel = f;
   const p = f.properties;
   const pid = p.parcel_id;
+  // Enrich polygon data with point data (has building_count, total_building_area_sqm, landuse_codes)
+  const pointF = G.parcels.find(pf => pf.properties.parcel_id === pid);
+  if (pointF) {
+    for (const [k,v] of Object.entries(pointF.properties)) {
+      if (!(k in p) || p[k] === undefined || p[k] === null) p[k] = v;
+    }
+  }
   const claim = G.claimed.find(c=>c.parcel_id===pid);
   const owner = claim ? G.players.find(pl=>pl.id===claim.player_id) : null;
   const luCode = extractLuCode('', p);
   const area = p.area_sqm||0;
-  const price = calcPrice(area, luCode);
+  const bldgCount = p.building_count || 0;
+  const bldgArea = p.total_building_area_sqm || 0;
+  const price = calcPrice(area, luCode, bldgCount, bldgArea);
 
   document.getElementById('pp-title').textContent = '📍 ' + (p.gnr || pid);
   document.getElementById('pp-id').textContent = pid;
   document.getElementById('pp-kg').textContent = p.kg_name || p.kg_code || '-';
   document.getElementById('pp-area').textContent = area>10000?(area/10000).toFixed(2)+' ha':Math.round(area)+' m²';
   document.getElementById('pp-use').textContent = getLanduseName(p);
+  // Density label based on built-up ratio
+  let densityLabel = 'Keine';
+  if (area > 0 && (bldgCount > 0 || bldgArea > 0)) {
+    const ratio = bldgArea / area;
+    const bc = bldgCount ? ' (' + bldgCount + ' Geb.)' : '';
+    if (ratio > 0.3) densityLabel = '🏙️ Dicht' + bc;
+    else if (ratio > 0.05) densityLabel = '🏡 Mittel' + bc;
+    else if (ratio > 0.001) densityLabel = '🌾 Gering' + bc;
+    else densityLabel = '🌾 Minimal';
+  }
+  document.getElementById('pp-density').textContent = densityLabel;
   document.getElementById('pp-owner').textContent = owner ? owner.name : 'Frei';
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
@@ -1664,13 +1847,25 @@ function showParcelPopup(f) {
   render();
 }
 
-function calcPrice(area, lu) {
+function calcPrice(area, lu, buildingCount, totalBuildingArea) {
   let ppm = 0.15;
   if (lu?.startsWith('4')) ppm = 0.5;
   if (lu==='48') ppm = 0.1;
   if (lu==='56') ppm = 0.2;
   if (lu==='52') ppm = 0.3;
-  return Math.max(10, Math.min(5000, Math.round(area * ppm)));
+  if (lu?.startsWith('7') || lu?.startsWith('8')) ppm = 0.05;
+  // Density multiplier: built-up ratio drives price up/down
+  let densityMult = 1.0;
+  if (area > 0 && totalBuildingArea > 0) {
+    const builtRatio = totalBuildingArea / area; // 0..1+
+    // urban dense (ratio>0.3) → 2x, suburban (0.05-0.3) → 1-2x, rural (<0.01) → 0.5x
+    if (builtRatio > 0.3) densityMult = 2.0;
+    else if (builtRatio > 0.05) densityMult = 1.0 + (builtRatio - 0.05) / 0.25;
+    else densityMult = 0.5 + builtRatio / 0.05 * 0.5;
+  } else if (buildingCount === 0) {
+    densityMult = 0.5; // no buildings at all → cheap rural land
+  }
+  return Math.max(10, Math.min(5000, Math.round(area * ppm * densityMult)));
 }
 
 window.doClaim = async function() {
@@ -1680,6 +1875,7 @@ window.doClaim = async function() {
     session_id:G.session.id, player_id:G.player.id,
     parcel_id:p.parcel_id, kg_code:p.kg_code||'', gnr:p.gnr||'',
     area_sqm:p.area_sqm||0, landuse:extractLuCode('',p),
+    building_count:p.building_count||0, total_building_area:p.total_building_area_sqm||0,
   });
   if (res.error) { toast(res.error,'err'); return; }
   toast('🏴 Gekauft für '+res.price+'🪙!','ok');

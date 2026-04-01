@@ -131,7 +131,7 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 }
 
 const createPlayer = `-- name: CreatePlayer :exec
-INSERT INTO players (id, name, rejoin_token) VALUES (?, ?, ?)
+INSERT INTO players (id, name, rejoin_token, coins) VALUES (?, ?, ?, 10000)
 `
 
 type CreatePlayerParams struct {

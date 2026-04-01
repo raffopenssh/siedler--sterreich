@@ -417,8 +417,10 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		ParcelID  string  `json:"parcel_id"`
 		KgCode    string  `json:"kg_code"`
 		Gnr       string  `json:"gnr"`
-		AreaSqm   float64 `json:"area_sqm"`
-		Landuse   string  `json:"landuse"`
+		AreaSqm            float64 `json:"area_sqm"`
+		Landuse            string  `json:"landuse"`
+		BuildingCount      int     `json:"building_count"`
+		TotalBuildingArea  float64 `json:"total_building_area"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -434,8 +436,8 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Calculate price based on area and landuse
-	price := calculatePrice(req.AreaSqm, req.Landuse)
+	// Calculate price based on area, landuse, and building density
+	price := calculatePrice(req.AreaSqm, req.Landuse, req.BuildingCount, req.TotalBuildingArea)
 
 	// Check player has enough coins
 	player, err := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
@@ -842,14 +844,15 @@ func (s *Server) broadcast(sessionID string, data map[string]any) {
 
 // ---- Game Logic Helpers ----
 
-func calculatePrice(areaSqm float64, landuse string) int {
+func calculatePrice(areaSqm float64, landuse string, buildingCount int, totalBuildingArea float64) int {
 	// Base price per sqm varies by landuse
+	// NOTE: specific codes must come before prefix matches
 	var pricePerSqm float64
 	switch {
+	case landuse == "48": // Verkehr (Straße)
+		pricePerSqm = 0.1
 	case strings.HasPrefix(landuse, "4"): // Baufläche
 		pricePerSqm = 0.5
-	case landuse == "48": // Verkehr
-		pricePerSqm = 0.1
 	case landuse == "56": // Wald
 		pricePerSqm = 0.2
 	case landuse == "52": // Grünland
@@ -860,7 +863,23 @@ func calculatePrice(areaSqm float64, landuse string) int {
 		pricePerSqm = 0.15
 	}
 
-	price := int(areaSqm * pricePerSqm)
+	// Density multiplier: built-up ratio drives price
+	// Urban dense (>0.3) = 2x, suburban (0.05-0.3) = 1-2x, rural (<0.01) = 0.5x
+	densityMult := 1.0
+	if areaSqm > 0 && totalBuildingArea > 0 {
+		builtRatio := totalBuildingArea / areaSqm
+		if builtRatio > 0.3 {
+			densityMult = 2.0
+		} else if builtRatio > 0.05 {
+			densityMult = 1.0 + (builtRatio-0.05)/0.25
+		} else {
+			densityMult = 0.5 + builtRatio/0.05*0.5
+		}
+	} else if buildingCount == 0 {
+		densityMult = 0.5 // no buildings = cheap rural land
+	}
+
+	price := int(areaSqm * pricePerSqm * densityMult)
 	if price < 10 {
 		price = 10
 	}

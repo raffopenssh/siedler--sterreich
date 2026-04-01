@@ -1,5 +1,5 @@
 -- name: CreatePlayer :exec
-INSERT INTO players (id, name, rejoin_token) VALUES (?, ?, ?);
+INSERT INTO players (id, name, rejoin_token, coins) VALUES (?, ?, ?, 10000);
 
 -- name: GetPlayerByName :one
 SELECT * FROM players WHERE name = ?;

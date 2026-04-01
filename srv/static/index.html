@@ -164,7 +164,7 @@
         </div>
         <div class="loading-tip" id="tip-2">
           <div class="tip-icon">💰</div>
-          <div class="tip-text"><b>Wirtschaft &amp; Strategie</b><br>Du startest mit 1000 Münzen. Kaufe klug — größere Parzellen kosten mehr, bringen aber auch mehr Naturschutz-Punkte.</div>
+          <div class="tip-text"><b>Wirtschaft &amp; Strategie</b><br>Du startest mit 10.000 Münzen. Kaufe klug — dicht bebaute Parzellen kosten mehr als ländliche Flächen!</div>
         </div>
         <div class="loading-tip" id="tip-3">
           <div class="tip-icon">💎</div>
@@ -215,6 +215,7 @@
       </div>
       <div class="sb-section" id="sec-rejoin" style="display:none">
         <div class="rejoin-ingame">🔑 <a id="rejoin-ingame-link" href="#" style="color:var(--gold);font:14px VT323;word-break:break-all">Wiedereinstiegs-Link kopieren</a></div>
+        <div class="rejoin-ingame" style="margin-top:6px">⚔️ <a id="join-ingame-link" href="#" style="color:var(--gold);font:14px VT323;word-break:break-all">Einladungs-Link kopieren</a></div>
       </div>
       <div class="sb-chat">
         <div class="chat-title">💬 Chat</div>
@@ -228,6 +229,15 @@
 
     <!-- Main canvas -->
     <main id="game-main">
+      <div id="game-search" class="game-search">
+        <div class="game-search-inner">
+          <span class="game-search-icon">🔍</span>
+          <input type="text" id="game-search-input" placeholder="Adresse suchen... (/)" autocomplete="off">
+          <kbd class="game-search-kbd">/</kbd>
+        </div>
+        <div id="game-search-results" class="search-dropdown"></div>
+      </div>
+      <div id="muni-toast" class="muni-toast"></div>
       <canvas id="game-canvas"></canvas>
       <div id="minimap"><canvas id="mini-canvas"></canvas></div>
       <div id="parcel-popup" class="popup">
@@ -238,6 +248,7 @@
           <span>KG</span><b id="pp-kg">-</b>
           <span>Fläche</span><b id="pp-area">-</b>
           <span>Nutzung</span><b id="pp-use">-</b>
+          <span>Bebauung</span><b id="pp-density">-</b>
           <span>Besitzer</span><b id="pp-owner">-</b>
           <span>Preis</span><b id="pp-price">-</b>
         </div>
