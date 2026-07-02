@@ -607,3 +607,29 @@ input[type=text]:focus { border-color:var(--gold); }
   color: var(--green-light);
   margin-top: 4px;
 }
+
+/* ---- Enhanced mode ---- */
+.enhanced-badge {
+  position:absolute; top:8px; left:50%; transform:translateX(-50%);
+  background:rgba(20,30,15,0.85); border:2px solid var(--gold);
+  color:var(--gold); font:8px var(--font-pixel);
+  padding:6px 12px; border-radius:3px; z-index:50;
+  pointer-events:none; white-space:nowrap;
+  box-shadow:2px 2px 0 #000;
+}
+.pp-enhanced {
+  border-top:1px solid var(--panel-border);
+  margin-top:8px; padding-top:8px;
+}
+.pp-more-btn {
+  display:block; width:100%; margin-top:6px; padding:4px;
+  background:none; border:1px dashed var(--panel-border);
+  color:var(--text-dim); font:8px var(--font-pixel); cursor:pointer;
+}
+.pp-more-btn:hover { color:var(--gold); border-color:var(--gold); }
+#btn-gps.active { background:var(--green); color:#fff; }
+#btn-n2k.off { opacity:0.45; }
+@media (max-width:768px) {
+  .enhanced-badge { top:52px; font-size:7px; padding:5px 8px; }
+  .pp-enhanced { font-size:16px; }
+}

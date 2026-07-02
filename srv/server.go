@@ -25,6 +25,7 @@ import (
 )
 
 const cadastreAPI = "https://cadastre-process-api.exe.xyz/api/v1"
+const lidarAPI = "https://srtm-lidar-at.exe.xyz:8000/api/v1"
 
 type Server struct {
 	DB           *sql.DB
@@ -120,6 +121,11 @@ func (s *Server) Serve(addr string) error {
 
 	// Cadastre proxy with caching
 	mux.HandleFunc("GET /api/cadastre/", s.handleCadastreProxy)
+
+	// LiDAR (srtm-lidar) proxy + enhanced-KG registry
+	mux.HandleFunc("GET /api/lidar/kg/{code}", s.handleLidarKG)
+	mux.HandleFunc("GET /api/lidar/", s.handleLidarProxy)
+	mux.HandleFunc("GET /api/enhanced-kgs", s.handleEnhancedKGs)
 
 	slog.Info("starting Siedler Österreich", "addr", addr)
 	return http.ListenAndServe(addr, gzipMiddleware(mux))
@@ -326,6 +332,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Generate initial treasures
 	s.generateTreasures(r.Context(), sessionID, req.CenterLon, req.CenterLat)
+
+	// Natura-2000 bonus treasures: placed asynchronously (fast API, but don't block session create)
+	go s.generateN2KTreasures(context.Background(), sessionID, req.MunicipalityName)
 
 	session, _ := s.Q.GetSession(r.Context(), sessionID)
 	jsonResp(w, map[string]any{
@@ -1492,5 +1501,436 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 			RewardCoins:   c.coins,
 			RewardXp:      c.xp,
 		})
+	}
+}
+
+// ---- LiDAR (srtm-lidar) proxy & enhanced mode ----
+
+// handleLidarProxy forwards GET requests to the srtm-lidar API with 1h caching.
+// Only fast endpoints should be requested (query, flags) — never overlay/elevation.
+func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/lidar")
+	// Block slow endpoints
+	if strings.Contains(path, "/overlay") || strings.Contains(path, "/elevation") || strings.Contains(path, "/dtm") {
+		jsonErr(w, "endpoint too slow for gameplay", 400)
+		return
+	}
+	query := r.URL.RawQuery
+	cacheKey := "lidar:" + path + "?" + query
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+	url := lidarAPI + path
+	if query != "" {
+		url += "?" + query
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		jsonErr(w, "LiDAR API error", 502)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		jsonErr(w, "Read error", 502)
+		return
+	}
+	if resp.StatusCode == 200 {
+		s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+			CacheKey: cacheKey, Data: string(body), ExpiresAt: time.Now().Add(1 * time.Hour),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+// handleLidarKG fetches the full ~4-7MB KG JSON from the lidar API, strips it
+// down to what the game needs (per-parcel terrain, building heights, flag-filtered
+// top trees/objects), and caches the slim result for 6h.
+func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
+	kg := r.PathValue("code")
+	cacheKey := "lidar-slim:/kg/" + kg
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+
+	// Fetch flags first (fast) to filter top trees/objects
+	flagged := map[string]bool{} // obj_ref -> true for severity high/critical
+	if fr, err := http.Get(lidarAPI + "/flags?kg=" + kg + "&limit=500"); err == nil {
+		var fd struct {
+			Flags []struct {
+				ObjRef   string `json:"obj_ref"`
+				Severity string `json:"severity"`
+				Aggregate struct {
+					MaxSeverity string `json:"max_severity"`
+				} `json:"aggregate"`
+			} `json:"flags"`
+		}
+		if b, err := io.ReadAll(io.LimitReader(fr.Body, 10<<20)); err == nil {
+			json.Unmarshal(b, &fd)
+			for _, f := range fd.Flags {
+				sev := f.Aggregate.MaxSeverity
+				if sev == "" {
+					sev = f.Severity
+				}
+				if sev == "high" || sev == "critical" {
+					flagged[f.ObjRef] = true
+				}
+			}
+		}
+		fr.Body.Close()
+	}
+
+	resp, err := http.Get(lidarAPI + "/kg/" + kg)
+	if err != nil {
+		jsonErr(w, "LiDAR API error", 502)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		jsonErr(w, "KG not processed", resp.StatusCode)
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
+	if err != nil {
+		jsonErr(w, "Read error", 502)
+		return
+	}
+
+	var full map[string]any
+	if err := json.Unmarshal(raw, &full); err != nil {
+		jsonErr(w, "Parse error", 500)
+		return
+	}
+
+	slim := map[string]any{
+		"kg_code": kg,
+		"kg_name": full["kg_name"],
+	}
+	if t, ok := full["terrain"].(map[string]any); ok {
+		slim["terrain"] = map[string]any{
+			"elevation_min_m":    t["elevation_min_m"],
+			"elevation_max_m":    t["elevation_max_m"],
+			"elevation_mean_m":   t["elevation_mean_m"],
+			"terrain_class":      t["terrain_class"],
+			"steepness_mean_deg": t["steepness_mean_deg"],
+		}
+	}
+
+	// Slim parcels
+	var parcels []map[string]any
+	if p, ok := full["parcels"].(map[string]any); ok {
+		if details, ok := p["details"].([]any); ok {
+			for _, d := range details {
+				pd, ok := d.(map[string]any)
+				if !ok {
+					continue
+				}
+				parcels = append(parcels, map[string]any{
+					"parcel_id":         pd["parcel_id"],
+					"elevation_m":       pd["elevation_m"],
+					"elevation_min_m":   pd["elevation_min_m"],
+					"elevation_max_m":   pd["elevation_max_m"],
+					"slope_mean_deg":    pd["slope_mean_deg"],
+					"aspect_dominant":   pd["aspect_dominant"],
+					"terrain_class":     pd["terrain_class"],
+					"dominant_type":     pd["dominant_type"],
+					"forested_fraction": pd["forested_fraction"],
+					"ndsm_max_m":        pd["ndsm_max_m"],
+				})
+			}
+		}
+	}
+	slim["parcels"] = parcels
+
+	// Slim buildings (keyed by centroid for client-side matching)
+	var buildings []map[string]any
+	if b, ok := full["building_footprints"].(map[string]any); ok {
+		if details, ok := b["details"].([]any); ok {
+			for _, d := range details {
+				bd, ok := d.(map[string]any)
+				if !ok {
+					continue
+				}
+				c, _ := bd["centroid"].(map[string]any)
+				if c == nil {
+					continue
+				}
+				buildings = append(buildings, map[string]any{
+					"lon":            c["lon"],
+					"lat":            c["lat"],
+					"max_height_m":   bd["max_height_m"],
+					"stories_est":    bd["stories_est"],
+					"roof_type_hint": bd["roof_type_hint"],
+					"area_sqm":       bd["footprint_area_sqm"],
+				})
+			}
+		}
+	}
+	slim["buildings"] = buildings
+
+	// Flag-filtered top trees (clamp height <= 60m)
+	var topTrees []map[string]any
+	if tt, ok := full["top_10_trees"].([]any); ok {
+		for i, t := range tt {
+			td, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			if flagged[fmt.Sprintf("%s:top_tree:%d", kg, i)] {
+				continue
+			}
+			h, _ := td["height_m"].(float64)
+			if h > 60 || h <= 0 {
+				continue
+			}
+			c, _ := td["coordinate"].(map[string]any)
+			if c == nil {
+				continue
+			}
+			topTrees = append(topTrees, map[string]any{
+				"height_m": math.Round(h*10) / 10,
+				"lon":      c["lon"],
+				"lat":      c["lat"],
+			})
+		}
+	}
+	slim["top_trees"] = topTrees
+
+	// Flag-filtered top objects (non-tree landmarks: tall roofs/masts confirmed OK)
+	var topObjects []map[string]any
+	if to, ok := full["top_10_objects"].([]any); ok {
+		for i, t := range to {
+			td, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			if flagged[fmt.Sprintf("%s:top_object:%d", kg, i)] || flagged[fmt.Sprintf("%s:top_obj:%d", kg, i)] {
+				continue
+			}
+			typ, _ := td["type"].(string)
+			if typ == "tree" {
+				continue // trees handled above
+			}
+			h, _ := td["height_max_m"].(float64)
+			if h > 120 || h <= 0 {
+				continue
+			}
+			c, _ := td["coordinate"].(map[string]any)
+			if c == nil {
+				continue
+			}
+			topObjects = append(topObjects, map[string]any{
+				"type":     typ,
+				"height_m": math.Round(h*10) / 10,
+				"lon":      c["lon"],
+				"lat":      c["lat"],
+			})
+		}
+	}
+	slim["top_objects"] = topObjects
+
+	out, err := json.Marshal(slim)
+	if err != nil {
+		jsonErr(w, "Marshal error", 500)
+		return
+	}
+	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(out)
+}
+
+// handleEnhancedKGs returns the list of lidar-processed KGs (the "enhanced" set).
+// Cached 15 minutes — the lidar service processes more KGs continuously.
+func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
+	cacheKey := "enhanced-kgs:v1"
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+
+	type kgEntry struct {
+		KgCode       string  `json:"kg_code"`
+		KgName       string  `json:"kg_name"`
+		GemeindeCode string  `json:"gemeinde_code"`
+		GemeindeName string  `json:"gemeinde_name"`
+		Lon          float64 `json:"lon"`
+		Lat          float64 `json:"lat"`
+	}
+	var all []kgEntry
+	offset := 0
+	for {
+		url := fmt.Sprintf("%s/query?bbox=9,46,18,49.5&processed_only=true&limit=1000&offset=%d", lidarAPI, offset)
+		resp, err := http.Get(url)
+		if err != nil {
+			jsonErr(w, "LiDAR API error", 502)
+			return
+		}
+		var page struct {
+			Total   int `json:"total"`
+			Results []struct {
+				KgCode       string  `json:"kg_code"`
+				KgName       string  `json:"kg_name"`
+				GemeindeCode string  `json:"gemeinde_code"`
+				GemeindeName string  `json:"gemeinde_name"`
+				CentroidLon  float64 `json:"centroid_lon"`
+				CentroidLat  float64 `json:"centroid_lat"`
+			} `json:"results"`
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
+		resp.Body.Close()
+		if err != nil || json.Unmarshal(body, &page) != nil {
+			jsonErr(w, "LiDAR API parse error", 502)
+			return
+		}
+		for _, res := range page.Results {
+			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat})
+		}
+		offset += len(page.Results)
+		if offset >= page.Total || len(page.Results) == 0 {
+			break
+		}
+	}
+
+	out, _ := json.Marshal(map[string]any{"count": len(all), "kgs": all})
+	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(15 * time.Minute),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(out)
+}
+
+// generateN2KTreasures places extra high-value rare-species treasures on parcels
+// inside Natura-2000 sites overlapping the session's municipality KGs.
+// Runs in a goroutine at session create; broadcasts treasures_updated via SSE when done.
+func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniName string) {
+	if muniName == "" {
+		return
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	// 1. Find KGs of the municipality
+	resp, err := client.Get(cadastreAPI + "/search/kg?gemeinde=" + url.QueryEscape(muniName) + "&limit=50")
+	if err != nil {
+		return
+	}
+	var kgRes struct {
+		Data []struct {
+			KgCode string `json:"kg_code"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	resp.Body.Close()
+	json.Unmarshal(body, &kgRes)
+	if len(kgRes.Data) == 0 {
+		return
+	}
+	kgSet := map[string]bool{}
+	for _, kg := range kgRes.Data {
+		kgSet[kg.KgCode] = true
+	}
+
+	// 2. For each KG, find inside Natura-2000 sites (dedupe by sitecode)
+	sites := map[string]bool{}
+	for kg := range kgSet {
+		r2, err := client.Get(cadastreAPI + "/natura2000/kg/" + kg)
+		if err != nil {
+			continue
+		}
+		var n2k struct {
+			Data struct {
+				InsideSites []struct {
+					Sitecode string `json:"sitecode"`
+				} `json:"inside_sites"`
+			} `json:"data"`
+		}
+		b, _ := io.ReadAll(io.LimitReader(r2.Body, 5<<20))
+		r2.Body.Close()
+		json.Unmarshal(b, &n2k)
+		for _, st := range n2k.Data.InsideSites {
+			sites[st.Sitecode] = true
+		}
+	}
+	if len(sites) == 0 {
+		return
+	}
+
+	// 3. Fetch parcels inside each site, keep those in our KGs, place treasures
+	hash := uint64(0)
+	for _, c := range sessionID {
+		hash = hash*31 + uint64(c)
+	}
+	placed := 0
+	for code := range sites {
+		if placed >= 5 {
+			break
+		}
+		r3, err := client.Get(cadastreAPI + "/natura2000/site_parcels/" + code + "?limit=200")
+		if err != nil {
+			continue
+		}
+		var sp struct {
+			Data struct {
+				Results []struct {
+					KgCode string  `json:"kg_code"`
+					Lon    float64 `json:"lon"`
+					Lat    float64 `json:"lat"`
+				} `json:"results"`
+			} `json:"data"`
+		}
+		b, _ := io.ReadAll(io.LimitReader(r3.Body, 10<<20))
+		r3.Body.Close()
+		json.Unmarshal(b, &sp)
+		var local []struct {
+			Lon, Lat float64
+		}
+		for _, pr := range sp.Data.Results {
+			if kgSet[pr.KgCode] && pr.Lon != 0 {
+				local = append(local, struct{ Lon, Lat float64 }{pr.Lon, pr.Lat})
+			}
+		}
+		if len(local) == 0 {
+			continue
+		}
+		// place up to 3 per site at pseudo-random parcels
+		n := 3
+		if len(local) < n {
+			n = len(local)
+		}
+		for i := 0; i < n && placed < 5; i++ {
+			idx := int((hash + uint64(i)*104729 + uint64(placed)*7919) % uint64(len(local)))
+			si := int((hash + uint64(placed)*31) % uint64(len(redListSpecies)))
+			sp2 := redListSpecies[si]
+			err := s.Q.CreateTreasure(ctx, dbgen.CreateTreasureParams{
+				SessionID:       sessionID,
+				Lon:             local[idx].Lon,
+				Lat:             local[idx].Lat,
+				TreasureType:    "n2k_species",
+				Value:           sp2.Value * 2, // Natura-2000 bonus: double value
+				SpeciesName:     sp2.Name,
+				SpeciesGerman:   sp2.German,
+				SpeciesCategory: sp2.Category,
+			})
+			if err == nil {
+				placed++
+			}
+		}
+	}
+	if placed > 0 {
+		slog.Info("placed N2K treasures", "session", sessionID, "count", placed)
+		s.broadcast(sessionID, map[string]any{"type": "treasures_updated"})
 	}
 }

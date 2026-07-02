@@ -140,6 +140,21 @@ const G = {
   pick: { level:'states', state:null, munis:[], cam:{lon:13.3,lat:47.5,zoom:7}, drag:{active:false} },
   selectedMuni: null,
   kgsLoaded: new Set(),
+  // ---- Enhanced mode (srtm-lidar + OSM + Natura-2000 + land prices) ----
+  enhancedKGs: new Set(),   // kg_codes with lidar data available
+  enhancedGemeinden: [],    // [{gemeinde_code, gemeinde_name, lon, lat}] deduped
+  enhancedLoaded: new Set(),// kg_codes whose enhanced data has been fetched
+  lidarParcels: {},         // parcel_id → {elev, elevMin, elevMax, slope, aspect, tclass, dom, forestFrac}
+  lidarKGTerrain: {},       // kg_code → {emin, emax, tclass}
+  lidarBuildingIdx: {},     // grid key → [{lon,lat,stories,roof,h}] for footprint matching
+  topTrees: {},             // kg_code → [{height_m, lon, lat}] (flag-filtered server-side)
+  topObjects: {},           // kg_code → [{type, height_m, lon, lat}]
+  osmLines: {},             // kg_code → [{cat, fclass, major, name, pts:Float64Array}]
+  n2kSites: {},             // sitecode → {name, habitats, label, geom (GeoJSON), loaded}
+  n2kVisible: true,         // layer toggle
+  landPrices: {},           // parcel_id → price estimate object (lazy)
+  geo: { watching:false, lon:0, lat:0, acc:0, follow:false, id:null },
+  lidarGen: 0,              // bumped when new lidar building data arrives (invalidates footprint matches)
 };
 
 // ---- Helpers ----
@@ -363,17 +378,29 @@ async function startLucky() {
   startTipRotation();
   startLoadingCountdown(30);
   try {
-    // Pick a random municipality from the full list
-    let all = pickData.allMunis;
-    if (!all || all.length === 0) {
-      const res = await GET(CAD+'/search/municipalities?list=all&limit=5000&format=json');
-      all = (res.data || res || []).filter(m => m.lon && m.lat);
-      pickData.allMunis = all;
+    // Prefer "enhanced" gemeinden (lidar-processed KGs) ~90% of the time
+    let picked = null;
+    try {
+      if (G.enhancedGemeinden.length === 0) await loadEnhancedRegistry();
+      if (G.enhancedGemeinden.length > 0 && Math.random() < 0.9) {
+        const g = G.enhancedGemeinden[Math.floor(Math.random() * G.enhancedGemeinden.length)];
+        picked = { code: g.gemeinde_code, name: g.gemeinde_name, lon: g.lon, lat: g.lat, enhanced: true };
+      }
+    } catch(e) { console.error('enhanced lucky failed:', e); }
+    if (!picked) {
+      // Fallback: pick a random municipality from the full list
+      let all = pickData.allMunis;
+      if (!all || all.length === 0) {
+        const res = await GET(CAD+'/search/municipalities?list=all&limit=5000&format=json');
+        all = (res.data || res || []).filter(m => m.lon && m.lat);
+        pickData.allMunis = all;
+      }
+      if (!all || all.length === 0) throw new Error('Keine Gemeinden geladen');
+      const m = all[Math.floor(Math.random() * all.length)];
+      picked = { code: m.gemeinde_code || m.code, name: m.name, lon: m.lon, lat: m.lat };
     }
-    if (!all || all.length === 0) throw new Error('Keine Gemeinden geladen');
-    const m = all[Math.floor(Math.random() * all.length)];
-    G.selectedMuni = { code: m.gemeinde_code || m.code, name: m.name, lon: m.lon, lat: m.lat };
-    document.getElementById('loading-muni').textContent = '📍 ' + G.selectedMuni.name + ' (' + G.selectedMuni.code + ')';
+    G.selectedMuni = picked;
+    document.getElementById('loading-muni').textContent = '📍 ' + picked.name + ' (' + picked.code + ')' + (picked.enhanced ? ' ✨ Enhanced' : '');
     await startSinglePlayer();
   } catch(e) {
     console.error(e);
@@ -1083,6 +1110,8 @@ async function startGameWithLoading() {
   setLoadSub('Katastralgemeinden werden ermittelt...');
   await fetchKGPolygonsBlocking();
   buildEZIndex();
+  // Enhanced mode: fetch lidar/OSM/N2K data in the BACKGROUND (never blocks loading)
+  loadEnhancedRegistry().then(loadEnhancedForKGs);
   // If parcels were empty (bbox failed) but we loaded polygon data, synthesize point parcels
   if (G.parcels.length === 0 && G.parcelPolys.length > 0) {
     for (const f of G.parcelPolys) {
@@ -1306,6 +1335,131 @@ async function fetchKGPolygons() {
       renderMini();
     } catch(e) { console.error('KG fetch failed:', kg, e); }
   }
+  if (kgs.size > 0) loadEnhancedForKGs();
+}
+
+// ================= ENHANCED MODE (lidar terrain, OSM lines, Natura 2000) =================
+
+/** Fetch the enhanced-KG registry (lidar-processed KGs). Cached server-side 15min; refreshed client-side every 10min. */
+async function loadEnhancedRegistry() {
+  try {
+    const res = await GET('/api/enhanced-kgs');
+    if (!res || !res.kgs) return;
+    G.enhancedKGs = new Set(res.kgs.map(k => k.kg_code));
+    const byGem = {};
+    for (const k of res.kgs) {
+      if (!byGem[k.gemeinde_code]) byGem[k.gemeinde_code] = { gemeinde_code: k.gemeinde_code, gemeinde_name: k.gemeinde_name, lon: k.lon, lat: k.lat };
+    }
+    G.enhancedGemeinden = Object.values(byGem);
+  } catch(e) { console.error('enhanced registry failed:', e); }
+}
+setInterval(loadEnhancedRegistry, 10*60*1000);
+
+/** Kick off background enhanced-data fetches for loaded KGs that are lidar-processed. Never blocks. */
+function loadEnhancedForKGs() {
+  for (const kg of G.kgsLoaded) {
+    if (G.enhancedLoaded.has(kg)) continue;
+    if (!G.enhancedKGs.has(kg)) continue;
+    G.enhancedLoaded.add(kg);
+    fetchEnhancedKG(kg); // fire & forget
+  }
+}
+
+async function fetchEnhancedKG(kg) {
+  // 1. LiDAR slim KG data (terrain, buildings, top trees/objects — flags already applied server-side)
+  GET('/api/lidar/kg/'+kg).then(d => {
+    if (!d || d.error) return;
+    if (d.terrain) G.lidarKGTerrain[kg] = { emin: d.terrain.elevation_min_m, emax: d.terrain.elevation_max_m, tclass: d.terrain.terrain_class };
+    for (const p of (d.parcels||[])) {
+      G.lidarParcels[p.parcel_id] = {
+        elev: p.elevation_m, elevMin: p.elevation_min_m, elevMax: p.elevation_max_m,
+        slope: p.slope_mean_deg, aspect: p.aspect_dominant, tclass: p.terrain_class,
+        dom: p.dominant_type, forestFrac: p.forested_fraction, kg: kg,
+      };
+    }
+    for (const b of (d.buildings||[])) {
+      const key = lidarGridKey(b.lon, b.lat);
+      if (!G.lidarBuildingIdx[key]) G.lidarBuildingIdx[key] = [];
+      G.lidarBuildingIdx[key].push(b);
+    }
+    G.topTrees[kg] = (d.top_trees||[]);
+    G.topObjects[kg] = (d.top_objects||[]);
+    G.lidarGen++;
+    render();
+    updateEnhancedBadge();
+  }).catch(e => console.error('lidar kg failed:', kg, e));
+
+  // 2. OSM roads/water/rail lines
+  GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=road,water,rail').then(d => {
+    const feats = d.features || d.data?.features || [];
+    const lines = [];
+    for (const f of feats) {
+      if (!f.geometry || f.geometry.type !== 'LineString') continue;
+      const coords = f.geometry.coordinates;
+      const pts = new Float64Array(coords.length * 2);
+      for (let i = 0; i < coords.length; i++) { pts[i*2] = coords[i][0]; pts[i*2+1] = coords[i][1]; }
+      const pr = f.properties || {};
+      lines.push({ cat: pr.cat, fclass: pr.fclass, major: !!pr.major, name: pr.name, pts });
+    }
+    G.osmLines[kg] = lines;
+    render();
+  }).catch(e => console.error('osm geometry failed:', kg, e));
+
+  // 3. Natura 2000 sites for this KG
+  GET('/api/cadastre/natura2000/kg/'+kg).then(async d => {
+    const sites = d.data?.inside_sites || [];
+    for (const st of sites) {
+      if (G.n2kSites[st.sitecode]) continue;
+      G.n2kSites[st.sitecode] = { name: st.sitename, habitats: st.habitats||[], label: st.site_type_label, geom: null };
+      try {
+        const g = await GET('/api/cadastre/natura2000/site/'+st.sitecode+'?geometry=1');
+        const geom = g.data?.geometry || g.geometry;
+        if (geom) { G.n2kSites[st.sitecode].geom = geom; render(); }
+      } catch(e) { console.error('n2k geometry failed:', st.sitecode, e); }
+    }
+  }).catch(e => console.error('n2k failed:', kg, e));
+}
+
+function lidarGridKey(lon, lat) { return Math.round(lon*2000) + ':' + Math.round(lat*2000); }
+
+/** Find lidar building info near a footprint centroid (~50m grid + neighbors). */
+function findLidarBuilding(lon, lat) {
+  const gx = Math.round(lon*2000), gy = Math.round(lat*2000);
+  let best = null, bestD = 4e-7; // ~ (2e-4 deg)^2 ≈ 20m
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    const arr = G.lidarBuildingIdx[(gx+dx)+':'+(gy+dy)];
+    if (!arr) continue;
+    for (const b of arr) {
+      const d = (b.lon-lon)*(b.lon-lon) + (b.lat-lat)*(b.lat-lat);
+      if (d < bestD) { bestD = d; best = b; }
+    }
+  }
+  return best;
+}
+
+/** Lazily fetch land price estimate for a parcel; updates popup row when it arrives. */
+async function fetchLandPrice(pid) {
+  if (pid in G.landPrices) return G.landPrices[pid];
+  try {
+    const d = await GET('/api/cadastre/land_prices/parcel/'+encodeURIComponent(pid));
+    G.landPrices[pid] = (d && !d.error && d.buy_total_eur != null) ? d : null;
+  } catch(e) { G.landPrices[pid] = null; }
+  return G.landPrices[pid];
+}
+
+/** Is the camera currently over an enhanced (lidar-processed) KG? */
+function camOverEnhancedKG() {
+  for (const kg of G.kgsLoaded) {
+    if (!G.enhancedKGs.has(kg) || !G.lidarKGTerrain[kg]) continue;
+    return true; // approximation: any loaded+enhanced KG data present
+  }
+  return false;
+}
+
+function updateEnhancedBadge() {
+  const el = document.getElementById('enhanced-badge');
+  if (!el) return;
+  el.style.display = camOverEnhancedKG() ? '' : 'none';
 }
 
 async function loadClaimed() { G.claimed = await GET('/api/session/'+G.session.id+'/parcels') || []; updateParcelCount(); }
@@ -1424,6 +1578,7 @@ function handleEvent(d) {
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed': toast('🏆 '+d.player+' Aufgabe!','ok'); break;
+    case 'treasures_updated': loadTreasures().then(()=>{ render(); toast('🛡️ Seltene Arten in Natura-2000-Gebieten entdeckt!','ok'); }); break;
     case 'offer_made':
       if (d.seller_id === G.player.id) toast('📨 '+d.buyer+' bietet '+d.offer_price+'🪙 für deine Parzelle!','ok');
       loadOffers().then(()=>{ if(G.sel) showParcelPopup(G.sel); });
@@ -1483,6 +1638,12 @@ function render() {
   // ---- Draw real landuse polygons (forests, water, roads, etc.) ----
   if (G.landusePolys.length > 0) drawLandusePolygons(ctx);
 
+  // ---- Natura 2000 protected-area overlay (enhanced mode) ----
+  if (G.n2kVisible) drawN2KOverlay(ctx);
+
+  // ---- OSM water lines (enhanced mode) ----
+  drawOSMLines(ctx, 'water');
+
   // ---- Draw parcel polygons (from export/geojson KG data) ----
   if (G.parcelPolys.length > 0) {
     for (const f of G.parcelPolys) {
@@ -1498,6 +1659,10 @@ function render() {
     }
   }
 
+  // ---- OSM roads + rail on top of parcels (enhanced mode) ----
+  drawOSMLines(ctx, 'road');
+  drawOSMLines(ctx, 'rail');
+
   // ---- Landuse sprites (crops, flowers, reeds, vines) ----
   drawLanduseSprites(ctx, claimMap);
 
@@ -1507,8 +1672,14 @@ function render() {
   // ---- Draw real building footprints ----
   if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
 
+  // ---- Tallest-tree + landmark markers (enhanced mode) ----
+  drawTopLandmarks(ctx);
+
   // ---- Treasures ----
   for (const t of G.treasures) drawTreasure(ctx, t);
+
+  // ---- GPS position marker ----
+  if (G.geo.watching) drawGeoMarker(ctx);
 
   // ---- EZ group highlight (all parcels in same EZ) ----
   if (G.ezHighlight) drawEZHighlight(ctx);
@@ -1634,6 +1805,275 @@ function drawLandusePolygons(ctx) {
   }
 }
 
+// ================= ENHANCED MODE RENDERING =================
+
+// OSM line styles keyed by cat
+const OSM_ROAD_STYLE = {
+  motorway:  { w: 5,   color: '#8a7458', center: '#c8b088' },
+  primary:   { w: 4,   color: '#8f7a5c', center: '#cbb489' },
+  secondary: { w: 3.2, color: '#93805f', center: null },
+  tertiary:  { w: 2.6, color: '#96845f', center: null },
+  default:   { w: 1.8, color: '#9a8a62', center: null },
+};
+function osmRoadStyle(fclass) {
+  if (!fclass) return OSM_ROAD_STYLE.default;
+  if (fclass.startsWith('motorway') || fclass.startsWith('trunk')) return OSM_ROAD_STYLE.motorway;
+  if (fclass.startsWith('primary')) return OSM_ROAD_STYLE.primary;
+  if (fclass.startsWith('secondary')) return OSM_ROAD_STYLE.secondary;
+  if (fclass.startsWith('tertiary')) return OSM_ROAD_STYLE.tertiary;
+  return OSM_ROAD_STYLE.default;
+}
+
+/** Draw OSM line features of one category (road|water|rail). Culled + major-only below zoom 15. */
+function drawOSMLines(ctx, cat) {
+  const zoom = G.cam.zoom;
+  if (zoom < 13.5) return;
+  const majorsOnly = zoom < 15;
+  const W = gc.width, H = gc.height;
+  const b = viewBounds();
+  const pad = 0.002;
+  const west = b.w - pad, east = b.e + pad, south = b.s - pad, north = b.n + pad;
+  const zs = Math.min(1.6, Math.max(0.5, (zoom - 13) / 4)); // width scale by zoom
+
+  for (const kg in G.osmLines) {
+    for (const ln of G.osmLines[kg]) {
+      if (ln.cat !== cat) continue;
+      if (majorsOnly && cat === 'road' && !ln.major) continue;
+      const pts = ln.pts;
+      // quick bbox cull using first/last point
+      let vis = false;
+      for (let i = 0; i < pts.length; i += 2) {
+        if (pts[i] > west && pts[i] < east && pts[i+1] > south && pts[i+1] < north) { vis = true; break; }
+      }
+      if (!vis) continue;
+
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i += 2) {
+        const sp = toScreen(pts[i], pts[i+1]);
+        i === 0 ? ctx.moveTo(sp[0], sp[1]) : ctx.lineTo(sp[0], sp[1]);
+      }
+
+      if (cat === 'water') {
+        const isRiver = ln.fclass === 'river' || ln.fclass === 'canal';
+        ctx.strokeStyle = isRiver ? '#3a72b0' : '#4a82ba';
+        ctx.lineWidth = (isRiver ? 3.5 : 1.6) * zs;
+        ctx.globalAlpha = 0.75;
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      } else if (cat === 'rail') {
+        ctx.strokeStyle = '#4a4038';
+        ctx.lineWidth = 2 * zs;
+        ctx.globalAlpha = 0.8;
+        ctx.stroke();
+        // cross ties at high zoom
+        if (zoom >= 16) {
+          ctx.strokeStyle = '#6a5a48';
+          ctx.lineWidth = 1;
+          for (let i = 0; i < pts.length - 2; i += 2) {
+            const a = toScreen(pts[i], pts[i+1]), c = toScreen(pts[i+2], pts[i+3]);
+            const dx = c[0]-a[0], dy = c[1]-a[1];
+            const len = Math.sqrt(dx*dx+dy*dy);
+            if (len < 8) continue;
+            const nx = -dy/len, ny = dx/len;
+            const nTies = Math.floor(len / 9);
+            for (let t = 1; t <= nTies; t++) {
+              const mx = a[0] + dx*t/(nTies+1), my = a[1] + dy*t/(nTies+1);
+              ctx.beginPath();
+              ctx.moveTo(mx - nx*3, my - ny*3);
+              ctx.lineTo(mx + nx*3, my + ny*3);
+              ctx.stroke();
+            }
+          }
+        }
+        ctx.globalAlpha = 1;
+      } else { // road — dirt-brown pixel style
+        const st = osmRoadStyle(ln.fclass);
+        ctx.strokeStyle = st.color;
+        ctx.lineWidth = st.w * zs;
+        ctx.globalAlpha = 0.85;
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.stroke();
+        if (st.center && zoom >= 15) {
+          ctx.strokeStyle = st.center;
+          ctx.lineWidth = Math.max(0.8, st.w * zs * 0.25);
+          ctx.globalAlpha = 0.7;
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+}
+
+/** Natura 2000 protected-area overlay: green hatched polygons + dashed border. */
+function drawN2KOverlay(ctx) {
+  const W = gc.width, H = gc.height;
+  for (const code in G.n2kSites) {
+    const site = G.n2kSites[code];
+    if (!site.geom) continue;
+    const polys = site.geom.type === 'MultiPolygon' ? site.geom.coordinates : [site.geom.coordinates];
+    let labelPt = null, largest = 0;
+    for (const poly of polys) {
+      const ring = poly[0];
+      const pts = [];
+      let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+      for (const c of ring) {
+        const sp = toScreen(c[0], c[1]);
+        pts.push(sp);
+        if (sp[0]<minX) minX=sp[0]; if (sp[0]>maxX) maxX=sp[0];
+        if (sp[1]<minY) minY=sp[1]; if (sp[1]>maxY) maxY=sp[1];
+      }
+      if (maxX < -30 || minX > W+30 || maxY < -30 || minY > H+30) continue;
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) i===0 ? ctx.moveTo(pts[i][0], pts[i][1]) : ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(40,180,90,0.12)';
+      ctx.fill();
+      // Hatch lines (clip to polygon)
+      ctx.save();
+      ctx.clip();
+      ctx.strokeStyle = 'rgba(40,180,90,0.18)';
+      ctx.lineWidth = 1;
+      const step = 14;
+      const x0 = Math.max(minX, -30), x1 = Math.min(maxX, W+30);
+      const y0 = Math.max(minY, -30), y1 = Math.min(maxY, H+30);
+      ctx.beginPath();
+      for (let x = x0 - (y1-y0); x < x1; x += step) {
+        ctx.moveTo(x, y1);
+        ctx.lineTo(x + (y1-y0), y0);
+      }
+      ctx.stroke();
+      ctx.restore();
+      // Dashed border
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) i===0 ? ctx.moveTo(pts[i][0], pts[i][1]) : ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(30,160,80,0.7)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const a = (maxX-minX)*(maxY-minY);
+      if (a > largest) { largest = a; labelPt = [(Math.max(minX,0)+Math.min(maxX,W))/2, (Math.max(minY,0)+Math.min(maxY,H))/2]; }
+    }
+    // Label at zoom >= 15
+    if (labelPt && G.cam.zoom >= 15) {
+      const hab = site.habitats || [];
+      const habEmoji = hab.map(h => ({forest:'🌲',meadow:'🦋',floodplain:'💧',water:'💧',bog:'🌿',rock:'⛰️',alpine:'⛰️'}[h]||'🌿')).join('');
+      ctx.font = '10px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(0,40,10,0.75)';
+      const label = '🛡️ ' + site.name.slice(0, 40) + (site.name.length > 40 ? '…' : '');
+      ctx.fillText(label, labelPt[0]+1, labelPt[1]+1);
+      ctx.fillStyle = '#7dffa0';
+      ctx.fillText(label, labelPt[0], labelPt[1]);
+      if (habEmoji) {
+        ctx.font = '14px sans-serif';
+        ctx.fillText(habEmoji, labelPt[0], labelPt[1] + 18);
+      }
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
+/** Big landmark tree sprite with subtle sway + height label; banner for tall objects. */
+function drawTopLandmarks(ctx) {
+  const zoom = G.cam.zoom;
+  if (zoom < 14.5) return;
+  const W = gc.width, H = gc.height;
+  const sway = Math.sin(Date.now() / 1200) * 1.5;
+
+  for (const kg in G.topTrees) {
+    for (const t of G.topTrees[kg]) {
+      const [x, y] = toScreen(t.lon, t.lat);
+      if (x < -40 || x > W+40 || y < -60 || y > H+40) continue;
+      const s = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3));
+      // Trunk
+      ctx.fillStyle = '#5a3a1a';
+      ctx.fillRect(x - 2*s, y - 10*s, 4*s, 12*s);
+      // Canopy — 3 stacked blobs with sway
+      const greens = ['#1e5c22', '#2a7030', '#38843c'];
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = greens[i];
+        ctx.beginPath();
+        ctx.arc(x + sway*(i+1)*0.35, y - 12*s - i*7*s, (9-i*2)*s, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // Highlight
+      ctx.fillStyle = 'rgba(140,220,120,0.35)';
+      ctx.beginPath();
+      ctx.arc(x + sway*1.05 - 2*s, y - 26*s - 2*s, 2.5*s, 0, Math.PI*2);
+      ctx.fill();
+      // Height label at zoom >= 16
+      if (zoom >= 16) {
+        ctx.font = '12px VT323, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillText('🌲 ' + t.height_m + 'm', x+1, y - 32*s + 1);
+        ctx.fillStyle = '#c8ffb0';
+        ctx.fillText('🌲 ' + t.height_m + 'm', x, y - 32*s);
+        ctx.textAlign = 'left';
+      }
+    }
+  }
+
+  if (zoom >= 15.5) {
+    for (const kg in G.topObjects) {
+      for (const o of G.topObjects[kg]) {
+        const [x, y] = toScreen(o.lon, o.lat);
+        if (x < -30 || x > W+30 || y < -40 || y > H+30) continue;
+        // Banner marker: pole + pennant
+        ctx.strokeStyle = '#3a2a18';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y - 22); ctx.stroke();
+        ctx.fillStyle = '#d8b040';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 22); ctx.lineTo(x + 14, y - 18); ctx.lineTo(x, y - 14);
+        ctx.closePath(); ctx.fill();
+        if (zoom >= 16.5) {
+          ctx.font = '11px VT323, monospace';
+          ctx.textAlign = 'center';
+          const emoji = o.type === 'roof' ? '🏠' : '🗼';
+          ctx.fillStyle = 'rgba(0,0,0,0.6)';
+          ctx.fillText(emoji + ' ' + o.height_m + 'm', x+1, y - 26 + 1);
+          ctx.fillStyle = '#ffe9a0';
+          ctx.fillText(emoji + ' ' + o.height_m + 'm', x, y - 26);
+          ctx.textAlign = 'left';
+        }
+      }
+    }
+  }
+}
+
+/** Pulsing blue GPS dot + accuracy circle. */
+function drawGeoMarker(ctx) {
+  const g = G.geo;
+  if (!g.lon) return;
+  const [x, y] = toScreen(g.lon, g.lat);
+  const W = gc.width, H = gc.height;
+  if (x < -100 || x > W+100 || y < -100 || y > H+100) return;
+  // Accuracy circle (meters → px): 1°lat ≈ 111320m
+  const s = mapScale();
+  const accPx = (g.acc / 111320) * s * 1.35;
+  if (accPx > 8 && accPx < 600) {
+    ctx.fillStyle = 'rgba(60,140,255,0.12)';
+    ctx.strokeStyle = 'rgba(60,140,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, accPx, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  }
+  // Pulse ring
+  const pulse = (Date.now() % 1600) / 1600;
+  ctx.strokeStyle = 'rgba(60,140,255,' + (0.6 * (1-pulse)).toFixed(2) + ')';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, 8 + pulse * 16, 0, Math.PI*2); ctx.stroke();
+  // Dot
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#2a7ae0';
+  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();
+}
+
 // ================= REAL BUILDING FOOTPRINTS =================
 const ROOF_COLORS = [
   {roof:'#a05030', wall:'#7a6a58', border:'#6a3020'},  // Classic red-brown
@@ -1674,8 +2114,22 @@ function drawBuildingFootprints(ctx) {
     // Large buildings (>600px area) get industrial/slate colors
     const rc = area > 600 ? ROOF_COLORS[3 + (Math.abs(hash) % 2)] : ROOF_COLORS[colorIdx % 3];
 
-    // 3D roof offset scales with building size
-    const roofOff = Math.max(2, Math.min(8, Math.sqrt(area) * 0.12));
+    // 3D roof offset scales with building size — or with REAL lidar height when available
+    let roofOff = Math.max(2, Math.min(8, Math.sqrt(area) * 0.12));
+    let lidarB = null;
+    if (f._lidarGen !== G.lidarGen) {
+      // lazy-match lidar building by centroid, cache on feature
+      let cx = 0, cy = 0;
+      for (const c of coords) { cx += c[0]; cy += c[1]; }
+      cx /= coords.length; cy /= coords.length;
+      f._lidar = findLidarBuilding(cx, cy);
+      f._lidarGen = G.lidarGen;
+    }
+    lidarB = f._lidar;
+    if (lidarB && lidarB.stories_est > 0) {
+      const zs = Math.max(0.5, Math.min(1.4, (zoom - 14) / 3.5));
+      roofOff = Math.max(2, Math.min(16, lidarB.stories_est * 3 * zs));
+    }
 
     // Shadow
     ctx.fillStyle = 'rgba(0,0,0,0.15)';
@@ -1721,6 +2175,26 @@ function drawBuildingFootprints(ctx) {
     ctx.lineWidth = 0.7;
     ctx.stroke();
 
+    // Lidar roof type: pitched → ridge line along long axis; flat → lighter plain top
+    if (lidarB && zoom >= 16 && (bw > 8 || bh > 8)) {
+      if (lidarB.roof_type_hint === 'pitched') {
+        ctx.strokeStyle = 'rgba(255,235,200,0.45)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        if (bw >= bh) {
+          ctx.moveTo(minX + bw*0.18, (minY+maxY)/2 - roofOff);
+          ctx.lineTo(maxX - bw*0.18, (minY+maxY)/2 - roofOff);
+        } else {
+          ctx.moveTo((minX+maxX)/2, minY + bh*0.18 - roofOff);
+          ctx.lineTo((minX+maxX)/2, maxY - bh*0.18 - roofOff);
+        }
+        ctx.stroke();
+      } else if (lidarB.roof_type_hint === 'flat') {
+        ctx.fillStyle = 'rgba(180,180,190,0.18)';
+        ctx.fill();
+      }
+    }
+
 
   }
 }
@@ -1764,6 +2238,39 @@ function drawParcelPoly(ctx, f, claimMap) {
     : (G.landusePolys.length > 0 ? 0.35 : 0.85);
   ctx.fill();
   ctx.globalAlpha = 1;
+
+  // Enhanced mode: subtle per-parcel elevation tint (lidar) — skipped below zoom 15 for perf
+  if (G.cam.zoom >= 15) {
+    const lp = G.lidarParcels[parcelId];
+    if (lp && lp.elev != null) {
+      const kt = G.lidarKGTerrain[lp.kg];
+      if (kt && kt.emax > kt.emin) {
+        const n = Math.max(0, Math.min(1, (lp.elev - kt.emin) / (kt.emax - kt.emin)));
+        // low = slightly darker (valley shadow), high = slightly lighter (sunlit)
+        if (n < 0.45) {
+          ctx.fillStyle = 'rgba(10,20,40,' + ((0.45-n) * 0.28).toFixed(3) + ')';
+          ctx.fill();
+        } else if (n > 0.55) {
+          ctx.fillStyle = 'rgba(255,250,220,' + ((n-0.55) * 0.22).toFixed(3) + ')';
+          ctx.fill();
+        }
+      }
+      // Slope hatching for rugged terrain at high zoom
+      if (G.cam.zoom >= 16.5 && lp.tclass && (lp.tclass.includes('steep') || lp.tclass.includes('rugged') || lp.tclass.includes('mountain')) && (maxX-minX) > 14) {
+        ctx.save();
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(60,40,20,0.10)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let hx = minX; hx < maxX + (maxY-minY); hx += 9) {
+          ctx.moveTo(hx, minY);
+          ctx.lineTo(hx - (maxY-minY), maxY);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
 
   // Biodiversity: soft green glow overlay
   if (isBiodiversity) {
@@ -2676,7 +3183,17 @@ function drawTreasure(ctx, t) {
   const [x, y] = toScreen(t.lon, t.lat);
   if (x < -20 || x > gc.width+20 || y < -20 || y > gc.height+20) return;
 
-  if (t.treasure_type === 'species' && t.species_name) {
+  if ((t.treasure_type === 'species' || t.treasure_type === 'n2k_species') && t.species_name) {
+    // Natura-2000 rare-species treasures get a pulsing gold ring
+    if (t.treasure_type === 'n2k_species') {
+      const pulse = (Date.now() % 2000) / 2000;
+      ctx.strokeStyle = 'rgba(255,210,60,' + (0.8 * (1-pulse)).toFixed(2) + ')';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(x, y-4, 12 + pulse * 14, 0, Math.PI*2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,230,120,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y-4, 12, 0, Math.PI*2); ctx.stroke();
+    }
     drawSpeciesTreasure(ctx, x, y, t);
   } else {
     drawChestTreasure(ctx, x, y, t);
@@ -3308,6 +3825,7 @@ let loadTimer;
 function initGameInput() {
   gc.addEventListener('mousedown', e => {
     G.drag = { active:true, sx:e.clientX, sy:e.clientY, slon:G.cam.lon, slat:G.cam.lat, moved:false };
+    G.geo.follow = false; // manual pan disables GPS follow-mode
     gc.classList.add('dragging');
   });
   gc.addEventListener('mousemove', e => {
@@ -3344,6 +3862,7 @@ function initGameInput() {
     if (e.touches.length===1) {
       e.preventDefault();
       G.drag = {active:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,slon:G.cam.lon,slat:G.cam.lat,moved:false,wasPinch:false};
+      G.geo.follow = false; // manual pan disables GPS follow-mode
     } else if (e.touches.length===2) {
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       touchDist = Math.sqrt(dx*dx+dy*dy);
@@ -3395,6 +3914,57 @@ function initGameInput() {
     const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+gmZoom+'z/data=!3m1!1e3';
     window.open(url, '_blank');
   };
+
+  // Natura-2000 layer toggle
+  const n2kBtn = document.getElementById('btn-n2k');
+  n2kBtn.onclick = () => {
+    G.n2kVisible = !G.n2kVisible;
+    n2kBtn.classList.toggle('off', !G.n2kVisible);
+    toast(G.n2kVisible ? '🛡️ Schutzgebiete sichtbar' : '🛡️ Schutzgebiete ausgeblendet', '');
+    render();
+  };
+
+  // GPS "show my location" (mobile flagship feature; requires HTTPS)
+  if ('geolocation' in navigator) {
+    const gpsBtn = document.getElementById('btn-gps');
+    gpsBtn.style.display = '';
+    gpsBtn.onclick = () => {
+      if (G.geo.watching) {
+        navigator.geolocation.clearWatch(G.geo.id);
+        G.geo.watching = false; G.geo.follow = false; G.geo.id = null;
+        gpsBtn.classList.remove('active');
+        toast('📍 Standort aus', '');
+        render();
+        return;
+      }
+      gpsBtn.classList.add('active');
+      toast('📍 Standort wird ermittelt…', '');
+      let firstFix = true;
+      G.geo.id = navigator.geolocation.watchPosition(pos => {
+        G.geo.watching = true;
+        G.geo.lon = pos.coords.longitude;
+        G.geo.lat = pos.coords.latitude;
+        G.geo.acc = pos.coords.accuracy || 0;
+        const inAT = G.geo.lat > 46.3 && G.geo.lat < 49.1 && G.geo.lon > 9.5 && G.geo.lon < 17.2;
+        if (firstFix) {
+          firstFix = false;
+          if (inAT) {
+            G.geo.follow = true;
+            flyTo(G.geo.lon, G.geo.lat, Math.max(G.cam.zoom, 17));
+          } else {
+            toast('📍 Außerhalb Österreichs — Position wird nicht angezeigt', 'err');
+          }
+        } else if (G.geo.follow && inAT) {
+          G.cam.lon = G.geo.lon; G.cam.lat = G.geo.lat;
+        }
+        render();
+      }, err => {
+        gpsBtn.classList.remove('active');
+        G.geo.watching = false;
+        toast('📍 Standort nicht verfügbar: ' + (err.message||''), 'err');
+      }, { enableHighAccuracy: false, maximumAge: 5000, timeout: 20000 });
+    };
+  }
 
   // Keyboard
   document.addEventListener('keydown', e => {
@@ -3632,6 +4202,8 @@ function showParcelPopup(f) {
   document.getElementById('pp-owner').textContent = owner ? owner.name : 'Frei';
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
+  renderEnhancedPopupRows(pid, price);
+
   const act = document.getElementById('pp-actions');
   act.innerHTML = '';
   if (!claim) {
@@ -3706,6 +4278,85 @@ function showParcelPopup(f) {
     pp.style.right = ''; pp.style.top = '';
   }
   render();
+}
+
+/** Enhanced-mode rows in the parcel popup: elevation, slope, vegetation, market value, Natura 2000. */
+function renderEnhancedPopupRows(pid, gamePrice) {
+  const box = document.getElementById('pp-enhanced');
+  const moreBtn = document.getElementById('pp-more');
+  if (!box) return;
+  const isMobile = window.innerWidth < 768;
+  const rows = [];      // always visible
+  const moreRows = [];  // behind "Mehr ▸" on mobile
+
+  const lp = G.lidarParcels[pid];
+  if (lp) {
+    if (lp.elev != null) {
+      let range = '';
+      if (lp.elevMin != null && lp.elevMax != null && (lp.elevMax - lp.elevMin) >= 1) {
+        range = ' <span style="color:var(--text-dim)">(' + Math.round(lp.elevMin) + '–' + Math.round(lp.elevMax) + 'm)</span>';
+      }
+      rows.push(['⛰️ Höhe', Math.round(lp.elev) + ' m' + range]);
+    }
+    if (lp.slope != null) {
+      const arrows = {N:'↑',NE:'↗',E:'→',SE:'↘',S:'↓',SW:'↙',W:'←',NW:'↖'};
+      const tlabels = {level:'eben', nearly_level:'fast eben', 'nearly level':'fast eben', gentle:'sanft', undulating:'wellig', moderate:'mäßig', hilly:'hügelig', steep:'steil', rugged:'schroff', 'slightly rugged':'leicht schroff', mountainous:'gebirgig'};
+      rows.push(['⛰️ Hang', lp.slope.toFixed(1) + '° ' + (arrows[lp.aspect]||'') + (lp.tclass ? ' · ' + (tlabels[lp.tclass]||lp.tclass) : '')]);
+    }
+    if (lp.dom) {
+      const domDE = {grass:'Wiese', tree:'Baumbestand', roof:'Bebaut', crop:'Acker', water:'Wasser', bare:'Offen', road:'Straße', shrub:'Gestrüpp'};
+      let veg = domDE[lp.dom] || lp.dom;
+      if (lp.forestFrac != null && lp.forestFrac > 0.02) veg += ' · ' + Math.round(lp.forestFrac*100) + '% Wald';
+      moreRows.push(['🌿 Bewuchs', veg]);
+    }
+  }
+
+  // Natura 2000: is parcel inside a loaded site polygon?
+  const pLon = G.sel?.properties?.lon || (G.sel?.geometry?.type === 'Polygon' ? centroidOf(G.sel.geometry.coordinates[0])[0] : null);
+  const pLat = G.sel?.properties?.lat || (G.sel?.geometry?.type === 'Polygon' ? centroidOf(G.sel.geometry.coordinates[0])[1] : null);
+  if (pLon != null) {
+    for (const code in G.n2kSites) {
+      const st = G.n2kSites[code];
+      if (!st.geom) continue;
+      if (geoContains(st.geom, pLon, pLat)) {
+        const habEmoji = (st.habitats||[]).map(h => ({forest:'🌲',meadow:'🦋',floodplain:'💧',water:'💧',bog:'🌿'}[h]||'🌿')).join('');
+        rows.push(['🛡️ Natura 2000', esc(st.name.slice(0,36)) + ' ' + habEmoji]);
+        break;
+      }
+    }
+  }
+
+  const renderRows = () => {
+    const showMore = !isMobile || box.dataset.expanded === '1';
+    const list = showMore ? rows.concat(moreRows) : rows;
+    if (list.length === 0 && !(pid in G.landPrices)) { box.style.display = 'none'; moreBtn.style.display = 'none'; return; }
+    let html = '';
+    for (const [k, v] of list) html += '<span>' + k + '</span><b>' + v + '</b>';
+    // Market value row (lazy loaded)
+    const mv = G.landPrices[pid];
+    if (mv) {
+      const eur = mv.buy_total_eur >= 1e6 ? (mv.buy_total_eur/1e6).toFixed(2) + ' Mio €' : Math.round(mv.buy_total_eur).toLocaleString('de-AT') + ' €';
+      const cls = {bauland_built:'Bauland (bebaut)', bauland_zoned:'Bauland', ackerland:'Ackerland', gruenland:'Grünland', wald:'Wald', other:'Sonstig'}[mv.class] || mv.class;
+      html += '<span>💶 Marktwert</span><b style="color:var(--gold)">' + eur + ' <span style="color:var(--text-dim)">(' + cls + ')</span></b>';
+      if (showMore && gamePrice > 0) {
+        html += '<span></span><b style="color:var(--text-dim);font-size:14px">Spielpreis: ' + gamePrice + '🪙 · ' + Math.round(mv.buy_eur_per_sqm) + ' €/m² echt</b>';
+      }
+    }
+    box.innerHTML = html;
+    box.style.display = html ? '' : 'none';
+    moreBtn.style.display = (isMobile && moreRows.length > 0 && box.dataset.expanded !== '1') ? '' : 'none';
+  };
+
+  box.dataset.expanded = '';
+  moreBtn.onclick = () => { box.dataset.expanded = '1'; renderRows(); };
+  renderRows();
+
+  // Lazy market value fetch (only for enhanced... actually land_prices covers most of AT — always try)
+  if (!(pid in G.landPrices)) {
+    fetchLandPrice(pid).then(() => {
+      if (G.sel && G.sel.properties.parcel_id === pid) renderRows();
+    });
+  }
 }
 
 window.openEZPopup = function openEZPopup(kgCode, ez) {
@@ -3930,10 +4581,11 @@ window.doRespondOffer = async function(offerId, accept) {
 async function claimTreasure(t) {
   const res = await POST('/api/claim-treasure', {player_id:G.player.id, treasure_id:t.id});
   if (res.error) { toast(res.error,'err'); return; }
-  if (res.type === 'species' && res.species_german) {
+  if ((res.type === 'species' || res.type === 'n2k_species') && res.species_german) {
     const catLabels = {'EN':'Stark gefährdet','VU':'Gefährdet','NT':'Potenziell gefährdet','LC':'Nicht gefährdet'};
     const catEmoji = {'EN':'🔴','VU':'🟠','NT':'🔵','LC':'🟢'};
-    toast(`🦎 Artenfund: ${res.species_german} (${res.species_name})\n${catEmoji[res.species_category]||''} ${catLabels[res.species_category]||res.species_category} — +${res.value}🪙`, 'ok');
+    const n2k = res.type === 'n2k_species' ? '🛡️ Natura-2000-Bonus! ' : '';
+    toast(`🦎 ${n2k}Artenfund: ${res.species_german} (${res.species_name})\n${catEmoji[res.species_category]||''} ${catLabels[res.species_category]||res.species_category} — +${res.value}🪙`, 'ok');
   } else {
     const emoji = {xp:'⚡',rare_seed:'🌱',ancient_map:'🗺️',coins:'🪙'}[res.type]||'🪙';
     toast('💎 Schatz! +'+res.value+emoji,'ok');
@@ -4033,11 +4685,15 @@ function resetPopupPosition(id) {
   }
 }
 
-// Sparkle animation for treasures
+// Sparkle animation for treasures, top-tree sway + GPS pulse
 setInterval(() => {
   if (document.getElementById('screen-game').classList.contains('active') &&
-      G.treasures.length>0) render();
+      (G.treasures.length>0 || G.geo.watching || Object.keys(G.topTrees).length>0)) render();
 }, 800);
+// Faster pulse when GPS marker is active (still cheap: only when watching)
+setInterval(() => {
+  if (G.geo.watching && document.getElementById('screen-game').classList.contains('active')) render();
+}, 250);
 
 // Auto-refresh
 setInterval(async () => {
