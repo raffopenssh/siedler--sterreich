@@ -1143,11 +1143,17 @@ async function startGameWithLoading() {
   G.knownMunis.add(G.session.municipality_code);
   G.homeMuni = G.session.municipality_name;
 
+  // Kick the enhanced-KG registry now (parallel with parcels) so KG loading
+  // knows which KGs are lidar-enhanced and can SKIP the heavy cadastre landuse
+  // fetch for them (srtm dominant_type + OSM lines cover the backdrop instead).
+  const registryReady = G.enhancedKGs.size ? Promise.resolve() : loadEnhancedRegistry();
+
   // Step 2: Load parcels
   setLoadStep('ls-parcels', 'active');
   setLoadProgress(15);
   setLoadSub('Parzellen-Punkte werden geladen...');
   await loadParcels();
+  await registryReady; // ensure enhancedKGs is populated before KG landuse decisions
   setLoadSub(G.parcels.length + ' Parzellen gefunden');
   setLoadStep('ls-parcels', 'done');
   setLoadProgress(25);
@@ -1158,8 +1164,9 @@ async function startGameWithLoading() {
   setLoadSub('Katastralgemeinden werden ermittelt...');
   await fetchKGPolygonsBlocking();
   buildEZIndex();
-  // Enhanced mode: fetch lidar/OSM/N2K data in the BACKGROUND (never blocks loading)
-  loadEnhancedRegistry().then(loadEnhancedForKGs);
+  // Enhanced mode: fetch lidar/OSM/N2K data in the BACKGROUND (never blocks loading).
+  // Registry is already loaded above; just kick the per-KG enhanced fetches.
+  loadEnhancedForKGs();
   // Giant trees unlock persists: check if player already found a treasure
   GET('/api/player/'+G.player.id).then(pl => {
     if (pl && pl.treasures_found > 0) { G.tallUnlocked = true; }
@@ -1308,12 +1315,15 @@ async function loadMoreParcels() {
   } catch(e) { console.error(e); }
 }
 
-/** Fetch all pages of a KG layer via /api/kg/{code}?layer=...&page=N */
-async function fetchKGLayer(kg, layer) {
+/** Fetch all pages of a KG layer via /api/kg/{code}?layer=...&page=N.
+ *  pagesize 500 keeps each page under the exe.dev ~500KB proxy limit while
+ *  cutting round-trips ~2.5× vs the old 200. */
+async function fetchKGLayer(kg, layer, pagesize) {
   const features = [];
   let page = 0;
+  const ps = pagesize || 500;
   while (true) {
-    const data = await GET('/api/kg/'+kg+'?layer='+layer+'&page='+page+'&pagesize=200');
+    const data = await GET('/api/kg/'+kg+'?layer='+layer+'&page='+page+'&pagesize='+ps);
     if (data.features) for (const f of data.features) features.push(f);
     if (!data.has_more) break;
     page++;
@@ -1321,20 +1331,37 @@ async function fetchKGLayer(kg, layer) {
   return features;
 }
 
-/** Fetch all 3 layers for one KG and merge into game state. */
+/** Stream the landuse backdrop for a KG in the background (never blocks loading).
+ *  Landuse is only a visual backdrop — in enhanced mode terrain comes from lidar
+ *  dominant-type and roads/water from OSM, so it need not gate the game.
+ *
+ *  For ENHANCED (lidar) KGs we skip the cadastre landuse layer entirely: it's the
+ *  single heaviest payload (~7MB vs ~0.85MB parcels / ~2MB footprints), and srtm's
+ *  per-parcel dominant_type land cover + OSM road/water lines already provide a
+ *  richer, measured backdrop. This is the biggest load-time win. */
+function loadLanduseBackground(kg) {
+  if (G.enhancedKGs.has(kg)) return; // lidar dom + OSM cover the backdrop — skip the 7MB fetch
+  fetchKGLayer(kg, 'landuse').then(landuse => {
+    let added = 0;
+    for (const f of landuse) {
+      if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
+        G.landusePolys.push(f); added++;
+      }
+    }
+    if (added > 0) { render(); renderMini(); }
+  }).catch(e => console.error('landuse bg fetch failed:', kg, e));
+}
+
+/** Fetch the interactive layers (parcels + buildings) for one KG and merge.
+ *  Landuse backdrop is streamed separately in the background. */
 async function loadOneKG(kg) {
-  const [parcels, footprints, landuse] = await Promise.all([
+  const [parcels, footprints] = await Promise.all([
     fetchKGLayer(kg, 'parcels'),
     fetchKGLayer(kg, 'building_footprints'),
-    fetchKGLayer(kg, 'landuse'),
   ]);
   for (const f of parcels) G.parcelPolys.push(f);
   for (const f of footprints) G.buildingFootprints.push(f);
-  for (const f of landuse) {
-    if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
-      G.landusePolys.push(f);
-    }
-  }
+  loadLanduseBackground(kg); // fire & forget
 }
 
 async function fetchKGPolygonsBlocking() {
@@ -1369,8 +1396,20 @@ async function fetchKGPolygonsBlocking() {
     return dx*dx + dy*dy;
   };
   const ranked = [...kgs].sort((a, b) => dist(a) - dist(b));
-  const blocking = ranked.slice(0, 2);   // nearest 1–2 KGs — what the player sees first
-  const background = ranked.slice(2);
+  // Landuse (the old 7MB bottleneck) no longer blocks — it's fire-and-forget, and
+  // skipped outright for enhanced KGs. Blocking a KG now only means parcels+footprints
+  // (~3MB), so we can afford to show MORE of the map up front. Budget the blocking set:
+  // enhanced KGs cost 1, plain KGs cost ~2 (they also drag a landuse backdrop). Fill
+  // until the budget is spent so a typical (mostly-enhanced) session loads several KGs.
+  const BLOCK_BUDGET = 6;
+  const blocking = [];
+  let spent = 0;
+  for (const kg of ranked) {
+    const cost = G.enhancedKGs.has(kg) ? 1 : 2;
+    if (blocking.length > 0 && spent + cost > BLOCK_BUDGET) break;
+    blocking.push(kg); spent += cost;
+  }
+  const background = ranked.slice(blocking.length);
   for (const kg of ranked) G.kgsLoaded.add(kg);
 
   const total = blocking.length || 1;
@@ -1402,18 +1441,13 @@ async function fetchKGPolygons() {
   for (const kg of kgs) {
     G.kgsLoaded.add(kg);
     try {
-      const [parcels, footprints, landuse] = await Promise.all([
+      const [parcels, footprints] = await Promise.all([
         fetchKGLayer(kg, 'parcels'),
         fetchKGLayer(kg, 'building_footprints'),
-        fetchKGLayer(kg, 'landuse'),
       ]);
       for (const f of parcels) G.parcelPolys.push(f);
       for (const f of footprints) G.buildingFootprints.push(f);
-      for (const f of landuse) {
-        if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
-          G.landusePolys.push(f);
-        }
-      }
+      loadLanduseBackground(kg); // backdrop streams in separately
       render();
       renderMini();
     } catch(e) { console.error('KG fetch failed:', kg, e); }
