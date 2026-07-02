@@ -220,3 +220,13 @@ Austrian land register folio grouping parcels under one ownership entry. A farm 
 - Binary: `./siedler`, DB: `./db.sqlite3`
 - Cadastre API: `https://cadastre-process-api.exe.xyz/api/v1` (docs: `/api/v1/docs/llm.txt`)
 - Port 8000, proxied via exe.dev HTTPS
+
+## Enhanced Mode (LiDAR)
+
+For KGs processed by `https://srtm-lidar-at.exe.xyz:8000/api/v1` (srtm-lidar API):
+- `GET /api/enhanced-kgs` — registry of processed KGs (15min cache); "Auf Glück" prefers these ~90%
+- `GET /api/lidar/kg/{code}` — slim KG JSON (server strips vertex_heights, flag-filters top trees ≤60m / objects ≤120m; 6h cache)
+- `GET /api/lidar/...` — generic proxy (1h cache; overlay/elevation/dtm blocked — too slow)
+- N2K bonus treasures (`treasure_type='n2k_species'`, 2× value) placed in a goroutine at session create via `generateN2KTreasures`; SSE `treasures_updated`
+
+Frontend (`loadEnhancedForKGs`, all background, never blocks loading): `G.enhancedKGs`, `G.lidarParcels` (elevation tint ≥z15, slope hatching ≥z16.5), `G.lidarBuildingIdx` (real building heights/roof types, matched by centroid grid + `G.lidarGen` invalidation), `G.topTrees`/`G.topObjects` (landmark sprites), `G.osmLines` (roads/water/rail; majors-only <z15), `G.n2kSites` (hatched overlay, toggle `#btn-n2k`), `G.landPrices` (lazy per-parcel market value in popup). GPS: `#btn-gps`, `G.geo`, follow-mode disabled on manual pan. Popup enhanced rows: `renderEnhancedPopupRows` (`#pp-enhanced`, mobile "Mehr ▸" expander).
