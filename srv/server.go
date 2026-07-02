@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1804,6 +1805,52 @@ func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
+// imperviousCover are srtm land-cover classes that are frequently the *reported*
+// dominant type on a parcel even when they cover only a sliver (a driveway edge,
+// a shed roof) — using them as the ground-fill color paints whole meadows grey.
+// For terrain fill we skip these and fall back to the next-largest natural cover.
+var imperviousCover = map[string]bool{
+	"road": true, "roof": true, "parking": true, "path": true,
+}
+
+// correctedDomTerrain picks the land-cover type to use for a parcel's ground
+// fill: the highest-area entry in area_summary that is NOT impervious
+// (road/roof/parking/path). If the parcel is genuinely all-impervious (a real
+// building lot or a road parcel) nothing natural remains, so we return "" and the
+// client falls back to cadastre landuse. Buildings themselves are drawn as
+// footprints on top, so roofs still render — just not as the terrain backdrop.
+func correctedDomTerrain(pd map[string]any) any {
+	as, ok := pd["area_summary"].(map[string]any)
+	if !ok || len(as) == 0 {
+		// No breakdown — only trust the raw dominant if it isn't impervious.
+		if dt, ok := pd["dominant_type"].(string); ok && !imperviousCover[dt] {
+			return dt
+		}
+		return ""
+	}
+	bestType := ""
+	bestArea := -1.0
+	for t, v := range as {
+		if imperviousCover[t] {
+			continue
+		}
+		vm, _ := v.(map[string]any)
+		area := 0.0
+		if vm != nil {
+			if a, ok := vm["area_sqm"].(float64); ok {
+				area = a
+			} else if f, ok := vm["fraction"].(float64); ok {
+				area = f
+			}
+		}
+		if area > bestArea {
+			bestArea = area
+			bestType = t
+		}
+	}
+	return bestType
+}
+
 // handleLidarKG fetches the full ~4-7MB KG JSON from the lidar API, strips it
 // down to what the game needs (per-parcel terrain, building heights, flag-filtered
 // top trees/objects), and caches the slim result for 6h.
@@ -1819,7 +1866,7 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch flags first (fast) to filter top trees/objects
 	flagged := map[string]bool{} // obj_ref -> true for severity high/critical
-	if fr, err := http.Get(lidarAPI + "/flags?kg=" + kg + "&limit=500"); err == nil {
+	if fr, err := http.Get(lidarAPI + "/flags?kg=" + kg + "&limit=3000"); err == nil {
 		var fd struct {
 			Flags []struct {
 				ObjRef   string `json:"obj_ref"`
@@ -1880,14 +1927,48 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Slim parcels
+	// Slim parcels. While iterating, also harvest tall trees from the per-parcel
+	// top_trees arrays — the KG-level top_10_trees only has 10, but each parcel
+	// carries its own tallest trees, giving us hundreds of giants to show.
 	var parcels []map[string]any
+	type giantTree struct {
+		h, lon, lat float64
+	}
+	var harvested []giantTree
 	if p, ok := full["parcels"].(map[string]any); ok {
 		if details, ok := p["details"].([]any); ok {
 			for _, d := range details {
 				pd, ok := d.(map[string]any)
 				if !ok {
 					continue
+				}
+				// top_trees rows: [hmax, hmean, hp90, area, lon, lat, ndvi_mean,
+				// ndvi_fused, height_change_m, phenology, conf, rf_conf]
+				pid, _ := pd["parcel_id"].(string)
+				if tts, ok := pd["top_trees"].([]any); ok {
+					for i, tr := range tts {
+						row, ok := tr.([]any)
+						if !ok || len(row) < 6 {
+							continue
+						}
+						// Skip trees flagged high/critical by srtm QA (bad classification).
+						if pid != "" && flagged[fmt.Sprintf("%s:parcel_top_tree:%s:%d", kg, pid, i)] {
+							continue
+						}
+						h, _ := row[0].(float64)
+						lon, _ := row[4].(float64)
+						lat, _ := row[5].(float64)
+						// Only real giants; clamp junk. rf_conf (idx 11) gate when present.
+						if h < 25 || h > 60 || lon == 0 || lat == 0 {
+							continue
+						}
+						if len(row) >= 12 {
+							if rf, ok := row[11].(float64); ok && rf < 0.5 {
+								continue
+							}
+						}
+						harvested = append(harvested, giantTree{h: h, lon: lon, lat: lat})
+					}
 				}
 				parcels = append(parcels, map[string]any{
 					"parcel_id":         pd["parcel_id"],
@@ -1898,6 +1979,12 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 					"aspect_dominant":   pd["aspect_dominant"],
 					"terrain_class":     pd["terrain_class"],
 					"dominant_type":     pd["dominant_type"],
+					// Corrected dominant land cover for TERRAIN fill: srtm often
+					// mislabels a parcel's dominant as road/roof (impervious). For
+					// ground coloring we want the dominant *natural* cover, so skip
+					// the impervious family and fall back to the next-largest type.
+					// Buildings are drawn separately as footprints (roof color there).
+					"dom_terrain":       correctedDomTerrain(pd),
 					"forested_fraction": pd["forested_fraction"],
 					"ndsm_max_m":        pd["ndsm_max_m"],
 				})
@@ -1957,6 +2044,34 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 				"lat":      c["lat"],
 			})
 		}
+	}
+	// Merge in the per-parcel harvested giants (tallest first), deduping trees that
+	// land on the same ~15m grid cell (KG-level and per-parcel lists overlap).
+	sort.Slice(harvested, func(i, j int) bool { return harvested[i].h > harvested[j].h })
+	seenTree := map[string]bool{}
+	gridKey := func(lon, lat float64) string {
+		return fmt.Sprintf("%.4f,%.4f", lon, lat)
+	}
+	for _, t := range topTrees {
+		lon, _ := t["lon"].(float64)
+		lat, _ := t["lat"].(float64)
+		seenTree[gridKey(lon, lat)] = true
+	}
+	const maxGiants = 120
+	for _, g := range harvested {
+		if len(topTrees) >= maxGiants {
+			break
+		}
+		k := gridKey(g.lon, g.lat)
+		if seenTree[k] {
+			continue
+		}
+		seenTree[k] = true
+		topTrees = append(topTrees, map[string]any{
+			"height_m": math.Round(g.h*10) / 10,
+			"lon":      g.lon,
+			"lat":      g.lat,
+		})
 	}
 	slim["top_trees"] = topTrees
 

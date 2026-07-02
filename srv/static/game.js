@@ -82,6 +82,11 @@ const DOM_TERRAIN = {
   bare_soil:TERRAIN.waste, rock:TERRAIN.waste, fill:TERRAIN.waste, excavation:TERRAIN.waste,
   construction:TERRAIN.waste, tree_loss:TERRAIN.waste,
 };
+// Impervious classes srtm often mis-reports as a parcel's dominant cover. We never
+// use these as the ground-fill color (buildings/roofs render as footprints on top,
+// roads come from OSM lines). The server already skips them and returns dom_terrain;
+// this set is the client-side fallback when dom_terrain is absent.
+const IMPERVIOUS_DOM = new Set(['road','roof','parking','path']);
 
 /** Parse landuse_summary → {dominant:{terrain,code,name}, buildingCount, entries:[{abbr,terrain,count}]} */
 function parseLanduseSummary(summary) {
@@ -1480,7 +1485,7 @@ async function fetchEnhancedKG(kg) {
       G.lidarParcels[p.parcel_id] = {
         elev: p.elevation_m, elevMin: p.elevation_min_m, elevMax: p.elevation_max_m,
         slope: p.slope_mean_deg, aspect: p.aspect_dominant, tclass: p.terrain_class,
-        dom: p.dominant_type, forestFrac: p.forested_fraction, kg: kg,
+        dom: p.dominant_type, domTerrain: p.dom_terrain, forestFrac: p.forested_fraction, kg: kg,
       };
     }
     for (const b of (d.buildings||[])) {
@@ -2174,12 +2179,13 @@ function drawTopLandmarks(ctx) {
   // Always show at least the single tallest hint even when fully zoomed out.
   if (G.tallUnlocked) {
     if (!G.tallRevealed) {
-      const n = zoom < 14 ? 1 : 5;
+      // Show more hint trees so giants are easier to spot; still at least one
+      // when fully zoomed out.
+      const n = zoom < 14 ? 3 : 12;
       for (const hint of hintTallTrees(n)) drawGiantTree(ctx, hint, zoom, sway, 1, true);
     } else if (zoom < 14) {
-      // Zoomed out: just show the tallest so it's always locatable
-      const hint = hintTallTree();
-      if (hint) drawGiantTree(ctx, hint, zoom, sway, 1, false);
+      // Zoomed out: show the tallest handful so they stay locatable (>=1)
+      for (const t of hintTallTrees(6)) drawGiantTree(ctx, t, zoom, sway, 1, false);
     } else {
       // Pop-in animation after reveal (staggered by height rank)
       const trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
@@ -2662,7 +2668,12 @@ function getParcelTerrain(p, claim) {
   if (claim?.converted_to) return TERRAIN.bio;
   // Enhanced mode: real measured dominant land cover from lidar beats cadastre landuse
   const lp = G.lidarParcels[p.parcel_id];
-  if (lp && lp.dom && DOM_TERRAIN[lp.dom]) return DOM_TERRAIN[lp.dom];
+  // Use the corrected dominant land cover (impervious road/roof skipped server-side,
+  // falls back to #2 natural cover). Buildings are drawn as footprints on top.
+  if (lp) {
+    const dt = lp.domTerrain || (lp.dom && !IMPERVIOUS_DOM.has(lp.dom) ? lp.dom : null);
+    if (dt && DOM_TERRAIN[dt]) return DOM_TERRAIN[dt];
+  }
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
     if (parsed.dominant) return parsed.dominant.terrain;
@@ -4514,9 +4525,10 @@ function renderEnhancedPopupRows(pid, gamePrice) {
       const tlabels = {level:'eben', nearly_level:'fast eben', 'nearly level':'fast eben', gentle:'sanft', undulating:'wellig', moderate:'mäßig', hilly:'hügelig', steep:'steil', rugged:'schroff', 'slightly rugged':'leicht schroff', mountainous:'gebirgig'};
       rows.push(['⛰️ Hang', lp.slope.toFixed(1) + '° ' + (arrows[lp.aspect]||'') + (lp.tclass ? ' · ' + (tlabels[lp.tclass]||lp.tclass) : '')]);
     }
-    if (lp.dom) {
-      const domDE = {grass:'Wiese', tree:'Baumbestand', roof:'Bebaut', crop:'Acker', water:'Wasser', bare:'Offen', road:'Straße', shrub:'Gestrüpp'};
-      let veg = domDE[lp.dom] || lp.dom;
+    const domShown = lp.domTerrain || lp.dom;
+    if (domShown) {
+      const domDE = {grass:'Wiese', tree:'Baumbestand', roof:'Bebaut', crop:'Acker', water:'Wasser', bare:'Offen', bare_soil:'Offen', road:'Straße', shrub:'Gestrüpp', hedge:'Hecke', garden:'Garten', vineyard:'Weingarten'};
+      let veg = domDE[domShown] || domShown;
       if (lp.forestFrac != null && lp.forestFrac > 0.02) veg += ' · ' + Math.round(lp.forestFrac*100) + '% Wald';
       moreRows.push(['🌿 Bewuchs', veg]);
     }
