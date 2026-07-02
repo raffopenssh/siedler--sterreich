@@ -2256,6 +2256,86 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
   }
 }
 
+// ---- Miracle fog hint: when no giant tree is on screen for a few seconds,
+// a swirling golden mist gathers at the screen edge pointing toward the
+// nearest one. Tapping the mist flies the camera there.
+let fogHintSince = 0;
+let fogHintPos = null; // {x, y, lon, lat} for tap handling
+function drawTallTreeFogHint(ctx) {
+  const trees = G.tallRevealed ? allTallTrees() : hintTallTrees(12);
+  if (!trees.length) return;
+  if (anyTallTreeOnScreen()) { fogHintSince = 0; fogHintPos = null; return; }
+  const now = Date.now();
+  if (!fogHintSince) { fogHintSince = now; fogHintPos = null; return; }
+  const age = now - fogHintSince;
+  if (age < 3000) { fogHintPos = null; return; }   // patience: let them explore first
+  const fade = Math.min(1, (age - 3000) / 1500);
+  const W = gc.width, H = gc.height;
+  // Nearest tree to screen center
+  let best = null, bd = Infinity;
+  for (const t of trees) {
+    const [x, y] = toScreen(t.lon, t.lat);
+    const d = (x - W/2)*(x - W/2) + (y - H/2)*(y - H/2);
+    if (d < bd) { bd = d; best = { t, x, y }; }
+  }
+  if (!best) return;
+  // Clamp direction vector to the screen edge (with margin)
+  const dx = best.x - W/2, dy = best.y - H/2;
+  const k = Math.min(
+    (W/2 - 70) / Math.max(Math.abs(dx), 1e-9),
+    (H/2 - 90) / Math.max(Math.abs(dy), 1e-9));
+  const ex = W/2 + dx*k, ey = H/2 + dy*k;
+  fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat };
+  // Distance in meters (approx equirectangular)
+  const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
+  const dm = Math.hypot((best.t.lon - G.cam.lon) * mLon, (best.t.lat - G.cam.lat) * 110540);
+  const distTxt = dm >= 1000 ? (dm/1000).toFixed(1) + ' km' : Math.round(dm/10)*10 + ' m';
+  // Swirling mist: 3 layered drifting blobs + sparkle motes
+  ctx.save();
+  ctx.globalAlpha = fade;
+  for (let i = 0; i < 3; i++) {
+    const wob = now/900 + i * 2.1;
+    const bx = ex + Math.sin(wob) * (8 + i*5);
+    const by = ey + Math.cos(wob * 1.3) * (5 + i*3);
+    const r = 26 + i*10 + Math.sin(now/600 + i) * 4;
+    const grad = ctx.createRadialGradient(bx, by, 0, bx, by, r);
+    grad.addColorStop(0, 'rgba(255,230,140,' + (0.28 - i*0.07).toFixed(2) + ')');
+    grad.addColorStop(1, 'rgba(255,230,140,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI*2); ctx.fill();
+  }
+  // Sparkle motes orbiting the mist
+  for (let i = 0; i < 5; i++) {
+    const a = now/700 + i * 1.257;
+    const mx = ex + Math.cos(a) * (18 + (i%3)*7);
+    const my = ey + Math.sin(a * 1.15) * (12 + (i%2)*6);
+    const tw = 0.5 + Math.sin(now/180 + i*2) * 0.5;
+    ctx.fillStyle = 'rgba(255,245,190,' + (tw*0.9).toFixed(2) + ')';
+    ctx.fillRect(mx-1, my-1, 2, 2);
+  }
+  // Direction chevron pointing outward + pulsing tree glyph
+  const ang = Math.atan2(dy, dx);
+  const bob = Math.sin(now/350) * 3;
+  ctx.translate(ex, ey);
+  ctx.rotate(ang);
+  ctx.fillStyle = 'rgba(255,215,0,0.95)';
+  ctx.beginPath();
+  ctx.moveTo(34 + bob, 0); ctx.lineTo(22 + bob, -7); ctx.lineTo(22 + bob, 7);
+  ctx.closePath(); ctx.fill();
+  ctx.rotate(-ang);
+  ctx.font = '20px serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('\uD83C\uDF32', 0, 7);
+  // Distance label
+  ctx.font = '13px VT323, monospace';
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillText(distTxt, 1, 25);
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(distTxt, 0, 24);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
 /** Big landmark tree sprite with subtle sway + height label; banner for tall objects. */
 function drawTopLandmarks(ctx) {
   const zoom = G.cam.zoom;
@@ -2285,6 +2365,7 @@ function drawTopLandmarks(ctx) {
         drawGiantTree(ctx, trees[i], zoom, sway, pop, false);
       }
     }
+    drawTallTreeFogHint(ctx);
   }
 
   if (zoom < 14) return;
@@ -4420,6 +4501,13 @@ function onGameClick(e) {
     if (Math.abs(tx-x)<15 && Math.abs(ty-y)<15) { claimTreasure(t); return; }
   }
 
+  // Miracle fog hint: tapping the mist flies to the nearest giant tree
+  if (fogHintPos && Math.abs(fogHintPos.x - x) < 45 && Math.abs(fogHintPos.y - y) < 45) {
+    flyTo(fogHintPos.lon, fogHintPos.lat, Math.max(G.cam.zoom, 15.5));
+    toast('✨ Der Nebel führt dich zu einem Riesenbaum...', 'ok');
+    return;
+  }
+
   // Hint giant tree: tapping it reveals ALL giant trees
   if (G.tallUnlocked && !G.tallRevealed) {
     for (const hint of hintTallTrees(5)) {
@@ -5027,7 +5115,9 @@ setInterval(() => {
 // Also drives the giant-tree hint pulse and the reveal pop-in animation.
 setInterval(() => {
   if (!document.getElementById('screen-game').classList.contains('active')) return;
-  const treeAnim = G.tallUnlocked && Object.keys(G.topTrees).length > 0 && anyTallTreeOnScreen();
+  // Animate when a giant tree is on screen, or while the miracle fog hint
+  // is gathering/visible (no tree on screen → fog timer runs in render).
+  const treeAnim = G.tallUnlocked && Object.keys(G.topTrees).length > 0;
   if (G.geo.watching || treeAnim) render();
 }, 100);
 
