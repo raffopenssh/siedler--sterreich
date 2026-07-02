@@ -4333,11 +4333,17 @@ function showParcelPopup(f) {
   const p = f.properties;
   const pid = p.parcel_id;
 
-  // Smooth zoom to parcel (center on it, zoom to ~18 if further out)
+  // Keep camera stable on parcel tap (no zoom jumps — important on mobile).
+  // Only nudge the view if the parcel is off-screen (e.g. re-opened programmatically).
   const pLon = p.lon || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[0] : f.geometry.coordinates[0]);
   const pLat = p.lat || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[1] : f.geometry.coordinates[1]);
-  const targetZoom = Math.max(G.cam.zoom, 17.5);
-  animateCamera(pLon, pLat, targetZoom, 400);
+  if (gc) {
+    const [sx, sy] = toScreen(pLon, pLat);
+    const m = 40; // margin
+    if (sx < m || sx > gc.width - m || sy < m || sy > gc.height - m) {
+      animateCamera(pLon, pLat, G.cam.zoom, 350); // pan only, keep zoom
+    }
+  }
   // Enrich polygon data with point data (has building_count, total_building_area_sqm, landuse_codes)
   const pointF = G.parcels.find(pf => pf.properties.parcel_id === pid);
   if (pointF) {
@@ -4606,9 +4612,12 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
   // Calculate zoom level to fit the bounds with some padding
   const lonZoom = Math.log2(360 / (lonRange * 1.5) * (canvasWidth / 800));
   const latZoom = Math.log2(180 / (latRange * 1.5) * (canvasHeight / 600));
-  const targetZoom = Math.max(15, Math.min(19, Math.min(lonZoom, latZoom)));
-  // Animate to show entire EZ
-  animateCamera(centerLon, centerLat, targetZoom, 500);
+  let targetZoom = Math.max(15, Math.min(19, Math.min(lonZoom, latZoom)));
+  // Stability: zooming OUT to fit the EZ is fine, but never zoom IN by more than
+  // ~1 level from where the user is — keeps the map calm on phones.
+  targetZoom = Math.min(targetZoom, G.cam.zoom + 1);
+  // Animate smoothly to show the entire EZ
+  animateCamera(centerLon, centerLat, targetZoom, 650);
 
   const popup = document.getElementById('ez-popup');
   popup.classList.add('open');
