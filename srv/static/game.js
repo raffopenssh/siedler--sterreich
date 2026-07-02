@@ -2106,6 +2106,19 @@ function allTallTrees() {
   return out;
 }
 
+/** Cheap check: is any giant tree (visible per current mode) inside the viewport? */
+function anyTallTreeOnScreen() {
+  if (!gc) return false;
+  const W = gc.width, H = gc.height;
+  const cand = !G.tallRevealed ? hintTallTrees(G.cam.zoom < 14 ? 3 : 12)
+             : (G.cam.zoom < 14 ? hintTallTrees(6) : allTallTrees());
+  for (const t of cand) {
+    const [x, y] = toScreen(t.lon, t.lat);
+    if (x > -80 && x < W+80 && y > -140 && y < H+80) return true;
+  }
+  return false;
+}
+
 /** The single "hint" tree shown after unlock but before reveal — the tallest loaded tree. */
 function hintTallTree() {
   let best = null;
@@ -2116,6 +2129,67 @@ function hintTallTree() {
 /** The top-N tallest loaded trees, shown as hints before reveal (easier to spot). */
 function hintTallTrees(n) {
   return allTallTrees().sort((a,b) => b.height_m - a.height_m).slice(0, n || 5);
+}
+
+// ---- Giant tree pixel-art sprite sheet (pre-rendered sway frames) ----
+const GIANT_FRAMES = 8;
+let _giantSprites = null; // [{c:canvas}] per frame
+function giantTreeSprites() {
+  if (_giantSprites) return _giantSprites;
+  _giantSprites = [];
+  const p = 3;                 // pixel unit (chunky retro look)
+  const CW = 30, CH = 42;      // sprite size in pixel units
+  const cx = CW / 2;
+  for (let f = 0; f < GIANT_FRAMES; f++) {
+    const c = document.createElement('canvas');
+    c.width = CW * p; c.height = CH * p;
+    const g = c.getContext('2d');
+    const ph = (f / GIANT_FRAMES) * Math.PI * 2;
+    const px = (ux, uy, col) => { g.fillStyle = col; g.fillRect(Math.round(ux)*p, Math.round(uy)*p, p, p); };
+    // Trunk (bottom 8 units), slight sway at top of trunk
+    for (let uy = CH-8; uy < CH; uy++) {
+      const sw = Math.sin(ph) * 0.3 * ((CH-uy)/8);
+      px(cx-1.5+sw, uy, '#4a2f14'); px(cx-0.5+sw, uy, '#6e4a24');
+      px(cx+0.5+sw, uy, '#5a3a1a'); if (uy > CH-4) px(cx+1.5+sw, uy, '#4a2f14');
+    }
+    // Roots
+    px(cx-3, CH-1, '#4a2f14'); px(cx+2, CH-1, '#4a2f14');
+    // Fir tiers: 5 stacked triangles, upper tiers sway more
+    const tiers = [
+      {top: 26, h: 9, wBot: 13},
+      {top: 20, h: 8, wBot: 11},
+      {top: 14, h: 7, wBot: 9},
+      {top: 8,  h: 7, wBot: 7},
+      {top: 2,  h: 7, wBot: 5},
+    ];
+    const dark = '#173f1b', mid = '#245c28', lite = '#38843c', top2 = '#4a9848';
+    for (let ti = 0; ti < tiers.length; ti++) {
+      const T = tiers[ti];
+      const swayAmt = Math.sin(ph) * (0.4 + ti * 0.45); // top tiers sway most
+      for (let r = 0; r < T.h; r++) {
+        const uy = T.top + r;
+        const halfW = 1 + (T.wBot - 2) * (r / (T.h - 1)) / 2;
+        const off = swayAmt * (1 - r / T.h);
+        for (let ux = Math.round(cx - halfW + off); ux <= Math.round(cx + halfW + off); ux++) {
+          const rel = (ux - (cx + off)) / (halfW || 1);
+          let col = mid;
+          if (rel < -0.45) col = dark;                    // left shade
+          else if (rel > 0.5) col = lite;                 // right light
+          if (ti >= 3 && rel > 0.2 && r < 2) col = top2;  // sun-kissed tips
+          // dither
+          if (((ux + uy) & 1) === 0 && rel > -0.2 && rel < 0.4) col = (col === mid ? lite : col);
+          px(ux, uy, col);
+        }
+      }
+      // Snow/light sparkle pixel on tier edge (animates across frames)
+      const sx = cx + Math.sin(ph + ti * 1.3) * (T.wBot/2 - 1);
+      px(sx, T.top + 1 + ((f + ti) % 3), '#bfe8a8');
+    }
+    // Star pixel at the very top (glints)
+    if (f % 4 < 2) px(cx + Math.sin(ph)*1.2, 1, '#ffe98a');
+    _giantSprites.push(c);
+  }
+  return _giantSprites;
 }
 
 /** Draw one giant tree; size scales with real measured height. */
@@ -2129,44 +2203,57 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
   // Shadow at base
   ctx.fillStyle = 'rgba(0,0,0,0.22)';
   ctx.beginPath(); ctx.ellipse(x, y+2*s, 9*s, 3.2*s, 0, 0, Math.PI*2); ctx.fill();
-  // Hint tree: pulsing golden aura
+  // Per-tree phase so auras/labels don't pulse in sync
+  const phase = ((t.lon * 7919 + t.lat * 104729) % 6.283) || 0;
+  const now = Date.now();
   if (isHint) {
-    const pulse = 0.5 + Math.sin(Date.now()/400) * 0.3;
+    // Hint tree: pulsing golden aura
+    const pulse = 0.5 + Math.sin(now/400 + phase) * 0.3;
     ctx.fillStyle = 'rgba(255,215,0,' + (0.18*pulse).toFixed(3) + ')';
-    ctx.beginPath(); ctx.arc(x, y - 18*s, 22*s, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y - 32*s, 22*s, 0, Math.PI*2); ctx.fill();
     ctx.strokeStyle = 'rgba(255,215,0,' + (0.7*pulse).toFixed(2) + ')';
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(x, y - 18*s, 16*s + pulse*4, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y - 32*s, 16*s + pulse*4, 0, Math.PI*2); ctx.stroke();
+  } else {
+    // Revealed giant tree: animated emerald aura + rotating sweep so they stand out
+    const pulse = 0.5 + Math.sin(now/500 + phase) * 0.4;
+    ctx.fillStyle = 'rgba(80,255,140,' + (0.12*pulse).toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(x, y - 32*s, 20*s, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,255,160,' + (0.55*pulse).toFixed(2) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y - 32*s, 14*s + pulse*4, 0, Math.PI*2); ctx.stroke();
+    // Rotating arc sweep around the canopy
+    const a0 = (now/700 + phase) % (Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,235,120,0.85)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y - 32*s, 17*s, a0, a0 + 1.1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y - 32*s, 17*s, a0 + Math.PI, a0 + Math.PI + 1.1); ctx.stroke();
   }
-  // Trunk — tall
-  ctx.fillStyle = '#5a3a1a';
-  ctx.fillRect(x - 2.2*s, y - 16*s, 4.4*s, 18*s);
-  ctx.fillStyle = '#6e4a24';
-  ctx.fillRect(x - 0.8*s, y - 16*s, 1.6*s, 18*s);
-  // Canopy — 4 stacked blobs with sway
-  const greens = ['#1e5c22', '#2a7030', '#38843c', '#4a9848'];
-  for (let i = 0; i < 4; i++) {
-    ctx.fillStyle = greens[i];
-    ctx.beginPath();
-    ctx.arc(x + sway*(i+1)*0.35, y - 18*s - i*7*s, (11-i*2.2)*s, 0, Math.PI*2);
-    ctx.fill();
-  }
-  // Highlight
-  ctx.fillStyle = 'rgba(140,220,120,0.35)';
-  ctx.beginPath();
-  ctx.arc(x + sway*1.05 - 2*s, y - 38*s, 2.8*s, 0, Math.PI*2);
-  ctx.fill();
-  // Label
-  ctx.font = '12px VT323, monospace';
-  ctx.textAlign = 'center';
+  // Pixel-art sprite, animated sway (per-tree phase offset so the forest ripples)
+  const sprites = giantTreeSprites();
+  const frame = Math.floor(now / 130 + phase * GIANT_FRAMES / 6.283) % GIANT_FRAMES;
+  const sp = sprites[(frame + GIANT_FRAMES) % GIANT_FRAMES];
+  const dw = sp.width * s * 0.55, dh = sp.height * s * 0.55;
+  const prevSmooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(sp, x - dw/2, y - dh + 3*s, dw, dh);
+  ctx.imageSmoothingEnabled = prevSmooth;
+  // Label — bobbing height number with a soft glow pulse
   const label = isHint ? '🌲 ???' : '🌲 ' + t.height_m + 'm';
   if (isHint || zoom >= 15.5) {
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillText(label, x+1, y - 46*s + 1);
-    ctx.fillStyle = isHint ? '#ffd700' : '#c8ffb0';
-    ctx.fillText(label, x, y - 46*s);
+    const bob = Math.sin(now/450 + phase) * 3;
+    const lp = 0.7 + Math.sin(now/300 + phase) * 0.3;
+    const ly = y - dh + 3*s - 8 + bob;
+    ctx.font = '13px VT323, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillText(label, x+1, ly+1);
+    ctx.fillStyle = isHint
+      ? 'rgba(255,215,0,' + lp.toFixed(2) + ')'
+      : 'rgba(200,255,176,' + lp.toFixed(2) + ')';
+    ctx.fillText(label, x, ly);
+    ctx.textAlign = 'left';
   }
-  ctx.textAlign = 'left';
 }
 
 /** Big landmark tree sprite with subtle sway + height label; banner for tall objects. */
@@ -4940,9 +5027,8 @@ setInterval(() => {
 // Also drives the giant-tree hint pulse and the reveal pop-in animation.
 setInterval(() => {
   if (!document.getElementById('screen-game').classList.contains('active')) return;
-  const revealAnim = G.tallRevealed && (Date.now() - G.tallRevealAt) < 5000;
-  const hintPulse = G.tallUnlocked && !G.tallRevealed && Object.keys(G.topTrees).length > 0;
-  if (G.geo.watching || revealAnim || hintPulse) render();
+  const treeAnim = G.tallUnlocked && Object.keys(G.topTrees).length > 0 && anyTallTreeOnScreen();
+  if (G.geo.watching || treeAnim) render();
 }, 100);
 
 // Auto-refresh
