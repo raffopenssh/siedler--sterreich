@@ -206,7 +206,7 @@ function esc(s) { const d=document.createElement('div'); d.textContent=s; return
 function inviteUrl(code) {
   let url = location.origin + '/join/' + code;
   if (G.cam) {
-    url += '#v=' + G.cam.lon.toFixed(5) + ',' + G.cam.lat.toFixed(5) + ',' + G.cam.zoom;
+    url += '#v=' + G.cam.lon.toFixed(5) + ',' + G.cam.lat.toFixed(5) + ',' + (Math.round(G.cam.zoom*10)/10);
   }
   return url;
 }
@@ -214,8 +214,8 @@ function inviteUrl(code) {
 /** Parse view hash params from URL (e.g. #v=15.07200,47.06400,18) */
 function parseViewHash() {
   const h = location.hash;
-  const m = h.match(/v=([\d.]+),([\d.]+),(\d+)/);
-  if (m) return { lon: parseFloat(m[1]), lat: parseFloat(m[2]), zoom: parseInt(m[3]) };
+  const m = h.match(/v=([\d.]+),([\d.]+),([\d.]+)/);
+  if (m) return { lon: parseFloat(m[1]), lat: parseFloat(m[2]), zoom: parseFloat(m[3]) };
   return null;
 }
 
@@ -4404,6 +4404,26 @@ function initGameInput() {
     const gmZoom = Math.round(13 + (G.cam.zoom - 13) * 5/7);
     const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+gmZoom+'z/data=!3m1!1e3';
     window.open(url, '_blank');
+  };
+
+  // Share this exact viewport: invite link with #v= camera hash
+  document.getElementById('btn-share').onclick = async () => {
+    const code = G.session && G.session.invite_code;
+    if (!code) { toast('Kein Einladungscode verfügbar', 'err'); return; }
+    const url = inviteUrl(code);
+    // Prefer native share sheet on mobile, clipboard otherwise
+    if (navigator.share && /Mobi|Android/i.test(navigator.userAgent)) {
+      try {
+        await navigator.share({ title: 'Siedler Österreich', text: 'Komm zu mir auf die Karte!', url });
+        return;
+      } catch(e) { if (e.name === 'AbortError') return; /* fall through to clipboard */ }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('🔗 Link zu dieser Ansicht kopiert — einfach weiterschicken!', 'ok');
+    } catch(e) {
+      prompt('Link kopieren:', url);
+    }
   };
 
   // Natura-2000 layer toggle
