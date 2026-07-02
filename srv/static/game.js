@@ -149,6 +149,9 @@ const G = {
   pick: { level:'states', state:null, munis:[], cam:{lon:13.3,lat:47.5,zoom:7}, drag:{active:false} },
   selectedMuni: null,
   kgsLoaded: new Set(),
+  polyIds: new Set(),        // parcel_ids already in parcelPolys (viewport dedup)
+  fpIds: new Set(),          // footprint_ids already in buildingFootprints (viewport dedup)
+  vpTiles: new Set(),        // quantized viewport tiles already fetched
   // ---- Enhanced mode (srtm-lidar + OSM + Natura-2000 + land prices) ----
   enhancedKGs: new Set(),   // kg_codes with lidar data available
   enhancedGemeinden: [],    // [{gemeinde_code, gemeinde_name, lon, lat}] deduped
@@ -1341,6 +1344,9 @@ async function fetchKGLayer(kg, layer, pagesize) {
  *  richer, measured backdrop. This is the biggest load-time win. */
 function loadLanduseBackground(kg) {
   if (G.enhancedKGs.has(kg)) return; // lidar dom + OSM cover the backdrop — skip the 7MB fetch
+  if (!G.landuseKGs) G.landuseKGs = new Set();
+  if (G.landuseKGs.has(kg)) return; // already streamed
+  G.landuseKGs.add(kg);
   fetchKGLayer(kg, 'landuse').then(landuse => {
     let added = 0;
     for (const f of landuse) {
@@ -1352,107 +1358,90 @@ function loadLanduseBackground(kg) {
   }).catch(e => console.error('landuse bg fetch failed:', kg, e));
 }
 
-/** Fetch the interactive layers (parcels + buildings) for one KG and merge.
- *  Landuse backdrop is streamed separately in the background. */
-async function loadOneKG(kg) {
-  const [parcels, footprints] = await Promise.all([
-    fetchKGLayer(kg, 'parcels'),
-    fetchKGLayer(kg, 'building_footprints'),
-  ]);
-  for (const f of parcels) G.parcelPolys.push(f);
-  for (const f of footprints) G.buildingFootprints.push(f);
-  loadLanduseBackground(kg); // fire & forget
+/** Fast viewport polygon load. Pulls parcel + footprint geometry for JUST the
+ *  given bbox from the server's /api/viewport fast path (upstream R-tree, ~100ms,
+ *  ~40KB gzip) instead of loading whole KGs' export/geojson (multi-MB each).
+ *  Dedups by parcel_id / footprint_id and by quantized tile so pans are cheap.
+ *  Merged features carry the same {properties, geometry} shape the renderer and
+ *  EZ index already expect. Returns the number of newly added parcels. */
+async function loadViewportGeometry(b, opts) {
+  opts = opts || {};
+  // Quantize bbox to a ~150m grid; skip if we've already fetched this exact tile.
+  const q = v => Math.round(v / 0.002) * 0.002;
+  const tileKey = [q(b.w), q(b.s), q(b.e), q(b.n)].map(x => x.toFixed(3)).join(',');
+  if (!opts.force && G.vpTiles.has(tileKey)) return 0;
+  G.vpTiles.add(tileKey);
+  let data;
+  try {
+    data = await GET('/api/viewport?west='+b.w+'&south='+b.s+'&east='+b.e+'&north='+b.n+'&limit='+(opts.limit||6000));
+  } catch(e) { console.error('viewport fetch failed', e); G.vpTiles.delete(tileKey); return 0; }
+  if (!data) { G.vpTiles.delete(tileKey); return 0; }
+  // If upstream wasn't fully warm yet, allow a later re-fetch of this tile.
+  if (data.ready === false) G.vpTiles.delete(tileKey);
+
+  let addedP = 0;
+  for (const it of (data.parcels||[])) {
+    const id = it.parcel_id;
+    if (!id || G.polyIds.has(id) || !it.geometry) continue;
+    G.polyIds.add(id);
+    const { geometry, ...props } = it;
+    // Normalize landuse (viewport returns `landuse`, renderer also reads landuse_summary)
+    if (props.landuse && !props.landuse_summary) props.landuse_summary = props.landuse;
+    G.parcelPolys.push({ type:'Feature', properties: props, geometry });
+    addedP++;
+    if (props.kg_code) {
+      G.kgsLoaded.add(props.kg_code);
+      // Non-enhanced KGs still get their landuse polygon backdrop streamed in
+      // (viewport endpoint carries parcels+footprints only). Enhanced KGs skip it.
+      if (!G.enhancedKGs.has(props.kg_code)) loadLanduseBackground(props.kg_code);
+    }
+  }
+  for (const it of (data.footprints||[])) {
+    const id = it.footprint_id;
+    if (!id || G.fpIds.has(id) || !it.geometry) continue;
+    G.fpIds.add(id);
+    const { geometry, ...props } = it;
+    G.buildingFootprints.push({ type:'Feature', properties: props, geometry });
+  }
+  return addedP;
 }
 
 async function fetchKGPolygonsBlocking() {
-  // Find KG codes from loaded parcels and fetch real polygon geometries
-  const kgs = new Set();
-  for (const f of G.parcels) {
-    const kg = f.properties.kg_code;
-    if (kg && !G.kgsLoaded.has(kg)) kgs.add(kg);
-  }
-  // Also include KGs discovered via municipality fallback
-  if (G.municipalityKGs) {
-    for (const kg of G.municipalityKGs) kgs.add(kg);
-    G.municipalityKGs = null;
-  }
+  // NEW fast path: instead of loading whole KGs' export/geojson (multi-MB each),
+  // pull polygon geometry for just the viewport (plus a margin) from the upstream
+  // R-tree via /api/viewport (~100ms, ~40KB gzip). One round-trip gets both
+  // parcels and building footprints for everything on screen.
+  setLoadSub('Geometrien für den sichtbaren Bereich werden geladen...');
+  setLoadProgress(35);
+  // The canvas isn't sized yet during loading, so derive the box from the camera
+  // directly (roughly one screen at the start zoom). ~0.007° ≈ the initial view.
+  const rad = 0.007;
+  const box = { w: G.cam.lon - rad, s: G.cam.lat - rad*0.72, e: G.cam.lon + rad, n: G.cam.lat + rad*0.72 };
+  const added = await loadViewportGeometry(box, { force: true });
+  setLoadProgress(70);
+  setLoadSub(`${G.parcelPolys.length} Parzellen, ${G.buildingFootprints.length} Gebäude geladen`);
 
-  // Rank KGs by distance from the camera (mean parcel position per KG).
-  // Only the nearest KGs block the loading screen; the rest stream in the background.
-  const pos = {};
-  for (const f of G.parcels) {
-    const kg = f.properties.kg_code;
-    if (!kg || !kgs.has(kg)) continue;
-    const lon = f.properties.lon || f.geometry?.coordinates?.[0];
-    const lat = f.properties.lat || f.geometry?.coordinates?.[1];
-    if (lon == null) continue;
-    if (!pos[kg]) pos[kg] = {sx:0, sy:0, n:0};
-    pos[kg].sx += lon; pos[kg].sy += lat; pos[kg].n++;
-  }
-  const dist = kg => {
-    const p = pos[kg];
-    if (!p || !p.n) return 0; // unknown position → treat as near (municipality fallback)
-    const dx = p.sx/p.n - G.cam.lon, dy = p.sy/p.n - G.cam.lat;
-    return dx*dx + dy*dy;
-  };
-  const ranked = [...kgs].sort((a, b) => dist(a) - dist(b));
-  // Landuse (the old 7MB bottleneck) no longer blocks — it's fire-and-forget, and
-  // skipped outright for enhanced KGs. Blocking a KG now only means parcels+footprints
-  // (~3MB), so we can afford to show MORE of the map up front. Budget the blocking set:
-  // enhanced KGs cost 1, plain KGs cost ~2 (they also drag a landuse backdrop). Fill
-  // until the budget is spent so a typical (mostly-enhanced) session loads several KGs.
-  const BLOCK_BUDGET = 6;
-  const blocking = [];
-  let spent = 0;
-  for (const kg of ranked) {
-    const cost = G.enhancedKGs.has(kg) ? 1 : 2;
-    if (blocking.length > 0 && spent + cost > BLOCK_BUDGET) break;
-    blocking.push(kg); spent += cost;
-  }
-  const background = ranked.slice(blocking.length);
-  for (const kg of ranked) G.kgsLoaded.add(kg);
+  // Kick enhanced (lidar/OSM/N2K) fetches for any enhanced KGs now on screen.
+  loadEnhancedForKGs();
 
-  const total = blocking.length || 1;
-  let done = 0;
-  await Promise.all(blocking.map(kg =>
-    loadOneKG(kg).then(() => {
-      done++;
-      setLoadProgress(28 + Math.floor(done / total * 47)); // 28–75% range
-      setLoadSub(`KG ${done}/${total} — ${G.parcelPolys.length} Parzellen, ${G.buildingFootprints.length} Gebäude` + (background.length ? ` (+${background.length} KGs im Hintergrund)` : ''));
-    }).catch(e => { console.error('KG fetch failed:', kg, e); done++; })
-  ));
-
-  // Stream remaining KGs in the background — the game is already playable
-  if (background.length > 0) {
-    Promise.all(background.map(kg =>
-      loadOneKG(kg).then(() => { buildEZIndex(); render(); renderMini(); })
-        .catch(e => console.error('KG bg fetch failed:', kg, e))
-    )).then(() => { buildEZIndex(); loadEnhancedForKGs(); render(); renderMini(); });
-  }
+  // Background: widen ~2.5× so panning outward is already primed.
+  const wide = { w: G.cam.lon - rad*2.5, s: G.cam.lat - rad*1.8, e: G.cam.lon + rad*2.5, n: G.cam.lat + rad*1.8 };
+  loadViewportGeometry(wide).then(a => {
+    if (a > 0) { buildEZIndex(); loadEnhancedForKGs(); render(); renderMini(); }
+  }).catch(()=>{});
 }
 
 async function fetchKGPolygons() {
-  // Incremental version for panning
-  const kgs = new Set();
-  for (const f of G.parcels) {
-    const kg = f.properties.kg_code;
-    if (kg && !G.kgsLoaded.has(kg)) kgs.add(kg);
-  }
-  for (const kg of kgs) {
-    G.kgsLoaded.add(kg);
-    try {
-      const [parcels, footprints] = await Promise.all([
-        fetchKGLayer(kg, 'parcels'),
-        fetchKGLayer(kg, 'building_footprints'),
-      ]);
-      for (const f of parcels) G.parcelPolys.push(f);
-      for (const f of footprints) G.buildingFootprints.push(f);
-      loadLanduseBackground(kg); // backdrop streams in separately
-      render();
-      renderMini();
-    } catch(e) { console.error('KG fetch failed:', kg, e); }
-  }
-  if (kgs.size > 0) loadEnhancedForKGs();
+  // Incremental viewport load on pan/zoom. Grabs polygon geometry for the current
+  // view (padded) from the /api/viewport fast path; the tile-dedup in
+  // loadViewportGeometry keeps repeat pans cheap.
+  const b = viewBounds();
+  const padX = (b.e - b.w) * 0.3, padY = (b.n - b.s) * 0.3;
+  const box = { w: b.w - padX, s: b.s - padY, e: b.e + padX, n: b.n + padY };
+  const added = await loadViewportGeometry(box);
+  if (added > 0) { render(); renderMini(); }
+  // Enhanced data for any newly-visible enhanced KGs.
+  loadEnhancedForKGs();
 }
 
 // ================= ENHANCED MODE (lidar terrain, OSM lines, Natura 2000) =================

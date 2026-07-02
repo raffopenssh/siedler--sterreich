@@ -75,11 +75,36 @@ The lobby screen exists but is bypassed — `startSinglePlayer()` creates a sess
 ## Data Loading Sequence
 
 1. Create session via `POST /api/session/create`
-2. Load point parcels via `/spatial/bbox`
-3. Load KG polygon data (parcels + building_footprints + landuse) via `/export/geojson` — one request per KG, in parallel
+2. Load point parcels via `/spatial/bbox` (for municipality detection + fallback)
+3. Load polygon geometry for the **viewport** via `/api/viewport` (fast path — see below)
 4. Build EZ index from loaded polygon data
 5. Load claimed parcels, treasures, challenges, players, biodiversity, chat from our API
-6. On pan/zoom: `loadMoreParcels()` → `fetchKGPolygons()` → `buildEZIndex()` incrementally
+6. On pan/zoom: `loadMoreParcels()` → `fetchKGPolygons()` → `loadViewportGeometry()` → `buildEZIndex()` incrementally
+
+### Viewport fast path (`/api/viewport`)
+
+The old approach loaded each visible KG's **entire** `export/geojson` (multi-MB:
+~0.85MB parcels + ~2MB footprints + ~7MB landuse per KG). Replaced by the
+cadastre API's R-tree viewport endpoints, which return polygon geometry for **just
+the current bbox** in ~100ms:
+
+- Upstream: `GET /spatial/parcels?west=&south=&east=&north=` and `GET /spatial/footprints?...`
+  — each returns `{parcels|footprints:[{...,geometry}], ready, truncated}` straight
+  from a cached R\*Tree (no json.gz load). `ready=false` means a KG is still warming
+  (retry shortly).
+- Server proxy `GET /api/viewport` (`handleViewport` in server.go): fetches both
+  layers in parallel, rounds coords, merges into `{parcels, footprints, ready,
+  truncated}`, gzips (~40KB), caches 6h keyed by a ~150m-quantized bbox (only when
+  `ready`). Cache HITs serve in ~2ms.
+- Frontend `loadViewportGeometry(bbox)` (game.js): dedups by `parcel_id`/`footprint_id`
+  and by quantized tile (`G.polyIds`, `G.fpIds`, `G.vpTiles`), merges into
+  `G.parcelPolys` / `G.buildingFootprints` with the same `{properties, geometry}`
+  shape the renderer + EZ index expect. Footprint props now include real shape data
+  (`obb_length_m`, `obb_width_m`, `orientation_deg`, `ns_code`, etc.).
+- Landuse backdrop: the viewport endpoint carries **no** landuse polygons. For
+  non-enhanced KGs seen for the first time, `loadLanduseBackground(kg)` still streams
+  the landuse layer in the background (deduped via `G.landuseKGs`). Enhanced KGs skip
+  it (lidar dominant-type + OSM cover the backdrop).
 
 ## Map Rendering
 

@@ -1,6 +1,7 @@
 package srv
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -118,6 +119,11 @@ func (s *Server) Serve(addr string) error {
 
 	// KG data endpoint (paginated, avoids proxy size limits)
 	mux.HandleFunc("GET /api/kg/{code}", s.handleKGData)
+	// Viewport fast path: batch geometry by ID (R-tree cached upstream, single-digit ms)
+	mux.HandleFunc("POST /api/geometry-batch/{kind}", s.handleGeometryBatch)
+	// Viewport polygon geometry (parcels + footprints) straight from upstream R-tree.
+	// Replaces whole-KG export/geojson loads for map rendering.
+	mux.HandleFunc("GET /api/viewport", s.handleViewport)
 
 	// Cadastre proxy with caching
 	mux.HandleFunc("GET /api/cadastre/", s.handleCadastreProxy)
@@ -1223,6 +1229,235 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 		w.Write(f)
 	}
 	fmt.Fprintf(w, `],"page":%d,"pagesize":%d,"total":%d,"has_more":%v}`, page, pageSize, total, end < total)
+}
+
+// handleGeometryBatch forwards a list of parcel or footprint IDs to the cadastre
+// batch-geometry fast path (R-tree cached upstream, single-digit ms warm). This is
+// the viewport-scoped alternative to pulling a whole KG's export/geojson: the
+// frontend already has the visible IDs from /spatial/bbox, so we upgrade exactly
+// those to full polygons instead of thousands of off-screen ones.
+//
+// kind = "parcels" | "footprints". Body: {"ids": ["...", ...]} (max 5000).
+// Per-ID geometry is static, so we cache each ID individually (24h) and only
+// forward the cache-miss IDs upstream — a pan that re-touches known parcels is free.
+func (s *Server) handleGeometryBatch(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	var upstreamPath, itemsKey, idField string
+	switch kind {
+	case "parcels":
+		upstreamPath, itemsKey, idField = "/parcels/geometry/batch", "parcels", "parcel_id"
+	case "footprints":
+		upstreamPath, itemsKey, idField = "/footprints/geometry/batch", "footprints", "footprint_id"
+	default:
+		jsonErr(w, "kind must be parcels or footprints", 400)
+		return
+	}
+
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 2<<20)).Decode(&req); err != nil {
+		jsonErr(w, "bad body", 400)
+		return
+	}
+	if len(req.IDs) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"items":[]}`))
+		return
+	}
+	if len(req.IDs) > 5000 {
+		req.IDs = req.IDs[:5000]
+	}
+
+	// Split into cache hits and misses.
+	out := make([]json.RawMessage, 0, len(req.IDs))
+	var miss []string
+	seen := map[string]bool{}
+	for _, id := range req.IDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ck := "geom:" + kind + ":" + id
+		if cached, err := s.Q.GetCachedData(r.Context(), ck); err == nil {
+			out = append(out, json.RawMessage(cached))
+		} else {
+			miss = append(miss, id)
+		}
+	}
+
+	// Fetch misses from upstream in one batch call.
+	if len(miss) > 0 {
+		body, _ := json.Marshal(map[string]any{"ids": miss})
+		resp, err := http.Post(cadastreAPI+upstreamPath, "application/json", bytes.NewReader(body))
+		if err != nil {
+			jsonErr(w, "Cadastre API error", 502)
+			return
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+		if err != nil {
+			jsonErr(w, "Read error", 502)
+			return
+		}
+		var parsed map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			jsonErr(w, "Parse error", 502)
+			return
+		}
+		var items []map[string]json.RawMessage
+		if err := json.Unmarshal(parsed[itemsKey], &items); err == nil {
+			expiry := time.Now().Add(24 * time.Hour)
+			for _, it := range items {
+				// Round coordinates to trim payload, then cache per-ID.
+				var itObj map[string]any
+				if b, err := json.Marshal(it); err == nil {
+					if json.Unmarshal(b, &itObj) == nil {
+						roundCoords(itObj)
+					}
+				}
+				enc, err := json.Marshal(itObj)
+				if err != nil {
+					continue
+				}
+				out = append(out, json.RawMessage(enc))
+				var idv string
+				json.Unmarshal(it[idField], &idv)
+				if idv != "" {
+					s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+						CacheKey: "geom:" + kind + ":" + idv, Data: string(enc), ExpiresAt: expiry,
+					})
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"items":[`))
+	for i, it := range out {
+		if i > 0 {
+			w.Write([]byte{','})
+		}
+		w.Write(it)
+	}
+	w.Write([]byte(`]}`))
+}
+
+// handleViewport is the fast map-render path. It pulls polygon geometry for JUST
+// the current viewport from the upstream R-tree endpoints (/spatial/parcels and
+// /spatial/footprints) instead of loading whole KGs' export/geojson. Upstream
+// serves these in ~100ms straight from a cached R*Tree (no json.gz load), and we
+// gzip the compacted result down to ~40KB. Both layers are fetched in parallel
+// and merged into one response so the client makes a single round-trip per pan.
+//
+// Query: west,south,east,north (WGS84). Optional: limit (default 6000).
+// Response: {parcels:[...], footprints:[...], ready:bool, truncated:bool}
+//
+// Cached 6h keyed by a quantized bbox so nearby pans reuse tiles.
+func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	west, south := q.Get("west"), q.Get("south")
+	east, north := q.Get("east"), q.Get("north")
+	if west == "" || south == "" || east == "" || north == "" {
+		jsonErr(w, "west,south,east,north required", 400)
+		return
+	}
+	limit := q.Get("limit")
+	if limit == "" {
+		limit = "6000"
+	}
+	bboxQS := "west=" + west + "&south=" + south + "&east=" + east + "&north=" + north + "&limit=" + limit
+
+	// Quantize bbox to ~0.002° (~150m) grid for cache reuse across small pans.
+	qz := func(s string) string {
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return s
+		}
+		return strconv.FormatFloat(math.Round(f/0.002)*0.002, 'f', 3, 64)
+	}
+	cacheKey := "viewport:" + qz(west) + "," + qz(south) + "," + qz(east) + "," + qz(north) + "," + limit
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+
+	// Fetch both layers in parallel.
+	type res struct {
+		body []byte
+		err  error
+	}
+	fetch := func(path string) res {
+		resp, err := http.Get(cadastreAPI + path + "?" + bboxQS)
+		if err != nil {
+			return res{err: err}
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+		return res{body: b, err: err}
+	}
+	pCh := make(chan res, 1)
+	fCh := make(chan res, 1)
+	go func() { pCh <- fetch("/spatial/parcels") }()
+	go func() { fCh <- fetch("/spatial/footprints") }()
+	pr, fr := <-pCh, <-fCh
+	if pr.err != nil || fr.err != nil {
+		jsonErr(w, "Cadastre API error", 502)
+		return
+	}
+
+	// Extract the arrays + ready flags, round coords, re-emit as one object.
+	extract := func(body []byte, key string) (items []json.RawMessage, ready bool, truncated bool) {
+		var parsed map[string]json.RawMessage
+		if json.Unmarshal(body, &parsed) != nil {
+			return nil, false, false
+		}
+		json.Unmarshal(parsed["ready"], &ready)
+		json.Unmarshal(parsed["truncated"], &truncated)
+		var arr []map[string]any
+		if json.Unmarshal(parsed[key], &arr) == nil {
+			for _, it := range arr {
+				roundCoords(it)
+				if enc, err := json.Marshal(it); err == nil {
+					items = append(items, enc)
+				}
+			}
+		}
+		return
+	}
+	parcels, pReady, pTrunc := extract(pr.body, "parcels")
+	foots, fReady, fTrunc := extract(fr.body, "footprints")
+
+	var b bytes.Buffer
+	b.WriteString(`{"parcels":[`)
+	for i, it := range parcels {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(it)
+	}
+	b.WriteString(`],"footprints":[`)
+	for i, it := range foots {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(it)
+	}
+	fmt.Fprintf(&b, `],"ready":%v,"truncated":%v}`, pReady && fReady, pTrunc || fTrunc)
+	out := b.Bytes()
+
+	// Only cache once upstream reports the tile fully warm, so we don't pin a
+	// half-loaded viewport for 6h.
+	if pReady && fReady {
+		s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+			CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(out)
 }
 
 func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
