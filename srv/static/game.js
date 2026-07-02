@@ -2144,14 +2144,19 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
 /** Big landmark tree sprite with subtle sway + height label; banner for tall objects. */
 function drawTopLandmarks(ctx) {
   const zoom = G.cam.zoom;
-  if (zoom < 14) return;
   const W = gc.width, H = gc.height;
   const sway = Math.sin(Date.now() / 1200) * 1.5;
 
-  // Giant trees: locked until first treasure; then only the hint tree until tapped
+  // Giant trees: locked until first treasure; then only the hint tree until tapped.
+  // Always show at least the single tallest hint even when fully zoomed out.
   if (G.tallUnlocked) {
     if (!G.tallRevealed) {
-      for (const hint of hintTallTrees(5)) drawGiantTree(ctx, hint, zoom, sway, 1, true);
+      const n = zoom < 14 ? 1 : 5;
+      for (const hint of hintTallTrees(n)) drawGiantTree(ctx, hint, zoom, sway, 1, true);
+    } else if (zoom < 14) {
+      // Zoomed out: just show the tallest so it's always locatable
+      const hint = hintTallTree();
+      if (hint) drawGiantTree(ctx, hint, zoom, sway, 1, false);
     } else {
       // Pop-in animation after reveal (staggered by height rank)
       const trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
@@ -2165,6 +2170,8 @@ function drawTopLandmarks(ctx) {
       }
     }
   }
+
+  if (zoom < 14) return;
 
   if (zoom >= 15.5) {
     for (const kg in G.topObjects) {
