@@ -2085,6 +2085,11 @@ function hintTallTree() {
   return best;
 }
 
+/** The top-N tallest loaded trees, shown as hints before reveal (easier to spot). */
+function hintTallTrees(n) {
+  return allTallTrees().sort((a,b) => b.height_m - a.height_m).slice(0, n || 5);
+}
+
 /** Draw one giant tree; size scales with real measured height. */
 function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
   const [x, y] = toScreen(t.lon, t.lat);
@@ -2146,8 +2151,7 @@ function drawTopLandmarks(ctx) {
   // Giant trees: locked until first treasure; then only the hint tree until tapped
   if (G.tallUnlocked) {
     if (!G.tallRevealed) {
-      const hint = hintTallTree();
-      if (hint) drawGiantTree(ctx, hint, zoom, sway, 1, true);
+      for (const hint of hintTallTrees(5)) drawGiantTree(ctx, hint, zoom, sway, 1, true);
     } else {
       // Pop-in animation after reveal (staggered by height rank)
       const trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
@@ -4290,8 +4294,7 @@ function onGameClick(e) {
 
   // Hint giant tree: tapping it reveals ALL giant trees
   if (G.tallUnlocked && !G.tallRevealed) {
-    const hint = hintTallTree();
-    if (hint) {
+    for (const hint of hintTallTrees(5)) {
       const [tx, ty] = toScreen(hint.lon, hint.lat);
       if (Math.abs(tx-x) < 30 && ty-y > -20 && ty-y < 90) {
         G.tallRevealed = true;
