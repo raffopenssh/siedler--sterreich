@@ -313,6 +313,38 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .pp-ez-link:hover { color:#fff; }
 
+/* Giant tree popup + histogram */
+#tree-popup { bottom:16px; left:50%; transform:translateX(-50%); }
+.tree-popup h3 { color:var(--green-light); }
+.tp-hist-title {
+  margin-top:10px; font:16px var(--font-game); color:var(--text-dim);
+}
+.tp-hist {
+  display:flex; align-items:flex-end; gap:4px;
+  height:90px; margin-top:6px; padding:4px 2px 0;
+  border-bottom:2px solid var(--gold);
+}
+.tp-bar {
+  flex:1; min-width:22px; position:relative; cursor:pointer;
+  background:linear-gradient(180deg, #4a9848, #245c28);
+  border:1px solid #173f1b; border-bottom:none;
+  transition:filter .1s;
+}
+.tp-bar:hover { filter:brightness(1.35); }
+.tp-bar.tp-cur {
+  background:linear-gradient(180deg, #ffd700, #b8860b);
+  border-color:#7a5a00;
+}
+.tp-bar .tp-count {
+  position:absolute; top:-16px; left:0; right:0; text-align:center;
+  font:14px var(--font-game); color:var(--text);
+}
+.tp-bar .tp-label {
+  position:absolute; bottom:-18px; left:0; right:0; text-align:center;
+  font:13px var(--font-game); color:var(--text-dim); white-space:nowrap;
+}
+.tp-hist { margin-bottom:20px; }
+
 /* In-game address search */
 .game-search {
   position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:60;

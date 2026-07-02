@@ -2106,6 +2106,126 @@ function allTallTrees() {
   return out;
 }
 
+// ---- Miraculous tree names: deterministic per tree (seeded by coordinates),
+// so "Flüsternde Wolkenwächterin" is always the same tree.
+const TREE_NAME_ADJ = ['Ehrwürdige', 'Flüsternde', 'Uralte', 'Schlafende', 'Erwachte',
+  'Singende', 'Träumende', 'Wandernde', 'Leuchtende', 'Verwunschene', 'Erhabene',
+  'Stille', 'Donnernde', 'Mondbeschienene', 'Sagenhafte', 'Unbeugsame'];
+const TREE_NAME_NOUN = ['Wolkenwächter', 'Himmelsgreifer', 'Sturmhüter', 'Waldkönig',
+  'Nebelfürst', 'Wurzelweiser', 'Sternenlauscher', 'Riesenherz', 'Donnerwipfel',
+  'Morgengrauen', 'Ahnenbaum', 'Bergflüsterer', 'Lichtfänger', 'Windtänzer',
+  'Zeitzeuge', 'Kronenträger'];
+function treeHash(t) {
+  // Stable integer hash from coordinates
+  let h = Math.abs(Math.round(t.lon * 1e6) * 31 + Math.round(t.lat * 1e6) * 17);
+  return h >>> 0;
+}
+function giantTreeName(t) {
+  const h = treeHash(t);
+  const adj = TREE_NAME_ADJ[h % TREE_NAME_ADJ.length];
+  const noun = TREE_NAME_NOUN[Math.floor(h / 97) % TREE_NAME_NOUN.length];
+  // Feminine noun endings get feminine article feel via '-in' occasionally
+  return adj + 'r ' + noun;
+}
+
+/** Elevation (m) at a tree's location: point-in-polygon lookup of the parcel
+ * it stands in → lidar parcel elevation; falls back to the KG terrain mean. */
+function giantTreeElevation(t) {
+  for (const f of G.parcelPolys) {
+    if (f.geometry.type === 'Polygon' && pip(t.lon, t.lat, f.geometry.coordinates[0])) {
+      const lp = G.lidarParcels[f.properties.parcel_id];
+      if (lp && lp.elev != null) return lp.elev;
+      break;
+    }
+  }
+  // Fallback: mean of any KG terrain range containing loaded lidar data
+  for (const kg in G.topTrees) {
+    if ((G.topTrees[kg]||[]).includes(t)) {
+      const kt = G.lidarKGTerrain[kg];
+      if (kt && kt.emin != null && kt.emax != null) return (kt.emin + kt.emax) / 2;
+    }
+  }
+  return null;
+}
+
+/** Rough age estimate for a giant conifer. Growth slows markedly with
+ * altitude (shorter season, harsher climate): lowland spruce/fir manage
+ * ~30–40cm/yr when young (≈3.2 yr/m); at 1500m+ it's roughly double. */
+function giantTreeAge(t) {
+  const h = t.height_m;
+  const elev = giantTreeElevation(t);
+  // yr/m factor: 3.2 below 600m, rising linearly to ~6.5 at 1800m
+  let ypm = 3.2;
+  if (elev != null && elev > 600) ypm = 3.2 + Math.min(1, (elev - 600) / 1200) * 3.3;
+  const base = Math.round(h * ypm + Math.max(0, h - 35) * 4);
+  const lo = Math.round(base * 0.85 / 10) * 10;
+  const hi = Math.round(base * 1.25 / 10) * 10;
+  return { text: lo + '–' + hi + ' Jahre', elev };
+}
+
+/** Show the giant tree info popup with height, age and clickable histogram. */
+function showTreePopup(tree) {
+  const all = allTallTrees();
+  // "Nearby" = trees within ~3km of the tapped one (or all if few)
+  const mLon = 111320 * Math.cos(tree.lat * Math.PI/180);
+  const withD = all.map(t => ({ t, d: Math.hypot((t.lon-tree.lon)*mLon, (t.lat-tree.lat)*110540) }));
+  let nearby = withD.filter(o => o.d < 3000).map(o => o.t);
+  if (nearby.length < 8) nearby = all;
+  // Rank among nearby (1 = tallest)
+  const sorted = nearby.slice().sort((a,b) => b.height_m - a.height_m);
+  const rank = sorted.findIndex(t => t === tree) + 1;
+
+  document.querySelector('#tree-popup h3').textContent = '🌲 ' + giantTreeName(tree);
+  document.getElementById('tp-height').textContent = tree.height_m + ' m';
+  const age = giantTreeAge(tree);
+  document.getElementById('tp-age').textContent = age.text +
+    (age.elev != null ? ' (auf ' + Math.round(age.elev) + ' m Seehöhe)' : '');
+  document.getElementById('tp-rank').textContent = rank > 0 ? rank + '. von ' + nearby.length + ' Riesen in der Nähe' : '-';
+
+  // Histogram: 2m buckets across the nearby height range
+  const hs = nearby.map(t => t.height_m);
+  const minH = Math.floor(Math.min(...hs) / 2) * 2;
+  const maxH = Math.ceil(Math.max(...hs) / 2) * 2;
+  const nb = Math.max(1, Math.min(10, (maxH - minH) / 2));
+  const step = (maxH - minH) / nb || 1;
+  const buckets = Array.from({length: nb}, () => []);
+  for (const t of nearby) {
+    let bi = Math.floor((t.height_m - minH) / step);
+    if (bi >= nb) bi = nb - 1;
+    buckets[bi].push(t);
+  }
+  const maxCount = Math.max(...buckets.map(b => b.length), 1);
+  const hist = document.getElementById('tp-hist');
+  hist.innerHTML = '';
+  buckets.forEach((b, i) => {
+    const bar = document.createElement('div');
+    bar.className = 'tp-bar';
+    const isCur = b.includes(tree);
+    if (isCur) bar.classList.add('tp-cur');
+    bar.style.height = Math.max(4, Math.round(b.length / maxCount * 70)) + 'px';
+    bar.innerHTML = '<div class="tp-count">' + (b.length || '') + '</div>' +
+      '<div class="tp-label">' + Math.round(minH + i*step) + 'm</div>';
+    bar.title = b.length + ' Baum/Bäume ' + Math.round(minH+i*step) + '–' + Math.round(minH+(i+1)*step) + 'm';
+    bar.onclick = (e) => {
+      e.stopPropagation();
+      if (!b.length) return;
+      // Fly to a tree in this bucket — prefer one that isn't the current tree;
+      // repeated taps cycle through the bucket.
+      bar._idx = ((bar._idx ?? -1) + 1) % b.length;
+      let target = b[bar._idx];
+      if (target === tree && b.length > 1) { bar._idx = (bar._idx + 1) % b.length; target = b[bar._idx]; }
+      flyTo(target.lon, target.lat, Math.max(G.cam.zoom, 16));
+      showTreePopup(target);
+      toast('🌲 ' + giantTreeName(target) + ' — ' + target.height_m + ' m', 'ok');
+    };
+    hist.appendChild(bar);
+  });
+
+  document.getElementById('parcel-popup').classList.remove('open');
+  document.getElementById('ez-popup').classList.remove('open');
+  document.getElementById('tree-popup').classList.add('open');
+}
+
 /** Cheap check: is any giant tree (visible per current mode) inside the viewport? */
 function anyTallTreeOnScreen() {
   if (!gc) return false;
@@ -2239,7 +2359,9 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
   ctx.drawImage(sp, x - dw/2, y - dh + 3*s, dw, dh);
   ctx.imageSmoothingEnabled = prevSmooth;
   // Label — bobbing height number with a soft glow pulse
-  const label = isHint ? '🌲 ???' : '🌲 ' + t.height_m + 'm';
+  const label = isHint ? '🌲 ???'
+    : (zoom >= 17 ? '🌲 ' + giantTreeName(t) + ' · ' + t.height_m + 'm'
+                  : '🌲 ' + t.height_m + 'm');
   if (isHint || zoom >= 15.5) {
     const bob = Math.sin(now/450 + phase) * 3;
     const lp = 0.7 + Math.sin(now/300 + phase) * 0.3;
@@ -4523,6 +4645,19 @@ function onGameClick(e) {
     }
   }
 
+  // Revealed giant tree: tap opens info popup with height, age + histogram
+  if (G.tallUnlocked && G.tallRevealed) {
+    let hitTree = null, hitD = Infinity;
+    for (const t of allTallTrees()) {
+      const [tx, ty] = toScreen(t.lon, t.lat);
+      if (Math.abs(tx-x) < 30 && ty-y > -20 && ty-y < 90) {
+        const d = Math.abs(tx-x) + Math.abs(ty-y-35);
+        if (d < hitD) { hitD = d; hitTree = t; }
+      }
+    }
+    if (hitTree) { showTreePopup(hitTree); return; }
+  }
+
   // Check polygon parcels
   for (const f of G.parcelPolys) {
     if (f.geometry.type==='Polygon' && pip(lon, lat, f.geometry.coordinates[0])) {
@@ -4542,8 +4677,10 @@ function onGameClick(e) {
 
   document.getElementById('parcel-popup').classList.remove('open');
   document.getElementById('ez-popup').classList.remove('open');
+  document.getElementById('tree-popup').classList.remove('open');
   resetPopupPosition('parcel-popup');
   resetPopupPosition('ez-popup');
+  resetPopupPosition('tree-popup');
   G.sel = null; G.ezHighlight = null; render();
 }
 
@@ -5020,6 +5157,11 @@ document.getElementById('popup-close').onclick = () => {
   document.getElementById('parcel-popup').classList.remove('open');
   resetPopupPosition('parcel-popup');
   G.sel=null; render();
+};
+
+document.getElementById('tree-popup-close').onclick = () => {
+  document.getElementById('tree-popup').classList.remove('open');
+  resetPopupPosition('tree-popup');
 };
 
 document.getElementById('ez-popup-close').onclick = () => {
