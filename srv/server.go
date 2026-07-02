@@ -496,6 +496,8 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		Landuse            string  `json:"landuse"`
 		BuildingCount      int     `json:"building_count"`
 		TotalBuildingArea  float64 `json:"total_building_area"`
+		TallTreeCount      int     `json:"tall_tree_count"`
+		TallTreeMaxH       float64 `json:"tall_tree_max_h"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -547,8 +549,16 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		Coins: int64(-price),
 		ID:    req.PlayerID,
 	})
+	// Tall-tree bonus: parcels containing lidar-confirmed landmark trees award extra XP
+	tallBonus := 0
+	if req.TallTreeCount > 0 && req.TallTreeCount <= 10 && req.TallTreeMaxH > 0 && req.TallTreeMaxH <= 60 {
+		tallBonus = req.TallTreeCount*40 + int(req.TallTreeMaxH)
+		if tallBonus > 300 {
+			tallBonus = 300
+		}
+	}
 	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
-		Xp: 10,
+		Xp: int64(10 + tallBonus),
 		ID: req.PlayerID,
 	})
 
@@ -561,9 +571,10 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 
 	updatedPlayer, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
 	jsonResp(w, map[string]any{
-		"success": true,
-		"price":   price,
-		"player":  updatedPlayer,
+		"success":       true,
+		"price":         price,
+		"player":        updatedPlayer,
+		"tall_bonus_xp": tallBonus,
 	})
 }
 
@@ -1119,7 +1130,12 @@ func (s *Server) handleGetPlayer(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "Player not found", 404)
 		return
 	}
-	jsonResp(w, player)
+	var treasuresFound int64
+	s.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM treasures WHERE found_by = ?", player.ID).Scan(&treasuresFound)
+	jsonResp(w, struct {
+		dbgen.Player
+		TreasuresFound int64 `json:"treasures_found"`
+	}{player, treasuresFound})
 }
 
 func (s *Server) handleGetPlayerSessions(w http.ResponseWriter, r *http.Request) {
@@ -1249,8 +1265,12 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cache for 1 hour
-	expiry := time.Now().Add(1 * time.Hour)
+	// Cache: KG geometry exports are static → 24h; everything else 1h
+	ttl := 1 * time.Hour
+	if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/osm/geometry") || strings.Contains(path, "/natura2000/") {
+		ttl = 24 * time.Hour
+	}
+	expiry := time.Now().Add(ttl)
 	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
 		CacheKey:  cacheKey,
 		Data:      string(body),

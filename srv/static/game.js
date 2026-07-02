@@ -74,6 +74,15 @@ const ABBR_MAP = {
   'Bio':    {terrain:TERRAIN.bio,      code:'52', name:'Naturschutz'},
 };
 
+// LiDAR dominant land cover → terrain palette (enhanced mode, real measured cover)
+const DOM_TERRAIN = {
+  grass:TERRAIN.meadow, tree:TERRAIN.forest, hedge:TERRAIN.garden, shrub:TERRAIN.garden,
+  roof:TERRAIN.building, crop:TERRAIN.farm, water:TERRAIN.water, vineyard:TERRAIN.garden,
+  garden:TERRAIN.garden, road:TERRAIN.road, parking:TERRAIN.road, path:TERRAIN.road,
+  bare_soil:TERRAIN.waste, rock:TERRAIN.waste, fill:TERRAIN.waste, excavation:TERRAIN.waste,
+  construction:TERRAIN.waste, tree_loss:TERRAIN.waste,
+};
+
 /** Parse landuse_summary → {dominant:{terrain,code,name}, buildingCount, entries:[{abbr,terrain,count}]} */
 function parseLanduseSummary(summary) {
   if (!summary || typeof summary !== 'object') return {dominant:null, buildingCount:0, entries:[]};
@@ -154,6 +163,9 @@ const G = {
   n2kVisible: true,         // layer toggle
   landPrices: {},           // parcel_id → price estimate object (lazy)
   geo: { watching:false, lon:0, lat:0, acc:0, follow:false, id:null },
+  tallUnlocked: false,      // giant trees unlock after first treasure collected
+  tallRevealed: false,      // tapping the hint tree reveals all giant trees
+  tallRevealAt: 0,          // timestamp for pop-in animation
   lidarGen: 0,              // bumped when new lidar building data arrives (invalidates footprint matches)
 };
 
@@ -521,6 +533,8 @@ function initPicker() {
   };
 
   loadStates();
+  // Load enhanced-KG registry so we can glow lidar-enhanced municipalities on the map
+  if (G.enhancedGemeinden.length === 0) loadEnhancedRegistry().then(drawPick);
 }
 
 async function findMuniAtPoint(lon, lat, name) {
@@ -631,6 +645,13 @@ function drawPick() {
     'Tirol':'#c07050','Vorarlberg':'#5090b0','Wien':'#d0a050'
   };
 
+  // Enhanced (lidar) municipalities: precompute set of codes for glow
+  if (!pickData.enhancedCodes || pickData.enhancedCount !== G.enhancedGemeinden.length) {
+    pickData.enhancedCodes = new Set(G.enhancedGemeinden.map(g => String(g.gemeinde_code)));
+    pickData.enhancedCount = G.enhancedGemeinden.length;
+  }
+  const glowPulse = 0.55 + Math.sin(Date.now()/600) * 0.25;
+
   if (G.pick.level === 'states' && pickData.allMunis) {
     // Draw municipality dots colored by state
     for (const m of pickData.allMunis) {
@@ -638,8 +659,17 @@ function drawPick() {
       const [x, y] = pickProject(m.lon, m.lat);
       if (x < -5 || x > W+5 || y < -5 || y > H+5) continue;
       const isHover = pickData.hoverMuni === m;
-      ctx.fillStyle = isHover ? '#ffd700' : (stateColors[m.state] || '#888');
-      const sz = isHover ? 5 : 3;
+      const isEnh = pickData.enhancedCodes.has(String(m.gemeinde_code || m.code));
+      if (isEnh) {
+        // Cyan glow halo for lidar-enhanced municipalities
+        ctx.fillStyle = 'rgba(80,230,255,' + (0.25*glowPulse).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = 'rgba(80,230,255,' + (0.8*glowPulse).toFixed(3) + ')';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
+      }
+      ctx.fillStyle = isHover ? '#ffd700' : (isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
+      const sz = isHover ? 5 : (isEnh ? 4 : 3);
       ctx.fillRect(x-sz/2, y-sz/2, sz, sz);
     }
     // State labels
@@ -678,12 +708,18 @@ function drawPick() {
   } else if (G.pick.level === 'munis' && G.pick.munis.length) {
     // Draw municipality polygons - Settlers-style terrain fill
     for (const f of G.pick.munis) {
-      drawMuniPoly(ctx, f, f === pickData.hover);
+      const isEnh = pickData.enhancedCodes.has(String(f.properties.gemeinde_code || f.properties.code));
+      drawMuniPoly(ctx, f, f === pickData.hover, isEnh, glowPulse);
     }
+  }
+
+  // Keep glow pulsing while picker is visible
+  if (pickData.enhancedCodes.size > 0 && document.getElementById('screen-pick')?.classList.contains('active')) {
+    if (!pickData.glowTimer) pickData.glowTimer = setTimeout(() => { pickData.glowTimer = null; drawPick(); }, 120);
   }
 }
 
-function drawMuniPoly(ctx, feature, isHover) {
+function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
   const geom = feature.geometry;
   const rings = geom.type === 'MultiPolygon' ? geom.coordinates.map(p=>p[0]) : [geom.coordinates[0]];
 
@@ -703,6 +739,18 @@ function drawMuniPoly(ctx, feature, isHover) {
     ctx.globalAlpha = isHover ? 0.9 : 0.7;
     ctx.fill();
     ctx.globalAlpha = 1;
+    if (isEnh) {
+      // Cyan glow for lidar-enhanced municipalities
+      ctx.save();
+      ctx.shadowColor = 'rgba(80,230,255,0.9)';
+      ctx.shadowBlur = 8 + (glowPulse||0.5) * 8;
+      ctx.strokeStyle = 'rgba(80,230,255,' + (0.5 + 0.4*(glowPulse||0.5)).toFixed(2) + ')';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = 'rgba(80,230,255,' + (0.05 + 0.05*(glowPulse||0.5)).toFixed(3) + ')';
+      ctx.fill();
+    }
     ctx.strokeStyle = isHover ? '#ffd700' : '#2a4020';
     ctx.lineWidth = isHover ? 2.5 : 1;
     ctx.stroke();
@@ -1112,6 +1160,10 @@ async function startGameWithLoading() {
   buildEZIndex();
   // Enhanced mode: fetch lidar/OSM/N2K data in the BACKGROUND (never blocks loading)
   loadEnhancedRegistry().then(loadEnhancedForKGs);
+  // Giant trees unlock persists: check if player already found a treasure
+  GET('/api/player/'+G.player.id).then(pl => {
+    if (pl && pl.treasures_found > 0) { G.tallUnlocked = true; }
+  }).catch(()=>{});
   // If parcels were empty (bbox failed) but we loaded polygon data, synthesize point parcels
   if (G.parcels.length === 0 && G.parcelPolys.length > 0) {
     for (const f of G.parcelPolys) {
@@ -1147,9 +1199,9 @@ async function startGameWithLoading() {
   setLoadProgress(100);
   setLoadSub('✅ Bereit — Viel Spaß beim Siedeln!');
 
-  // Ensure loading screen shows for at least 4s so users can read tips
+  // Brief minimum so the loading screen doesn't flash (was 4s — now get in fast)
   const elapsed = Date.now() - (G.loadStart || 0);
-  const minWait = Math.max(800, 4000 - elapsed);
+  const minWait = Math.max(300, 1500 - elapsed);
   await new Promise(r => setTimeout(r, minWait));
   stopTipRotation();
   stopLoadingCountdown();
@@ -1269,6 +1321,22 @@ async function fetchKGLayer(kg, layer) {
   return features;
 }
 
+/** Fetch all 3 layers for one KG and merge into game state. */
+async function loadOneKG(kg) {
+  const [parcels, footprints, landuse] = await Promise.all([
+    fetchKGLayer(kg, 'parcels'),
+    fetchKGLayer(kg, 'building_footprints'),
+    fetchKGLayer(kg, 'landuse'),
+  ]);
+  for (const f of parcels) G.parcelPolys.push(f);
+  for (const f of footprints) G.buildingFootprints.push(f);
+  for (const f of landuse) {
+    if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
+      G.landusePolys.push(f);
+    }
+  }
+}
+
 async function fetchKGPolygonsBlocking() {
   // Find KG codes from loaded parcels and fetch real polygon geometries
   const kgs = new Set();
@@ -1281,32 +1349,47 @@ async function fetchKGPolygonsBlocking() {
     for (const kg of G.municipalityKGs) kgs.add(kg);
     G.municipalityKGs = null;
   }
-  const total = kgs.size || 1;
-  let done = 0;
-  const promises = [];
-  for (const kg of kgs) {
-    G.kgsLoaded.add(kg);
-    promises.push(
-      Promise.all([
-        fetchKGLayer(kg, 'parcels'),
-        fetchKGLayer(kg, 'building_footprints'),
-        fetchKGLayer(kg, 'landuse'),
-      ]).then(([parcels, footprints, landuse]) => {
-        for (const f of parcels) G.parcelPolys.push(f);
-        for (const f of footprints) G.buildingFootprints.push(f);
-        for (const f of landuse) {
-          if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
-            G.landusePolys.push(f);
-          }
-        }
-        done++;
-        const kgPct = done / total;
-        setLoadProgress(28 + Math.floor(kgPct * 47)); // 28–75% range
-        setLoadSub(`KG ${done}/${total} — ${G.parcelPolys.length} Parzellen, ${G.buildingFootprints.length} Gebäude, ${G.landusePolys.length} Nutzungen`);
-      }).catch(e => { console.error('KG fetch failed:', kg, e); done++; })
-    );
+
+  // Rank KGs by distance from the camera (mean parcel position per KG).
+  // Only the nearest KGs block the loading screen; the rest stream in the background.
+  const pos = {};
+  for (const f of G.parcels) {
+    const kg = f.properties.kg_code;
+    if (!kg || !kgs.has(kg)) continue;
+    const lon = f.properties.lon || f.geometry?.coordinates?.[0];
+    const lat = f.properties.lat || f.geometry?.coordinates?.[1];
+    if (lon == null) continue;
+    if (!pos[kg]) pos[kg] = {sx:0, sy:0, n:0};
+    pos[kg].sx += lon; pos[kg].sy += lat; pos[kg].n++;
   }
-  await Promise.all(promises);
+  const dist = kg => {
+    const p = pos[kg];
+    if (!p || !p.n) return 0; // unknown position → treat as near (municipality fallback)
+    const dx = p.sx/p.n - G.cam.lon, dy = p.sy/p.n - G.cam.lat;
+    return dx*dx + dy*dy;
+  };
+  const ranked = [...kgs].sort((a, b) => dist(a) - dist(b));
+  const blocking = ranked.slice(0, 2);   // nearest 1–2 KGs — what the player sees first
+  const background = ranked.slice(2);
+  for (const kg of ranked) G.kgsLoaded.add(kg);
+
+  const total = blocking.length || 1;
+  let done = 0;
+  await Promise.all(blocking.map(kg =>
+    loadOneKG(kg).then(() => {
+      done++;
+      setLoadProgress(28 + Math.floor(done / total * 47)); // 28–75% range
+      setLoadSub(`KG ${done}/${total} — ${G.parcelPolys.length} Parzellen, ${G.buildingFootprints.length} Gebäude` + (background.length ? ` (+${background.length} KGs im Hintergrund)` : ''));
+    }).catch(e => { console.error('KG fetch failed:', kg, e); done++; })
+  ));
+
+  // Stream remaining KGs in the background — the game is already playable
+  if (background.length > 0) {
+    Promise.all(background.map(kg =>
+      loadOneKG(kg).then(() => { buildEZIndex(); render(); renderMini(); })
+        .catch(e => console.error('KG bg fetch failed:', kg, e))
+    )).then(() => { buildEZIndex(); loadEnhancedForKGs(); render(); renderMini(); });
+  }
 }
 
 async function fetchKGPolygons() {
@@ -1421,6 +1504,17 @@ async function fetchEnhancedKG(kg) {
 }
 
 function lidarGridKey(lon, lat) { return Math.round(lon*2000) + ':' + Math.round(lat*2000); }
+
+/** Tall (lidar landmark) trees inside a parcel polygon. Returns {count, maxH}. */
+function tallTreesInParcel(f) {
+  if (!f || f.geometry?.type !== 'Polygon') return {count:0, maxH:0};
+  const ring = f.geometry.coordinates[0];
+  let count = 0, maxH = 0;
+  for (const t of allTallTrees()) {
+    if (pip(t.lon, t.lat, ring)) { count++; if (t.height_m > maxH) maxH = t.height_m; }
+  }
+  return {count, maxH};
+}
 
 /** Find lidar building info near a footprint centroid (~50m grid + neighbors). */
 function findLidarBuilding(lon, lat) {
@@ -1977,43 +2071,93 @@ function drawN2KOverlay(ctx) {
   }
 }
 
+/** All loaded tall trees as a flat list. */
+function allTallTrees() {
+  const out = [];
+  for (const kg in G.topTrees) for (const t of G.topTrees[kg]) out.push(t);
+  return out;
+}
+
+/** The single "hint" tree shown after unlock but before reveal — the tallest loaded tree. */
+function hintTallTree() {
+  let best = null;
+  for (const t of allTallTrees()) if (!best || t.height_m > best.height_m) best = t;
+  return best;
+}
+
+/** Draw one giant tree; size scales with real measured height. */
+function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
+  const [x, y] = toScreen(t.lon, t.lat);
+  const W = gc.width, H = gc.height;
+  if (x < -80 || x > W+80 || y < -140 || y > H+80) return;
+  // Much taller than normal trees: height drives the scale (30m → ~2.2x, 55m → ~3.4x)
+  const zs = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3));
+  const s = zs * (1.0 + t.height_m / 22) * pop;
+  // Shadow at base
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(x, y+2*s, 9*s, 3.2*s, 0, 0, Math.PI*2); ctx.fill();
+  // Hint tree: pulsing golden aura
+  if (isHint) {
+    const pulse = 0.5 + Math.sin(Date.now()/400) * 0.3;
+    ctx.fillStyle = 'rgba(255,215,0,' + (0.18*pulse).toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(x, y - 18*s, 22*s, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,215,0,' + (0.7*pulse).toFixed(2) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y - 18*s, 16*s + pulse*4, 0, Math.PI*2); ctx.stroke();
+  }
+  // Trunk — tall
+  ctx.fillStyle = '#5a3a1a';
+  ctx.fillRect(x - 2.2*s, y - 16*s, 4.4*s, 18*s);
+  ctx.fillStyle = '#6e4a24';
+  ctx.fillRect(x - 0.8*s, y - 16*s, 1.6*s, 18*s);
+  // Canopy — 4 stacked blobs with sway
+  const greens = ['#1e5c22', '#2a7030', '#38843c', '#4a9848'];
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = greens[i];
+    ctx.beginPath();
+    ctx.arc(x + sway*(i+1)*0.35, y - 18*s - i*7*s, (11-i*2.2)*s, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // Highlight
+  ctx.fillStyle = 'rgba(140,220,120,0.35)';
+  ctx.beginPath();
+  ctx.arc(x + sway*1.05 - 2*s, y - 38*s, 2.8*s, 0, Math.PI*2);
+  ctx.fill();
+  // Label
+  ctx.font = '12px VT323, monospace';
+  ctx.textAlign = 'center';
+  const label = isHint ? '🌲 ???' : '🌲 ' + t.height_m + 'm';
+  if (isHint || zoom >= 15.5) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillText(label, x+1, y - 46*s + 1);
+    ctx.fillStyle = isHint ? '#ffd700' : '#c8ffb0';
+    ctx.fillText(label, x, y - 46*s);
+  }
+  ctx.textAlign = 'left';
+}
+
 /** Big landmark tree sprite with subtle sway + height label; banner for tall objects. */
 function drawTopLandmarks(ctx) {
   const zoom = G.cam.zoom;
-  if (zoom < 14.5) return;
+  if (zoom < 14) return;
   const W = gc.width, H = gc.height;
   const sway = Math.sin(Date.now() / 1200) * 1.5;
 
-  for (const kg in G.topTrees) {
-    for (const t of G.topTrees[kg]) {
-      const [x, y] = toScreen(t.lon, t.lat);
-      if (x < -40 || x > W+40 || y < -60 || y > H+40) continue;
-      const s = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3));
-      // Trunk
-      ctx.fillStyle = '#5a3a1a';
-      ctx.fillRect(x - 2*s, y - 10*s, 4*s, 12*s);
-      // Canopy — 3 stacked blobs with sway
-      const greens = ['#1e5c22', '#2a7030', '#38843c'];
-      for (let i = 0; i < 3; i++) {
-        ctx.fillStyle = greens[i];
-        ctx.beginPath();
-        ctx.arc(x + sway*(i+1)*0.35, y - 12*s - i*7*s, (9-i*2)*s, 0, Math.PI*2);
-        ctx.fill();
-      }
-      // Highlight
-      ctx.fillStyle = 'rgba(140,220,120,0.35)';
-      ctx.beginPath();
-      ctx.arc(x + sway*1.05 - 2*s, y - 26*s - 2*s, 2.5*s, 0, Math.PI*2);
-      ctx.fill();
-      // Height label at zoom >= 16
-      if (zoom >= 16) {
-        ctx.font = '12px VT323, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillText('🌲 ' + t.height_m + 'm', x+1, y - 32*s + 1);
-        ctx.fillStyle = '#c8ffb0';
-        ctx.fillText('🌲 ' + t.height_m + 'm', x, y - 32*s);
-        ctx.textAlign = 'left';
+  // Giant trees: locked until first treasure; then only the hint tree until tapped
+  if (G.tallUnlocked) {
+    if (!G.tallRevealed) {
+      const hint = hintTallTree();
+      if (hint) drawGiantTree(ctx, hint, zoom, sway, 1, true);
+    } else {
+      // Pop-in animation after reveal (staggered by height rank)
+      const trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
+      const dt = Date.now() - G.tallRevealAt;
+      for (let i = 0; i < trees.length; i++) {
+        const t0 = i * 90;
+        if (dt < t0) continue;
+        const k = Math.min(1, (dt - t0) / 350);
+        const pop = k < 1 ? 0.3 + 0.7 * (1 - (1-k)*(1-k)) * (1 + 0.25*Math.sin(k*Math.PI)) : 1;
+        drawGiantTree(ctx, trees[i], zoom, sway, pop, false);
       }
     }
   }
@@ -2087,6 +2231,7 @@ function drawBuildingFootprints(ctx) {
   const W = gc.width, H = gc.height;
   const zoom = G.cam.zoom;
   if (zoom < 15) return;
+  const enhanced = camOverEnhancedKG(); // hoisted: per-frame, not per-building
 
   for (const f of G.buildingFootprints) {
     const geom = f.geometry;
@@ -2126,9 +2271,13 @@ function drawBuildingFootprints(ctx) {
       f._lidarGen = G.lidarGen;
     }
     lidarB = f._lidar;
+    const zs = Math.max(0.5, Math.min(1.4, (zoom - 14) / 3.5));
     if (lidarB && lidarB.stories_est > 0) {
-      const zs = Math.max(0.5, Math.min(1.4, (zoom - 14) / 3.5));
       roofOff = Math.max(2, Math.min(16, lidarB.stories_est * 3 * zs));
+    } else if (enhanced) {
+      // Default for unmeasured buildings in enhanced KGs: 1–2 stories by footprint size
+      const defStories = area > 400 ? 2 : 1.5;
+      roofOff = Math.max(2, Math.min(16, defStories * 3 * zs));
     }
 
     // Shadow
@@ -2176,8 +2325,12 @@ function drawBuildingFootprints(ctx) {
     ctx.stroke();
 
     // Lidar roof type: pitched → ridge line along long axis; flat → lighter plain top
-    if (lidarB && zoom >= 16 && (bw > 8 || bh > 8)) {
-      if (lidarB.roof_type_hint === 'pitched') {
+    // Buildings without a measured roof type default to pitched (typical Austrian roofs);
+    // large footprints default to flat (industrial/commercial).
+    let roofHint = lidarB && lidarB.roof_type_hint;
+    if (!roofHint && enhanced) roofHint = area > 900 ? 'flat' : 'pitched';
+    if (roofHint && zoom >= 16 && (bw > 8 || bh > 8)) {
+      if (roofHint === 'pitched') {
         ctx.strokeStyle = 'rgba(255,235,200,0.45)';
         ctx.lineWidth = 1.2;
         ctx.beginPath();
@@ -2189,7 +2342,7 @@ function drawBuildingFootprints(ctx) {
           ctx.lineTo((minX+maxX)/2, maxY - bh*0.18 - roofOff);
         }
         ctx.stroke();
-      } else if (lidarB.roof_type_hint === 'flat') {
+      } else if (roofHint === 'flat') {
         ctx.fillStyle = 'rgba(180,180,190,0.18)';
         ctx.fill();
       }
@@ -2239,8 +2392,8 @@ function drawParcelPoly(ctx, f, claimMap) {
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // Enhanced mode: subtle per-parcel elevation tint (lidar) — skipped below zoom 15 for perf
-  if (G.cam.zoom >= 15) {
+  // Enhanced mode: subtle per-parcel elevation tint (lidar) — cheap terrain shading
+  if (G.cam.zoom >= 14) {
     const lp = G.lidarParcels[parcelId];
     if (lp && lp.elev != null) {
       const kt = G.lidarKGTerrain[lp.kg];
@@ -2473,6 +2626,9 @@ function extractLuCode(lu, p) {
 /** Get terrain colors from landuse_summary, returns the dominant terrain color array */
 function getParcelTerrain(p, claim) {
   if (claim?.converted_to) return TERRAIN.bio;
+  // Enhanced mode: real measured dominant land cover from lidar beats cadastre landuse
+  const lp = G.lidarParcels[p.parcel_id];
+  if (lp && lp.dom && DOM_TERRAIN[lp.dom]) return DOM_TERRAIN[lp.dom];
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
     if (parsed.dominant) return parsed.dominant.terrain;
@@ -4132,6 +4288,22 @@ function onGameClick(e) {
     if (Math.abs(tx-x)<15 && Math.abs(ty-y)<15) { claimTreasure(t); return; }
   }
 
+  // Hint giant tree: tapping it reveals ALL giant trees
+  if (G.tallUnlocked && !G.tallRevealed) {
+    const hint = hintTallTree();
+    if (hint) {
+      const [tx, ty] = toScreen(hint.lon, hint.lat);
+      if (Math.abs(tx-x) < 30 && ty-y > -20 && ty-y < 90) {
+        G.tallRevealed = true;
+        G.tallRevealAt = Date.now();
+        const n = allTallTrees().length;
+        toast('🌲 Riesenbaum entdeckt! ' + n + ' Riesenbäume sind nun sichtbar — Grundstücke mit Riesenbäumen bringen Bonus-XP!', 'ok');
+        render();
+        return;
+      }
+    }
+  }
+
   // Check polygon parcels
   for (const f of G.parcelPolys) {
     if (f.geometry.type==='Polygon' && pip(lon, lat, f.geometry.coordinates[0])) {
@@ -4311,6 +4483,15 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     }
   }
 
+  // Giant-tree bonus (only after reveal)
+  if (G.tallRevealed && G.sel) {
+    const tt = tallTreesInParcel(G.sel);
+    if (tt.count > 0) {
+      const bonus = Math.min(300, tt.count*40 + Math.floor(tt.maxH));
+      rows.push(['🌲 Riesenbaum', tt.count + '× (max ' + tt.maxH + 'm) — <b style="color:var(--gold)">+' + bonus + '⚡ Bonus</b>']);
+    }
+  }
+
   // Natura 2000: is parcel inside a loaded site polygon?
   const pLon = G.sel?.properties?.lon || (G.sel?.geometry?.type === 'Polygon' ? centroidOf(G.sel.geometry.coordinates[0])[0] : null);
   const pLat = G.sel?.properties?.lat || (G.sel?.geometry?.type === 'Polygon' ? centroidOf(G.sel.geometry.coordinates[0])[1] : null);
@@ -4470,15 +4651,19 @@ function calcPrice(area, lu, buildingCount, totalBuildingArea) {
 window.doClaim = async function() {
   if (!G.sel) return;
   const p = G.sel.properties;
+  const tt = G.tallRevealed ? tallTreesInParcel(G.sel) : {count:0, maxH:0};
   const res = await POST('/api/claim-parcel', {
     session_id:G.session.id, player_id:G.player.id,
     parcel_id:p.parcel_id, kg_code:p.kg_code||'', gnr:p.gnr||'',
     ez:p.ez||'',
     area_sqm:p.area_sqm||0, landuse:extractLuCode('',p),
     building_count:p.building_count||0, total_building_area:p.total_building_area_sqm||0,
+    tall_tree_count:tt.count, tall_tree_max_h:tt.maxH,
   });
   if (res.error) { toast(res.error,'err'); return; }
-  toast('🏴 Gekauft für '+res.price+'🪙!','ok');
+  if (res.tall_bonus_xp > 0) {
+    toast('🏴 Gekauft für '+res.price+'🪙! 🌲 Riesenbaum-Bonus: +'+res.tall_bonus_xp+'⚡','ok');
+  } else toast('🏴 Gekauft für '+res.price+'🪙!','ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
 };
@@ -4592,6 +4777,13 @@ async function claimTreasure(t) {
   }
   G.player = res.player; updateStats();
   G.treasures = G.treasures.filter(tr=>tr.id!==t.id);
+  // First treasure unlocks the giant trees (enhanced mode)
+  if (!G.tallUnlocked) {
+    G.tallUnlocked = true;
+    if (allTallTrees().length > 0) {
+      setTimeout(() => toast('🌲 Gerücht: Irgendwo hier steht ein Riesenbaum... Finde und tippe ihn an!', 'ok'), 1200);
+    }
+  }
   render(); loadChallenges();
 }
 
@@ -4691,14 +4883,18 @@ setInterval(() => {
       (G.treasures.length>0 || G.geo.watching || Object.keys(G.topTrees).length>0)) render();
 }, 800);
 // Faster pulse when GPS marker is active (still cheap: only when watching)
+// Also drives the giant-tree hint pulse and the reveal pop-in animation.
 setInterval(() => {
-  if (G.geo.watching && document.getElementById('screen-game').classList.contains('active')) render();
-}, 250);
+  if (!document.getElementById('screen-game').classList.contains('active')) return;
+  const revealAnim = G.tallRevealed && (Date.now() - G.tallRevealAt) < 5000;
+  const hintPulse = G.tallUnlocked && !G.tallRevealed && Object.keys(G.topTrees).length > 0;
+  if (G.geo.watching || revealAnim || hintPulse) render();
+}, 100);
 
 // Auto-refresh
 setInterval(async () => {
   if (!G.session||!G.player) return;
-  try { const p = await GET('/api/player/'+G.player.id); if(!p.error){G.player=p;updateStats();} } catch(e){}
+  try { const p = await GET('/api/player/'+G.player.id); if(!p.error){G.player=p;updateStats(); if(p.treasures_found>0) G.tallUnlocked=true;} } catch(e){}
 }, 15000);
 
 // ---- Init picker when shown ----
