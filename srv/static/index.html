@@ -279,6 +279,7 @@
         <div class="pp-grid">
           <span>Parzelle</span><b id="pp-id">-</b>
           <span>KG</span><b id="pp-kg">-</b>
+          <span id="pp-addr-label" style="display:none">Adresse</span><b id="pp-addr" style="display:none">-</b>
           <span>EZ</span><b id="pp-ez">-</b>
           <span>Fläche</span><b id="pp-area">-</b>
           <span>Nutzung</span><b id="pp-use">-</b>
@@ -286,6 +287,7 @@
           <span>Besitzer</span><b id="pp-owner">-</b>
           <span>Preis</span><b id="pp-price">-</b>
         </div>
+        <div class="pp-bldg" id="pp-bldg" style="display:none"></div>
         <div class="pp-grid pp-enhanced" id="pp-enhanced" style="display:none"></div>
         <button class="pp-more-btn" id="pp-more" style="display:none">Mehr ▸</button>
         <div class="pp-grid pp-sim" id="pp-sim" style="display:none"></div>
@@ -302,6 +304,12 @@
         </div>
         <div class="tp-hist-title">Höhenvergleich (Bäume in der Nähe) — Balken antippen = hinfliegen</div>
         <div id="tp-hist" class="tp-hist"></div>
+      </div>
+      <div id="kg-popup" class="popup draggable-popup kg-popup">
+        <div class="popup-drag-handle" data-drag-target="kg-popup">☰</div>
+        <button class="popup-close" id="kg-popup-close">✕</button>
+        <h3 id="kg-title">🏘️ Katastralgemeinde</h3>
+        <div id="kg-body" class="kg-body"></div>
       </div>
       <div id="ez-popup" class="popup draggable-popup ez-popup">
         <div class="popup-drag-handle" data-drag-target="ez-popup">☰</div>

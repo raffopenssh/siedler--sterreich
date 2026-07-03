@@ -306,6 +306,20 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
 #parcel-popup { bottom:16px; left:16px; }
 #ez-popup { bottom:16px; right:16px; }
+#kg-popup { top:56px; right:16px; bottom:auto; max-height:calc(100vh - 120px); overflow-y:auto; }
+.kg-popup h3 { color:var(--gold); }
+.kg-body .kg-loading { font:20px var(--font-game); color:var(--text-dim); }
+.kg-body .kg-dim { color:var(--text-dim); font-style:normal; font-size:16px; }
+.kg-lu-title { margin-top:10px; font:16px var(--font-game); color:var(--text-dim); }
+.kg-enh { margin-top:8px; font:16px var(--font-game); color:#7ee8fa; }
+#game-title.kg-link { cursor:pointer; text-decoration:underline dotted; }
+#game-title.kg-link:hover { color:#fff; }
+
+/* Building section in the parcel popup */
+.pp-bldg { margin-top:8px; padding-top:8px; border-top:1px solid var(--panel-border); }
+.pp-bldg-title { font:8px var(--font-pixel); color:var(--gold); margin-bottom:4px; }
+.pp-bldg-addrs { font:16px var(--font-game); color:var(--text-dim); margin-top:4px; }
+.pp-bldg-span { font:16px var(--font-game); color:var(--gold); margin-top:4px; }
 .ez-popup h3 { color:var(--green-light); }
 .pp-ez-link {
   color:var(--gold); cursor:pointer; text-decoration:underline;
@@ -493,6 +507,10 @@ input[type=text]:focus { border-color:var(--gold); }
   #ez-popup {
     left:8px; right:8px; top:60px; bottom:auto;
     max-height:35vh;
+  }
+  #kg-popup {
+    left:8px; right:8px; top:60px; bottom:auto;
+    max-height:calc(60vh - 60px);
   }
   #tree-popup {
     left:8px; right:8px; bottom:60px; top:auto; transform:none;

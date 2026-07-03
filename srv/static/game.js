@@ -171,6 +171,9 @@ const G = {
   n2kVisible: true,         // layer toggle
   landPrices: {},           // parcel_id → price estimate object (lazy)
   osmProx: {},              // parcel_id → OSM proximity object (lazy, null = failed/loading)
+  bldgInfo: {},             // footprint_id → building info (lazy, null = loading/failed)
+  kgSummaries: {},          // kg_code → summary object (lazy)
+  selFp: null,              // tapped building footprint feature (renders section in parcel popup)
   similar: null,            // {refPid, refLon, refLat, data} — active similar-parcels overlay
   similarCache: {},         // "pid:radius" → /api/similar response (client cache)
   similarRadius: 5000,      // selected search radius in m (5/10/20/50 km)
@@ -1232,7 +1235,15 @@ async function startGameWithLoading() {
   gctx = gc.getContext('2d');
   mc = document.getElementById('mini-canvas');
   mctx = mc.getContext('2d');
-  document.getElementById('game-title').textContent = G.session.municipality_name;
+  const gt = document.getElementById('game-title');
+  gt.textContent = G.session.municipality_name;
+  gt.classList.add('kg-link');
+  gt.title = 'KG-Übersicht anzeigen';
+  gt.onclick = () => {
+    const kg = kgAtCamera() || G.kgsLoaded.values().next().value;
+    if (kg) openKGSummary(kg);
+    else toast('Noch keine KG-Daten geladen', 'err');
+  };
   updateStats();
   resizeGame();
   window.addEventListener('resize', () => { resizeGame(); render(); });
@@ -5202,10 +5213,25 @@ function onGameClick(e) {
     if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) { showTreePopup(G.devTree); return; }
   }
 
+  // Building footprint under the tap? (buildings only render at zoom>=15)
+  // IMPORTANT: a building tap still selects the underlying PARCEL — the
+  // building details render as an extra section inside the parcel popup, so
+  // densely built parcels stay fully clickable/buyable.
+  let fpHit = null;
+  if (G.cam.zoom >= 15) {
+    for (const f of G.buildingFootprints) {
+      const g = f.geometry;
+      if (!g || g.type !== 'Polygon') continue;
+      const b = f._bb || (f._bb = geoBounds(g));
+      if (lon < b.w || lon > b.e || lat < b.s || lat > b.n) continue;
+      if (pip(lon, lat, g.coordinates[0])) { fpHit = f; break; }
+    }
+  }
+
   // Check polygon parcels
   for (const f of G.parcelPolys) {
     if (f.geometry.type==='Polygon' && pip(lon, lat, f.geometry.coordinates[0])) {
-      showParcelPopup(f); return;
+      showParcelPopup(f, fpHit); return;
     }
   }
 
@@ -5217,7 +5243,7 @@ function onGameClick(e) {
     const d=Math.abs(plon-lon)+Math.abs(plat-lat);
     if (d<bestD && d<0.0005) { bestD=d; best=f; }
   }
-  if (best) { showParcelPopup(best); return; }
+  if (best) { showParcelPopup(best, fpHit); return; }
 
   document.getElementById('parcel-popup').classList.remove('open');
   document.getElementById('ez-popup').classList.remove('open');
@@ -5228,8 +5254,9 @@ function onGameClick(e) {
   G.sel = null; G.ezHighlight = null; render();
 }
 
-function showParcelPopup(f) {
+function showParcelPopup(f, tappedFp) {
   G.sel = f;
+  G.selFp = tappedFp || null;
   const p = f.properties;
   const pid = p.parcel_id;
 
@@ -5268,7 +5295,12 @@ function showParcelPopup(f) {
 
   document.getElementById('pp-title').textContent = '📍 ' + (p.gnr || pid);
   document.getElementById('pp-id').textContent = pid;
-  document.getElementById('pp-kg').textContent = p.kg_name || p.kg_code || '-';
+  const kgEl = document.getElementById('pp-kg');
+  if (p.kg_code) {
+    kgEl.innerHTML = `<span class="pp-ez-link" onclick="openKGSummary('${p.kg_code}')">${esc(p.kg_name || p.kg_code)} ▸</span>`;
+  } else {
+    kgEl.textContent = p.kg_name || '-';
+  }
   const ez = p.ez || '';
   document.getElementById('pp-ez').textContent = ez ? 'EZ ' + ez : '-';
   document.getElementById('pp-area').textContent = area>10000?(area/10000).toFixed(2)+' ha':Math.round(area)+' m²';
@@ -5287,6 +5319,7 @@ function showParcelPopup(f) {
   document.getElementById('pp-owner').textContent = owner ? owner.name : 'Frei';
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
+  renderBuildingRows(tappedFp);
   renderEnhancedPopupRows(pid, price);
   renderSimilarPopupRows(pid);
 
@@ -5373,6 +5406,147 @@ function showParcelPopup(f) {
     pp.style.right = ''; pp.style.top = '';
   }
   render();
+}
+
+// ---- Building tap: extra section inside the parcel popup ----
+
+/** Lazily fetch merged building info (cadastre metrics + parcel links + addresses). */
+async function fetchBuildingInfo(fpId, lon, lat) {
+  if (fpId in G.bldgInfo) return G.bldgInfo[fpId];
+  G.bldgInfo[fpId] = null; // in-flight guard
+  try {
+    const d = await GET('/api/building-info?fp=' + encodeURIComponent(fpId) + '&lon=' + lon + '&lat=' + lat);
+    G.bldgInfo[fpId] = (d && !d.error) ? d : null;
+  } catch(e) { G.bldgInfo[fpId] = null; }
+  return G.bldgInfo[fpId];
+}
+
+const NS_NAMES = {'41':'Baufläche (befestigt)','42':'Gebäude','43':'Keller/Tiefgarage','44':'Ruine','45':'Gewächshaus'};
+
+/** Render the tapped building's section in the parcel popup.
+ *  Instant rows come from data already on the client (footprint metrics from
+ *  the viewport payload + lidar height match); addresses arrive lazily. */
+function renderBuildingRows(fp) {
+  const box = document.getElementById('pp-bldg');
+  const addrL = document.getElementById('pp-addr-label');
+  const addrV = document.getElementById('pp-addr');
+  if (!box) return;
+  addrL.style.display = 'none'; addrV.style.display = 'none';
+  if (!fp) { box.style.display = 'none'; box.innerHTML = ''; return; }
+
+  const p = fp.properties || {};
+  const fpId = p.footprint_id;
+  const rows = [];
+
+  // Size: real footprint area + oriented dims (already in viewport payload)
+  if (p.area_sqm) {
+    let dims = '';
+    if (p.obb_length_m && p.obb_width_m) dims = ' · ' + Math.round(p.obb_length_m) + '×' + Math.round(p.obb_width_m) + ' m';
+    rows.push(['📏 Grundfläche', Math.round(p.area_sqm) + ' m²' + dims]);
+  }
+  if (p.ns_code && NS_NAMES[p.ns_code]) rows.push(['🏷️ Typ', NS_NAMES[p.ns_code]]);
+
+  // LiDAR height/stories/roof — match by centroid like the renderer does
+  let cx = 0, cy = 0, ring = fp.geometry && fp.geometry.type === 'Polygon' ? fp.geometry.coordinates[0] : null;
+  if (ring) {
+    for (const c of ring) { cx += c[0]; cy += c[1]; }
+    cx /= ring.length; cy /= ring.length;
+    const lb = findLidarBuilding(cx, cy);
+    if (lb && lb.max_height_m) {
+      let h = '≈ ' + Math.round(lb.max_height_m) + ' m';
+      if (lb.stories_est > 0) h += ' · ' + lb.stories_est + ' Etage' + (lb.stories_est > 1 ? 'n' : '');
+      rows.push(['📐 Höhe (LiDAR)', h]);
+      if (lb.roof_type_hint) rows.push(['🏠 Dach', lb.roof_type_hint === 'flat' ? 'Flachdach' : 'Steildach']);
+    }
+  }
+  if (p.orientation_axis) rows.push(['🧭 Ausrichtung', p.orientation_axis]);
+
+  box.innerHTML = '<div class="pp-bldg-title">🏚️ Gebäude</div><div class="pp-grid">' +
+    rows.map(([k,v]) => '<span>'+k+'</span><b>'+v+'</b>').join('') +
+    '</div><div class="pp-bldg-lazy" id="pp-bldg-lazy"></div>';
+  box.style.display = 'block';
+
+  // Lazy: addresses + multi-parcel span from the server aggregate
+  if (!fpId) return;
+  const lon = (p.lon != null ? p.lon : cx), lat = (p.lat != null ? p.lat : cy);
+  fetchBuildingInfo(fpId, lon, lat).then(info => {
+    // Popup may have moved on to another selection meanwhile
+    if (!G.selFp || G.selFp.properties.footprint_id !== fpId) return;
+    if (!info) return;
+    const lazy = document.getElementById('pp-bldg-lazy');
+    if (!lazy) return;
+    let html = '';
+    if (info.addresses && info.addresses.length) {
+      // Show first address in the main grid (most useful line)
+      addrV.textContent = info.addresses[0];
+      addrL.style.display = ''; addrV.style.display = '';
+      if (info.addresses.length > 1) {
+        html += '<div class="pp-bldg-addrs">' + info.addresses.slice(1).map(esc).join('<br>') + '</div>';
+      }
+    }
+    if (info.parcels && info.parcels.length > 1) {
+      html += '<div class="pp-bldg-span">⚠️ Gebäude erstreckt sich über ' + info.parcels.length + ' Parzellen</div>';
+    }
+    lazy.innerHTML = html;
+  });
+}
+
+// ---- KG summary popup (tap the KG name in the parcel popup) ----
+
+async function openKGSummary(kg) {
+  const pop = document.getElementById('kg-popup');
+  const body = document.getElementById('kg-body');
+  document.getElementById('kg-title').textContent = '🏘️ KG ' + kg;
+  body.innerHTML = '<div class="kg-loading">Lädt…</div>';
+  pop.classList.add('open');
+  let d = G.kgSummaries[kg];
+  if (!d) {
+    try { d = await GET('/api/kg-summary/' + encodeURIComponent(kg)); } catch(e) { d = null; }
+    if (d && !d.error) G.kgSummaries[kg] = d;
+  }
+  if (!d || d.error) { body.innerHTML = '<div class="kg-loading">Keine Daten verfügbar</div>'; return; }
+
+  document.getElementById('kg-title').textContent = '🏘️ ' + (d.kg_name || 'KG ' + kg);
+  const rows = [];
+  if (d.gemeinde_name) rows.push(['Gemeinde', esc(d.gemeinde_name)]);
+  rows.push(['KG-Code', kg]);
+  if (d.area_ha != null) rows.push(['Fläche', d.area_ha >= 100 ? Math.round(d.area_ha) + ' ha' : d.area_ha.toFixed(1) + ' ha']);
+  if (d.parcels != null) rows.push(['Parzellen', d.parcels.toLocaleString('de-AT')]);
+  if (d.buildings != null) rows.push(['Gebäude', d.buildings.toLocaleString('de-AT')]);
+  if (d.avg_area_sqm != null) rows.push(['Ø Parzelle', Math.round(d.avg_area_sqm) + ' m²']);
+  if (d.elev_min != null && d.elev_max != null) {
+    const tl = {level:'eben', gentle:'sanft', moderate:'mäßig', hilly:'hügelig', steep:'steil', mountainous:'gebirgig', rugged:'schroff'};
+    rows.push(['⛰️ Seehöhe', Math.round(d.elev_min) + '–' + Math.round(d.elev_max) + ' m' + (d.terrain_class ? ' · ' + (tl[d.terrain_class]||d.terrain_class) : '')]);
+  }
+  if (d.tallest_tree_m) rows.push(['🌲 Höchster Baum', d.tallest_tree_m + ' m' + (d.giant_trees ? ' (' + d.giant_trees + ' Riesen)' : '')]);
+  if (d.n2k_parcels > 0) rows.push(['🛡️ Natura 2000', d.n2k_parcels.toLocaleString('de-AT') + ' Parzellen' + (d.n2k_sites && d.n2k_sites.length ? '<br><i class="kg-dim">' + d.n2k_sites.map(esc).join(', ') + '</i>' : '')]);
+  if (d.legal_refs > 0) rows.push(['⚖️ Rechtsbezüge', d.legal_refs + (d.legal_contexts && d.legal_contexts.length ? ' · ' + d.legal_contexts.slice(0,3).map(esc).join(', ') : '')]);
+
+  // My claims in this KG (client-side, free)
+  const mine = G.claimed.filter(c => c.kg_code === kg && c.player_id === G.player.id);
+  if (mine.length) {
+    const ha = mine.reduce((s,c) => s + (c.area_sqm||0), 0) / 10000;
+    rows.push(['🏴 Dein Besitz', mine.length + ' Parzellen · ' + (ha >= 1 ? ha.toFixed(1) + ' ha' : Math.round(ha*10000) + ' m²')]);
+  }
+
+  let html = '<div class="pp-grid">' + rows.map(([k,v]) => '<span>'+k+'</span><b>'+v+'</b>').join('') + '</div>';
+
+  // Landuse breakdown as a compact bar
+  if (d.landuse && d.landuse.length && d.parcels > 0) {
+    const total = d.landuse.reduce((s,e) => s + (e.count||0), 0);
+    let seg = '', leg = '';
+    for (const e of d.landuse) {
+      const fr = (e.count||0) / total;
+      if (fr < 0.02) continue;
+      const col = (LANDUSE_POLY_COLORS[e.code] && LANDUSE_POLY_COLORS[e.code].fill) || '#888';
+      const nm = (e.name||'').split(' - ')[0].split(' (')[0];
+      seg += '<i style="width:' + (fr*100).toFixed(1) + '%;background:' + col + '"></i>';
+      if (leg.split('<em').length <= 4) leg += '<em><i style="background:' + col + '"></i>' + esc(nm) + ' ' + Math.round(fr*100) + '%</em>';
+    }
+    html += '<div class="kg-lu-title">Nutzung (nach Parzellenzahl)</div><div class="fracs-bar">' + seg + '</div><div class="fracs-legend">' + leg + '</div>';
+  }
+  if (d.enhanced) html += '<div class="kg-enh">✨ Enhanced — LiDAR-Geländedaten aktiv</div>';
+  body.innerHTML = html;
 }
 
 /** Enhanced-mode rows in the parcel popup: elevation, slope, vegetation, market value, Natura 2000. */
@@ -6036,7 +6210,12 @@ async function claimTreasure(t) {
 document.getElementById('popup-close').onclick = () => {
   document.getElementById('parcel-popup').classList.remove('open');
   resetPopupPosition('parcel-popup');
-  G.sel=null; render();
+  G.sel=null; G.selFp=null; render();
+};
+
+document.getElementById('kg-popup-close').onclick = () => {
+  document.getElementById('kg-popup').classList.remove('open');
+  resetPopupPosition('kg-popup');
 };
 
 document.getElementById('tree-popup-close').onclick = () => {

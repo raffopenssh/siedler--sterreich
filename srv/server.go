@@ -126,6 +126,10 @@ func (s *Server) Serve(addr string) error {
 	// Replaces whole-KG export/geojson loads for map rendering.
 	mux.HandleFunc("GET /api/viewport", s.handleViewport)
 
+	// Building & KG info (slim, aggregated, cached)
+	mux.HandleFunc("GET /api/building-info", s.handleBuildingInfo)
+	mux.HandleFunc("GET /api/kg-summary/{code}", s.handleKGSummary)
+
 	// Cadastre proxy with caching
 	mux.HandleFunc("GET /api/cadastre/", s.handleCadastreProxy)
 
@@ -2763,4 +2767,242 @@ func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniName s
 		slog.Info("placed N2K treasures", "session", sessionID, "count", placed)
 		s.broadcast(sessionID, map[string]any{"type": "treasures_updated"})
 	}
+}
+
+// ---- Building info (tap on a building footprint) ----
+// GET /api/building-info?fp={footprint_id}&lon=&lat=
+// Merges cadastre footprint metrics, footprint→parcel links and nearby address
+// points into one slim payload. Cached 24h per footprint.
+func (s *Server) handleBuildingInfo(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	fp := q.Get("fp")
+	lon, lat := q.Get("lon"), q.Get("lat")
+	if fp == "" {
+		jsonErr(w, "fp required", 400)
+		return
+	}
+	cacheKey := "bldg-info:" + fp
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+
+	get := func(path string, out chan<- map[string]any) {
+		resp, err := http.Get(cadastreAPI + path)
+		if err != nil {
+			out <- nil
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		var m map[string]any
+		if json.Unmarshal(b, &m) != nil {
+			out <- nil
+			return
+		}
+		out <- m
+	}
+	mCh := make(chan map[string]any, 1) // metrics
+	pCh := make(chan map[string]any, 1) // parcel links
+	aCh := make(chan map[string]any, 1) // address points
+	go get("/footprints/"+url.PathEscape(fp)+"/geometry?geometry=0", mCh)
+	go get("/footprints/"+url.PathEscape(fp)+"/parcels", pCh)
+	if lon != "" && lat != "" {
+		flon, _ := strconv.ParseFloat(lon, 64)
+		flat, _ := strconv.ParseFloat(lat, 64)
+		d := 0.0004 // ~35m
+		go get(fmt.Sprintf("/spatial/bbox?minlon=%f&minlat=%f&maxlon=%f&maxlat=%f&layers=buildings&limit=8",
+			flon-d, flat-d*0.7, flon+d, flat+d*0.7), aCh)
+	} else {
+		aCh <- nil
+	}
+	metrics, links, addr := <-mCh, <-pCh, <-aCh
+
+	out := map[string]any{"footprint_id": fp}
+	if metrics != nil {
+		for _, k := range []string{"area_sqm", "perimeter_m", "obb_length_m", "obb_width_m",
+			"orientation_axis", "long_side_faces_deg", "ns_code", "vertex_count", "compactness", "kg_code"} {
+			if v, ok := metrics[k]; ok && v != nil {
+				out[k] = v
+			}
+		}
+	}
+	if links != nil {
+		if ps, ok := links["parcels"].([]any); ok {
+			var slim []map[string]any
+			for _, p := range ps {
+				pm, _ := p.(map[string]any)
+				if pm == nil {
+					continue
+				}
+				slim = append(slim, map[string]any{
+					"parcel_id": pm["parcel_id"], "primary": pm["primary_parcel"],
+					"overlap_sqm": pm["overlap_sqm"],
+				})
+			}
+			out["parcels"] = slim
+		}
+	}
+	if addr != nil {
+		if data, ok := addr["data"].(map[string]any); ok {
+			if bs, ok := data["buildings"].([]any); ok {
+				seen := map[string]bool{}
+				var addrs []string
+				for _, b := range bs {
+					bm, _ := b.(map[string]any)
+					if bm == nil {
+						continue
+					}
+					fa, _ := bm["full_address"].(string)
+					if fa != "" && !seen[fa] {
+						seen[fa] = true
+						addrs = append(addrs, fa)
+					}
+					if len(addrs) >= 4 {
+						break
+					}
+				}
+				out["addresses"] = addrs
+			}
+		}
+	}
+	enc, _ := json.Marshal(out)
+	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+		CacheKey: cacheKey, Data: string(enc), ExpiresAt: time.Now().Add(24 * time.Hour),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(enc)
+}
+
+// ---- KG summary (tap on the KG name in the parcel popup) ----
+// GET /api/kg-summary/{code}
+// One slim aggregated card: admin names, parcel/building/area stats, landuse
+// breakdown, Natura-2000 + legal refs, and (if the lidar slim is already
+// cached) terrain + tallest tree. All upstream calls are index-backed and
+// fast; result cached 6h (~2KB).
+func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
+	kg := r.PathValue("code")
+	cacheKey := "kg-summary:" + kg
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+
+	get := func(path string, out chan<- map[string]any) {
+		resp, err := http.Get(cadastreAPI + path)
+		if err != nil {
+			out <- nil
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		var m map[string]any
+		if json.Unmarshal(b, &m) != nil {
+			out <- nil
+			return
+		}
+		out <- m
+	}
+	lCh := make(chan map[string]any, 1) // lookup (names)
+	qCh := make(chan map[string]any, 1) // query stats
+	nCh := make(chan map[string]any, 1) // natura2000
+	gCh := make(chan map[string]any, 1) // legal
+	go get("/lookup?q="+url.QueryEscape(kg)+"&type=kg", lCh)
+	go get("/query?kg="+url.QueryEscape(kg)+"&limit=0", qCh)
+	go get("/natura2000/kg/"+url.PathEscape(kg), nCh)
+	go get("/legal/kg/"+url.PathEscape(kg), gCh)
+	lk, qr, n2k, leg := <-lCh, <-qCh, <-nCh, <-gCh
+
+	out := map[string]any{"kg_code": kg}
+	if lk != nil {
+		if data, ok := lk["data"].([]any); ok && len(data) > 0 {
+			if d0, ok := data[0].(map[string]any); ok {
+				out["kg_name"] = d0["name"]
+				out["gemeinde_name"] = d0["gemeinde_name"]
+				out["gemeinde_code"] = d0["gemeinde_code"]
+			}
+		}
+	}
+	if qr != nil {
+		if st, ok := qr["stats"].(map[string]any); ok {
+			out["parcels"] = st["matching_parcels"]
+			out["area_ha"] = st["total_area_ha"]
+			out["avg_area_sqm"] = st["avg_area_sqm"]
+			out["buildings"] = st["total_buildings"]
+			if lb, ok := st["landuse_breakdown"].([]any); ok {
+				var top []map[string]any
+				for i, e := range lb {
+					if i >= 6 {
+						break
+					}
+					em, _ := e.(map[string]any)
+					if em == nil {
+						continue
+					}
+					top = append(top, map[string]any{
+						"code": em["code"], "abbr": em["abbr"],
+						"count": em["parcel_count"], "name": em["type_name"],
+					})
+				}
+				out["landuse"] = top
+			}
+		}
+	}
+	if n2k != nil {
+		if data, ok := n2k["data"].(map[string]any); ok {
+			out["n2k_parcels"] = data["parcel_count"]
+			if sites, ok := data["inside_sites"].([]any); ok {
+				var names []string
+				for _, sv := range sites {
+					sm, _ := sv.(map[string]any)
+					if sm == nil {
+						continue
+					}
+					if nm, _ := sm["site_name"].(string); nm != "" {
+						names = append(names, nm)
+					}
+					if len(names) >= 3 {
+						break
+					}
+				}
+				out["n2k_sites"] = names
+			}
+		}
+	}
+	if leg != nil {
+		if data, ok := leg["data"].(map[string]any); ok {
+			out["legal_refs"] = data["total_refs"]
+			out["legal_contexts"] = data["legal_contexts"]
+		}
+	}
+	// Lidar terrain from the already-cached slim only — never warm here.
+	if cached, err := s.Q.GetCachedData(r.Context(), "lidar-slim2:/kg/"+kg); err == nil {
+		var slim map[string]any
+		if json.Unmarshal([]byte(cached), &slim) == nil {
+			if t, ok := slim["terrain"].(map[string]any); ok {
+				out["elev_min"] = t["elevation_min_m"]
+				out["elev_max"] = t["elevation_max_m"]
+				out["terrain_class"] = t["terrain_class"]
+			}
+			if tt, ok := slim["top_trees"].([]any); ok && len(tt) > 0 {
+				if t0, ok := tt[0].(map[string]any); ok {
+					out["tallest_tree_m"] = t0["height_m"]
+				}
+				out["giant_trees"] = len(tt)
+			}
+			out["enhanced"] = true
+		}
+	}
+	enc, _ := json.Marshal(out)
+	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+		CacheKey: cacheKey, Data: string(enc), ExpiresAt: time.Now().Add(6 * time.Hour),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(enc)
 }
