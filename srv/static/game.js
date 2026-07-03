@@ -1322,6 +1322,8 @@ async function loadMoreParcels() {
     if (added > 0) { render(); renderMini(); }
     // Also fetch polygon data for any new KGs
     fetchKGPolygons().then(() => buildEZIndex());
+    // Refresh the "Enhanced Gelände" badge for the new camera position.
+    updateEnhancedBadge();
     // Check for adjacent municipality crossings
     detectAdjacentMunicipalities();
     checkViewportMunicipality();
@@ -1693,12 +1695,34 @@ function fracsBarHTML(fracs) {
 }
 
 /** Is the camera currently over an enhanced (lidar-processed) KG? */
-function camOverEnhancedKG() {
-  for (const kg of G.kgsLoaded) {
-    if (!G.enhancedKGs.has(kg) || !G.lidarKGTerrain[kg]) continue;
-    return true; // approximation: any loaded+enhanced KG data present
+/** KG code the camera center currently sits in (via loaded parcel polygons),
+ *  or null if the center isn't inside any loaded parcel. */
+function kgAtCamera() {
+  const lon = G.cam.lon, lat = G.cam.lat;
+  let nearestKG = null, nd = Infinity;
+  for (const f of G.parcelPolys) {
+    const g = f.geometry;
+    if (!g) continue;
+    const b = geoBounds(g);
+    if (lon < b.w || lon > b.e || lat < b.s || lat > b.n) {
+      // Track nearest parcel centroid as a fallback for sparse coverage.
+      const cx = (b.w + b.e) / 2, cy = (b.s + b.n) / 2;
+      const d = (cx - lon) * (cx - lon) + (cy - lat) * (cy - lat);
+      if (d < nd && f.properties.kg_code) { nd = d; nearestKG = f.properties.kg_code; }
+      continue;
+    }
+    const rings = g.type === 'Polygon' ? [g.coordinates[0]] : g.coordinates.map(p => p[0]);
+    for (const ring of rings) {
+      if (pip(lon, lat, ring)) return f.properties.kg_code || null;
+    }
   }
-  return false;
+  // Only trust the nearest-parcel fallback when it's genuinely close (~120m).
+  return nd < 1.2e-6 ? nearestKG : null;
+}
+
+function camOverEnhancedKG() {
+  const kg = kgAtCamera();
+  return !!(kg && G.enhancedKGs.has(kg) && G.lidarKGTerrain[kg]);
 }
 
 function updateEnhancedBadge() {
