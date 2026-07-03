@@ -2407,6 +2407,17 @@ function hintTallTrees(n) {
   return allTallTrees().sort((a,b) => b.height_m - a.height_m).slice(0, n || 5);
 }
 
+/** Height (m) of the tallest loaded giant tree — the reference for relative
+ *  sizing when zoomed out. Cached, invalidated when new lidar data arrives. */
+let _tallMaxH = 0, _tallMaxHGen = -1;
+function tallestTreeHeight() {
+  if (_tallMaxHGen === G.lidarGen) return _tallMaxH;
+  let m = 0;
+  for (const kg in G.topTrees) for (const t of G.topTrees[kg]) if (t.height_m > m) m = t.height_m;
+  _tallMaxH = m; _tallMaxHGen = G.lidarGen;
+  return m;
+}
+
 // ---- Giant tree pixel-art sprite sheet (pre-rendered sway frames) ----
 const GIANT_FRAMES = 8;
 let _giantSprites = null; // [{c:canvas}] per frame
@@ -2479,14 +2490,24 @@ function giantTreeHitBox(t, zoom) {
   return { hw: Math.max(30, dw / 2 + 6), up: Math.max(90, dh + 10), down: 20 };
 }
 
-function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate) {
+function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
   if (animate === undefined) animate = true;
   const [x, y] = toScreen(t.lon, t.lat);
   const W = gc.width, H = gc.height;
   if (x < -80 || x > W+80 || y < -140 || y > H+80) return;
   // Much taller than normal trees: height drives the scale (30m → ~2.2x, 55m → ~3.4x)
   const zs = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3));
-  const s = zs * (1.0 + t.height_m / 22) * pop;
+  let s = zs * (1.0 + t.height_m / 22) * pop;
+  // When zoomed out, the zs floor makes every giant look the same big size, so
+  // shorter ones overlap/merge into the forest and appear to "disappear". Scale
+  // each tree relative to the tallest loaded giant so the biggest stand out and
+  // shorter ones stay visible but proportionally smaller. Only kicks in below
+  // z15 and never shrinks past 45% so nothing vanishes.
+  if (maxH && maxH > 0 && zoom < 15) {
+    const rel = Math.max(0.45, Math.min(1, t.height_m / maxH));
+    const k = Math.min(1, (15 - zoom) / 2); // 0 at z15 → 1 at z13
+    s *= (1 - k) + k * rel;
+  }
   // Shadow at base
   ctx.fillStyle = 'rgba(0,0,0,0.22)';
   ctx.beginPath(); ctx.ellipse(x, y+2*s, 9*s, 3.2*s, 0, 0, Math.PI*2); ctx.fill();
@@ -2666,11 +2687,12 @@ function drawTopLandmarks(ctx) {
 
   // Giant trees: locked until first treasure; then only the hint tree until tapped.
   if (G.tallUnlocked) {
+    const maxH = tallestTreeHeight();
     if (!G.tallRevealed) {
       // Show more hint trees so giants are easier to spot; still at least one
       // when fully zoomed out.
       const n = zoom < 14 ? 3 : 12;
-      for (const hint of hintTallTrees(n)) drawGiantTree(ctx, hint, zoom, sway, 1, true);
+      for (const hint of hintTallTrees(n)) drawGiantTree(ctx, hint, zoom, sway, 1, true, true, maxH);
     } else {
       // Revealed: show ALL giant trees at every zoom level. To keep frame cost
       // bounded on weaker devices, only the tallest few (per the device's
@@ -2689,7 +2711,7 @@ function drawTopLandmarks(ctx) {
           const k = Math.min(1, (dt - t0) / 350);
           pop = k < 1 ? 0.3 + 0.7 * (1 - (1-k)*(1-k)) * (1 + 0.25*Math.sin(k*Math.PI)) : 1;
         }
-        drawGiantTree(ctx, trees[i], zoom, sway, pop, false, animate);
+        drawGiantTree(ctx, trees[i], zoom, sway, pop, false, animate, maxH);
       }
     }
     drawTallTreeFogHint(ctx);
