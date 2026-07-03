@@ -1652,6 +1652,32 @@ function correctedFracs(fracs, p) {
   return out;
 }
 
+/**
+ * Lidar-measured vegetation breakdown for a parcel, or null when no lidar
+ * coverage exists. Distinguishes tall canopy (`tree`) from low woody scrub
+ * (`shrub` = shrub + hedge). `wood` is the combined cover used for density.
+ * Prefers the corrected srtm land-cover `fracs`; falls back to `forestFrac`
+ * (canopy only) when composition is unavailable.
+ *   → { tree, shrub, wood }  (each 0..1)  |  null
+ */
+function parcelVeg(f) {
+  const lp = G.lidarParcels[f.properties.parcel_id];
+  if (!lp) return null;
+  const cf = correctedFracs(lp.fracs, f.properties);
+  if (cf) {
+    const tree = Math.min(1, cf.tree || 0);
+    const shrub = Math.min(1, (cf.shrub || 0) + (cf.hedge || 0));
+    const wood = Math.min(1, tree + shrub);
+    if (wood > 0) return { tree, shrub, wood };
+    if (lp.forestFrac == null) return { tree: 0, shrub: 0, wood: 0 };
+  }
+  if (lp.forestFrac != null) {
+    const t = Math.min(1, Math.max(0, lp.forestFrac));
+    return { tree: t, shrub: 0, wood: t };
+  }
+  return null;
+}
+
 /** Compact stacked pixel bar + top-3 legend for a fracs vector. */
 function fracsBarHTML(fracs) {
   const entries = Object.entries(fracs).filter(([,f]) => f >= 0.02).sort((a,b) => b[1]-a[1]);
@@ -3541,11 +3567,27 @@ function drawWildflowerSprite(ctx, x, y, v, seed) {
 function drawForestSprites(ctx, claimMap) {
   // Draw tree sprites on forest, reforested, orchard and scrub parcels
   // Determine tree style per parcel: 'forest' | 'reforested' | 'orchard' | 'krummholz'
+  // Minimum lidar-measured wooded fraction to scatter sprites on a parcel whose
+  // cadastre/dominant terrain is NOT forest/garden (e.g. a meadow with a copse).
+  const WOOD_MIN = 0.15;
   function getTreeStyle(f) {
     const claim = claimMap[f.properties.parcel_id];
     if (claim?.converted_to === 'forest') return 'reforested';
     const t = getParcelTerrain(f.properties, claim);
-    if (t !== TERRAIN.forest && t !== TERRAIN.garden) return null;
+    const veg = parcelVeg(f);
+    // Scrub-dominant (low woody cover, little tall canopy) → krummholz sprites,
+    // regardless of cadastre terrain. srtm distinguishes shrub/hedge from tree.
+    if (veg && veg.wood >= WOOD_MIN && veg.shrub > veg.tree && veg.tree < 0.15) {
+      return 'krummholz';
+    }
+    if (t !== TERRAIN.forest && t !== TERRAIN.garden) {
+      // Enhanced mode: trust lidar canopy — a partly-wooded parcel still gets
+      // (proportionally sparse) trees even if forest isn't its dominant cover.
+      if (veg && veg.wood >= WOOD_MIN) return veg.tree >= 0.1 ? 'forest' : 'krummholz';
+      return null;
+    }
+    // Terrain says forest/garden but lidar says (nearly) treeless → suppress sprites.
+    if (veg && veg.wood < 0.05) return null;
     const luCode = extractLuCode('', f.properties);
     if (luCode === '63') return 'orchard';   // Obstgarten
     if (luCode === '57') return 'krummholz'; // Krummholz/Latschen
@@ -3573,6 +3615,13 @@ function drawForestSprites(ctx, claimMap) {
 
     const area = f.properties.area_sqm || 1000;
     const hash = simpleHash(f.properties.parcel_id||'');
+    // Lidar-measured vegetation (null when no lidar coverage). Scale sprite
+    // density by the relevant cover: total woody cover for scrub/krummholz,
+    // tall-canopy fraction for real forest. Floor keeps sparse parcels legible.
+    const veg = parcelVeg(f);
+    let densFrac = null;
+    if (veg) densFrac = (style === 'krummholz') ? veg.wood : veg.tree || veg.wood;
+    const densMul = densFrac == null ? 1 : Math.max(0.25, Math.min(1, densFrac));
 
     let treeCount, variantFn;
     if (style === 'orchard') {
@@ -3597,6 +3646,12 @@ function drawForestSprites(ctx, claimMap) {
       treeCount = Math.min(30, Math.max(4, Math.floor(area / 250)));
       const v = [0, 1, 5, 6, 1, 0, 5, 1, 0, 6]; // weighted toward deciduous
       variantFn = (i) => v[(hash + i) % v.length];
+    }
+
+    // Scale by lidar-measured canopy fraction (skip 'reforested' — that's a
+    // game-state look, not a measured natural stand). Always keep ≥1 tree.
+    if (style !== 'reforested' && densMul < 1) {
+      treeCount = Math.max(1, Math.round(treeCount * densMul));
     }
 
     // Draw bright green underglow for reforested parcels
