@@ -2331,7 +2331,7 @@ function showTreePopup(tree) {
   const sorted = nearby.slice().sort((a,b) => b.height_m - a.height_m);
   const rank = sorted.findIndex(t => t === tree) + 1;
 
-  document.querySelector('#tree-popup h3').textContent = '🌲 ' + giantTreeName(tree);
+  document.querySelector('#tree-popup h3').textContent = (tree.broad ? '🌳 ' : '🌲 ') + giantTreeName(tree);
   document.getElementById('tp-height').textContent = tree.height_m + ' m';
   const age = giantTreeAge(tree);
   document.getElementById('tp-age').textContent = age.text +
@@ -2386,8 +2386,7 @@ function showTreePopup(tree) {
 function anyTallTreeOnScreen() {
   if (!gc) return false;
   const W = gc.width, H = gc.height;
-  const cand = !G.tallRevealed ? hintTallTrees(G.cam.zoom < 14 ? 3 : 12)
-             : (G.cam.zoom < 14 ? hintTallTrees(6) : allTallTrees());
+  const cand = !G.tallRevealed ? hintTallTrees(12) : allTallTrees();
   for (const t of cand) {
     const [x, y] = toScreen(t.lon, t.lat);
     if (x > -80 && x < W+80 && y > -140 && y < H+80) return true;
@@ -2418,9 +2417,12 @@ function tallestTreeHeight() {
   return m;
 }
 
-// ---- Giant tree pixel-art sprite sheet (pre-rendered sway frames) ----
+// ---- Giant tree pixel-art sprite sheets (pre-rendered sway frames) ----
+// Two variants: conifer (fir tiers) and broadleaf (round layered canopy) —
+// picked per tree from the lidar crown-area/height ratio (t.broad flag).
 const GIANT_FRAMES = 8;
-let _giantSprites = null; // [{c:canvas}] per frame
+let _giantSprites = null;      // conifer frames
+let _giantBroadSprites = null; // broadleaf frames
 function giantTreeSprites() {
   if (_giantSprites) return _giantSprites;
   _giantSprites = [];
@@ -2477,6 +2479,71 @@ function giantTreeSprites() {
     _giantSprites.push(c);
   }
   return _giantSprites;
+}
+
+/** Broadleaf giant: thick trunk + big round layered canopy (oak/beech look). */
+function giantBroadTreeSprites() {
+  if (_giantBroadSprites) return _giantBroadSprites;
+  _giantBroadSprites = [];
+  const p = 3;
+  const CW = 30, CH = 42;      // same canvas as conifer so draw math matches
+  const cx = CW / 2;
+  for (let f = 0; f < GIANT_FRAMES; f++) {
+    const c = document.createElement('canvas');
+    c.width = CW * p; c.height = CH * p;
+    const g = c.getContext('2d');
+    const ph = (f / GIANT_FRAMES) * Math.PI * 2;
+    const px = (ux, uy, col) => { g.fillStyle = col; g.fillRect(Math.round(ux)*p, Math.round(uy)*p, p, p); };
+    // Trunk (bottom 12 units), broader than the fir, slight sway
+    for (let uy = CH-12; uy < CH; uy++) {
+      const sw = Math.sin(ph) * 0.25 * ((CH-uy)/12);
+      px(cx-2+sw, uy, '#4a2f14'); px(cx-1+sw, uy, '#6e4a24');
+      px(cx+sw, uy, '#7a5530'); px(cx+1+sw, uy, '#5a3a1a');
+      if (uy > CH-5) { px(cx-3+sw, uy, '#4a2f14'); px(cx+2+sw, uy, '#4a2f14'); }
+    }
+    // Roots
+    px(cx-4, CH-1, '#4a2f14'); px(cx+3, CH-1, '#4a2f14');
+    // Branch forks into the canopy
+    px(cx-3, CH-13, '#5a3a1a'); px(cx-4, CH-14, '#4a2f14');
+    px(cx+2, CH-13, '#5a3a1a'); px(cx+3, CH-14, '#4a2f14');
+    // Canopy: stacked overlapping blobs (ellipse rows), upper rows sway more
+    const dark = '#1e4d20', mid = '#2e6b30', lite = '#48924a', top2 = '#63b060';
+    const cyTop = 3, cyBot = CH-12;           // canopy vertical span
+    const cyMid = (cyTop + cyBot) / 2;
+    for (let uy = cyTop; uy <= cyBot; uy++) {
+      const v = (uy - cyTop) / (cyBot - cyTop);       // 0 top → 1 bottom
+      // Round profile: widest just below middle, lumpy edges
+      let halfW = 12.5 * Math.sin(Math.PI * Math.min(1, v * 0.92 + 0.06));
+      halfW += Math.sin(uy * 2.1 + ph) * 0.9;         // lumpy, sways
+      if (halfW < 1.5) continue;
+      const off = Math.sin(ph) * (1 - v) * 1.1;       // top sways most
+      for (let ux = Math.round(cx - halfW + off); ux <= Math.round(cx + halfW + off); ux++) {
+        const rel = (ux - (cx + off)) / (halfW || 1);
+        const vv = (uy - cyMid) / ((cyBot - cyTop) / 2);
+        let col = mid;
+        // light from upper-right, shade lower-left
+        const lum = rel * 0.6 - vv * 0.5;
+        if (lum > 0.45) col = lite;
+        if (lum > 0.8) col = top2;
+        if (lum < -0.45) col = dark;
+        // leafy dither (hashed — avoids diagonal stripe artifacts)
+        const dh = ((ux*73856093) ^ (uy*19349663) ^ (f*83492791)) >>> 0;
+        if ((dh % 7) === 0) col = (col === mid ? lite : (col === dark ? mid : col));
+        else if ((dh % 11) === 1) col = (col === lite ? mid : (col === mid ? dark : col));
+        // ragged edge: skip some rim pixels
+        if (Math.abs(rel) > 0.93 && ((ux + uy * 3) % 3) === 0) continue;
+        px(ux, uy, col);
+      }
+    }
+    // Highlight sparkles drifting across the crown
+    for (let i = 0; i < 3; i++) {
+      const sx = cx + Math.sin(ph + i * 2.1) * 8;
+      const sy = cyTop + 4 + ((f + i * 3) % 5) + i * 6;
+      px(sx, sy, '#a8d890');
+    }
+    _giantBroadSprites.push(c);
+  }
+  return _giantBroadSprites;
 }
 
 /** Draw one giant tree; size scales with real measured height. */
@@ -2541,7 +2608,9 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
     ctx.beginPath(); ctx.arc(x, y - 32*s, 17*s, a0 + Math.PI, a0 + Math.PI + 1.1); ctx.stroke();
   }
   // Pixel-art sprite, animated sway (per-tree phase offset so the forest ripples)
-  const sprites = giantTreeSprites();
+  // Broad-crowned giants (lidar crown area large relative to height → t.broad)
+  // get the round broadleaf sprite; the rest the classic fir.
+  const sprites = t.broad ? giantBroadTreeSprites() : giantTreeSprites();
   const frame = Math.floor(now / 130 + phase * GIANT_FRAMES / 6.283) % GIANT_FRAMES;
   const sp = sprites[(frame + GIANT_FRAMES) % GIANT_FRAMES];
   const dw = sp.width * s * 0.55, dh = sp.height * s * 0.55;
@@ -2550,9 +2619,10 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
   ctx.drawImage(sp, x - dw/2, y - dh + 3*s, dw, dh);
   ctx.imageSmoothingEnabled = prevSmooth;
   // Label — bobbing height number with a soft glow pulse
-  const label = isHint ? '🌲 ???'
-    : (zoom >= 17 ? '🌲 ' + giantTreeName(t) + ' · ' + t.height_m + 'm'
-                  : '🌲 ' + t.height_m + 'm');
+  const glyph = t.broad ? '🌳' : '🌲';
+  const label = isHint ? glyph + ' ???'
+    : (zoom >= 17 ? glyph + ' ' + giantTreeName(t) + ' · ' + t.height_m + 'm'
+                  : glyph + ' ' + t.height_m + 'm');
   if (isHint || zoom >= 15.5) {
     const bob = Math.sin(now/450 + phase) * 3;
     const lp = 0.7 + Math.sin(now/300 + phase) * 0.3;
@@ -2689,10 +2759,9 @@ function drawTopLandmarks(ctx) {
   if (G.tallUnlocked) {
     const maxH = tallestTreeHeight();
     if (!G.tallRevealed) {
-      // Show more hint trees so giants are easier to spot; still at least one
-      // when fully zoomed out.
-      const n = zoom < 14 ? 3 : 12;
-      for (const hint of hintTallTrees(n)) drawGiantTree(ctx, hint, zoom, sway, 1, true, true, maxH);
+      // Show the same hint set at every zoom level so giants stay visible
+      // when zooming out.
+      for (const hint of hintTallTrees(12)) drawGiantTree(ctx, hint, zoom, sway, 1, true, true, maxH);
     } else {
       // Revealed: show ALL giant trees at every zoom level. To keep frame cost
       // bounded on weaker devices, only the tallest few (per the device's
@@ -2894,19 +2963,33 @@ function drawBuildingFootprints(ctx) {
     ctx.closePath();
     ctx.fill();
 
-    // Wall (side) — draw extruded shape for visible edges
+    // Wall (side) — extrude only viewer-facing edges. The roof is offset
+    // straight up in screen space, so an edge shows a wall iff its outward
+    // normal points down-screen (normal.y > 0). Anything else is a back wall
+    // that would poke out above the roof (the old "awkward" artifacts on
+    // rotated / L-shaped buildings). Outward direction depends on winding.
+    let sa = 0; // signed area (screen coords, y down): >0 = clockwise
+    for (let i=0; i<pts.length; i++) {
+      const j = (i+1) % pts.length;
+      sa += pts[i][0]*pts[j][1] - pts[j][0]*pts[i][1];
+    }
+    const wind = sa > 0 ? 1 : -1;
     ctx.fillStyle = rc.wall;
     ctx.beginPath();
     for (let i=0; i<pts.length; i++) {
       const j = (i+1) % pts.length;
-      if (pts[i][1] >= pts[j][1] - 0.5) {
-        ctx.moveTo(pts[i][0], pts[i][1]);
-        ctx.lineTo(pts[j][0], pts[j][1]);
-        ctx.lineTo(pts[j][0], pts[j][1]-roofOff);
-        ctx.lineTo(pts[i][0], pts[i][1]-roofOff);
-        ctx.closePath();
-      }
+      const ex = pts[j][0]-pts[i][0];
+      // outward normal = (-ey, ex)*wind → normal.y = ex*wind; visible if > 0
+      if (ex * wind <= 0.01) continue;
+      ctx.moveTo(pts[i][0], pts[i][1]);
+      ctx.lineTo(pts[j][0], pts[j][1]);
+      ctx.lineTo(pts[j][0], pts[j][1]-roofOff);
+      ctx.lineTo(pts[i][0], pts[i][1]-roofOff);
+      ctx.closePath();
     }
+    ctx.fill();
+    // Wall shading: darken slightly for depth
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
     ctx.fill();
 
     // Roof (top face, offset up)
@@ -2934,11 +3017,29 @@ function drawBuildingFootprints(ctx) {
     let roofHint = lidarB && lidarB.roof_type_hint;
     if (!roofHint && enhanced) roofHint = area > 900 ? 'flat' : 'pitched';
     if (roofHint && zoom >= 16 && (bw > 8 || bh > 8)) {
-      if (roofHint === 'pitched') {
+      const props = f.properties || {};
+      // A straight ridge only makes sense on compact-ish rectangular shapes;
+      // L/U-shaped footprints (low compactness) got an awkward line across
+      // the notch before — render those with a flat-style top instead.
+      const rectangular = props.compactness == null || props.compactness >= 0.6;
+      if (roofHint === 'pitched' && rectangular) {
         ctx.strokeStyle = 'rgba(255,235,200,0.45)';
         ctx.lineWidth = 1.2;
         ctx.beginPath();
-        if (bw >= bh) {
+        if (props.orientation_deg != null && props.obb_length_m > 0) {
+          // Real OBB long axis from the cadastre viewport data: ridge through
+          // the centroid along the true building orientation (compass deg).
+          const th = props.orientation_deg * Math.PI / 180;
+          const lat0 = props.lat || coords[0][1];
+          const halfM = props.obb_length_m * 0.32; // ridge ≈ 64% of long side
+          const dLon = Math.sin(th) * halfM / (111320 * Math.cos(lat0 * Math.PI/180));
+          const dLat = Math.cos(th) * halfM / 110540;
+          const cLon = props.lon || coords[0][0], cLat = props.lat || coords[0][1];
+          const [ax, ay] = toScreen(cLon - dLon, cLat - dLat);
+          const [bx, by] = toScreen(cLon + dLon, cLat + dLat);
+          ctx.moveTo(ax, ay - roofOff);
+          ctx.lineTo(bx, by - roofOff);
+        } else if (bw >= bh) {
           ctx.moveTo(minX + bw*0.18, (minY+maxY)/2 - roofOff);
           ctx.lineTo(maxX - bw*0.18, (minY+maxY)/2 - roofOff);
         } else {
@@ -2946,7 +3047,7 @@ function drawBuildingFootprints(ctx) {
           ctx.lineTo((minX+maxX)/2, maxY - bh*0.18 - roofOff);
         }
         ctx.stroke();
-      } else if (roofHint === 'flat') {
+      } else if (roofHint === 'flat' || !rectangular) {
         ctx.fillStyle = 'rgba(180,180,190,0.18)';
         ctx.fill();
       }

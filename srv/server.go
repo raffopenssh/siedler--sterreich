@@ -1857,7 +1857,7 @@ func correctedDomTerrain(pd map[string]any) any {
 // top trees/objects), and caches the slim result for 6h.
 func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 	kg := r.PathValue("code")
-	cacheKey := "lidar-slim:/kg/" + kg
+	cacheKey := "lidar-slim2:/kg/" + kg
 	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
@@ -1902,7 +1902,7 @@ func compactFracs(pd map[string]any) map[string]float64 {
 // buildLidarSlim fetches + slims the KG JSON and stores it in the cache.
 // Returns (payload, 200) or (errMsg, status).
 func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
-	cacheKey := "lidar-slim:/kg/" + kg
+	cacheKey := "lidar-slim2:/kg/" + kg
 
 	// Fetch flags first (fast) to filter top trees/objects
 	flagged := map[string]bool{} // obj_ref -> true for severity high/critical
@@ -1968,7 +1968,8 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 	// carries its own tallest trees, giving us hundreds of giants to show.
 	var parcels []map[string]any
 	type giantTree struct {
-		h, lon, lat float64
+		h, lon, lat, area float64
+		phen              string
 	}
 	var harvested []giantTree
 	if p, ok := full["parcels"].(map[string]any); ok {
@@ -1992,8 +1993,13 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 							continue
 						}
 						h, _ := row[0].(float64)
+						area, _ := row[3].(float64)
 						lon, _ := row[4].(float64)
 						lat, _ := row[5].(float64)
+						phen := ""
+						if len(row) >= 10 {
+							phen, _ = row[9].(string)
+						}
 						// Only real giants; clamp junk. rf_conf (idx 11) gate when present.
 						if h < 25 || h > 60 || lon == 0 || lat == 0 {
 							continue
@@ -2003,7 +2009,7 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 								continue
 							}
 						}
-						harvested = append(harvested, giantTree{h: h, lon: lon, lat: lat})
+						harvested = append(harvested, giantTree{h: h, lon: lon, lat: lat, area: area, phen: phen})
 					}
 				}
 				parcels = append(parcels, map[string]any{
@@ -2060,6 +2066,19 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 	}
 	slim["buildings"] = buildings
 
+	// Crown-shape species hint: deciduous crowns are broad relative to tree
+	// height, conifer crowns narrow. Uses the segment surface area already in
+	// the payload (no extra upstream call). d = 2*sqrt(a/pi); broad if d/h
+	// clearly exceeds conifer proportions. Segments merging several crowns
+	// inflate area, so require a solid margin and skip huge blobs.
+	isBroadCrown := func(area, h float64) bool {
+		if area <= 0 || h <= 0 || area > 2500 {
+			return false
+		}
+		d := 2 * math.Sqrt(area/math.Pi)
+		return d/h > 0.62
+	}
+
 	// Flag-filtered top trees (clamp height <= 60m)
 	var topTrees []map[string]any
 	if tt, ok := full["top_10_trees"].([]any); ok {
@@ -2079,11 +2098,15 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 			if c == nil {
 				continue
 			}
-			topTrees = append(topTrees, map[string]any{
+			tt := map[string]any{
 				"height_m": math.Round(h*10) / 10,
 				"lon":      c["lon"],
 				"lat":      c["lat"],
-			})
+			}
+			if a, ok := td["area_sqm"].(float64); ok && isBroadCrown(a, h) {
+				tt["broad"] = 1
+			}
+			topTrees = append(topTrees, tt)
 		}
 	}
 	// Merge in the per-parcel harvested giants (tallest first), deduping trees that
@@ -2108,11 +2131,15 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 			continue
 		}
 		seenTree[k] = true
-		topTrees = append(topTrees, map[string]any{
+		tt := map[string]any{
 			"height_m": math.Round(g.h*10) / 10,
 			"lon":      g.lon,
 			"lat":      g.lat,
-		})
+		}
+		if isBroadCrown(g.area, g.h) {
+			tt["broad"] = 1
+		}
+		topTrees = append(topTrees, tt)
 	}
 	slim["top_trees"] = topTrees
 
@@ -2339,7 +2366,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		kgSeen[kg] = true
-		cached, err := s.Q.GetCachedData(r.Context(), "lidar-slim:/kg/"+kg)
+		cached, err := s.Q.GetCachedData(r.Context(), "lidar-slim2:/kg/"+kg)
 		if err != nil {
 			if kg == refKG {
 				// The srtm terms are the whole point — warm the reference KG
