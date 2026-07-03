@@ -494,6 +494,12 @@ input[type=text]:focus { border-color:var(--gold); }
     left:8px; right:8px; top:60px; bottom:auto;
     max-height:35vh;
   }
+  #tree-popup {
+    left:8px; right:8px; bottom:60px; top:auto; transform:none;
+    max-height:calc(80vh - 60px);
+    /* room for the histogram x-axis labels (positioned below the bars) */
+    padding-bottom:28px;
+  }
 
   /* Chat */
   .chat-input-row input { font-size:16px; }
