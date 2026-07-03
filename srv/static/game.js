@@ -4950,6 +4950,13 @@ function showParcelPopup(f) {
   const p = f.properties;
   const pid = p.parcel_id;
 
+  // Auto-hide the giant tree info popup when a parcel is tapped.
+  const treePop = document.getElementById('tree-popup');
+  if (treePop && treePop.classList.contains('open')) {
+    treePop.classList.remove('open');
+    resetPopupPosition('tree-popup');
+  }
+
   // Keep camera stable on parcel tap (no zoom jumps — important on mobile).
   // Only nudge the view if the parcel is off-screen (e.g. re-opened programmatically).
   const pLon = p.lon || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[0] : f.geometry.coordinates[0]);
