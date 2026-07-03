@@ -3011,45 +3011,80 @@ function drawBuildingFootprints(ctx) {
     ctx.lineWidth = 0.7;
     ctx.stroke();
 
-    // Lidar roof type: pitched → ridge line along long axis; flat → lighter plain top
-    // Buildings without a measured roof type default to pitched (typical Austrian roofs);
-    // large footprints default to flat (industrial/commercial).
+    // Roof treatment — houses are never empty boxes. Pitched roofs get two
+    // shaded planes split along the OBB long axis (clipped to the roof face,
+    // so nothing ever draws outside the footprint — the old free-floating
+    // ridge line overshot on merged/terraced blocks). Flat roofs get a
+    // lighter top with a parapet inset.
     let roofHint = lidarB && lidarB.roof_type_hint;
-    if (!roofHint && enhanced) roofHint = area > 900 ? 'flat' : 'pitched';
-    if (roofHint && zoom >= 16 && (bw > 8 || bh > 8)) {
-      const props = f.properties || {};
-      // A straight ridge only makes sense on compact-ish rectangular shapes;
-      // L/U-shaped footprints (low compactness) got an awkward line across
-      // the notch before — render those with a flat-style top instead.
-      const rectangular = props.compactness == null || props.compactness >= 0.6;
-      if (roofHint === 'pitched' && rectangular) {
-        ctx.strokeStyle = 'rgba(255,235,200,0.45)';
-        ctx.lineWidth = 1.2;
+    if (!roofHint) roofHint = area > 900 ? 'flat' : 'pitched';
+    const props = f.properties || {};
+    const rectangular = props.compactness == null || props.compactness >= 0.55;
+    if (zoom >= 15.5 && (bw > 6 || bh > 6)) {
+      // Roof top-face path (reused for clipping)
+      const roofPath = () => {
         ctx.beginPath();
-        if (props.orientation_deg != null && props.obb_length_m > 0) {
-          // Real OBB long axis from the cadastre viewport data: ridge through
-          // the centroid along the true building orientation (compass deg).
-          const th = props.orientation_deg * Math.PI / 180;
-          const lat0 = props.lat || coords[0][1];
-          const halfM = props.obb_length_m * 0.32; // ridge ≈ 64% of long side
-          const dLon = Math.sin(th) * halfM / (111320 * Math.cos(lat0 * Math.PI/180));
-          const dLat = Math.cos(th) * halfM / 110540;
-          const cLon = props.lon || coords[0][0], cLat = props.lat || coords[0][1];
-          const [ax, ay] = toScreen(cLon - dLon, cLat - dLat);
-          const [bx, by] = toScreen(cLon + dLon, cLat + dLat);
-          ctx.moveTo(ax, ay - roofOff);
-          ctx.lineTo(bx, by - roofOff);
-        } else if (bw >= bh) {
-          ctx.moveTo(minX + bw*0.18, (minY+maxY)/2 - roofOff);
-          ctx.lineTo(maxX - bw*0.18, (minY+maxY)/2 - roofOff);
-        } else {
-          ctx.moveTo((minX+maxX)/2, minY + bh*0.18 - roofOff);
-          ctx.lineTo((minX+maxX)/2, maxY - bh*0.18 - roofOff);
+        for (let i=0; i<pts.length; i++) {
+          const x = pts[i][0], y = pts[i][1]-roofOff;
+          i===0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
         }
+        ctx.closePath();
+      };
+      if (roofHint === 'pitched' && rectangular) {
+        // Ridge axis in screen space from the real OBB orientation (fallback:
+        // bbox long axis). Then a sharp two-stop gradient perpendicular to it
+        // = sunlit plane / shaded plane, clipped to the roof polygon.
+        let ux, uy; // ridge direction (screen)
+        const cxs = (minX+maxX)/2, cys = (minY+maxY)/2 - roofOff;
+        if (props.orientation_deg != null) {
+          const th = props.orientation_deg * Math.PI / 180;
+          // compass deg → screen: east = +x, north = -y
+          ux = Math.sin(th); uy = -Math.cos(th);
+        } else {
+          if (bw >= bh) { ux = 1; uy = 0; } else { ux = 0; uy = 1; }
+        }
+        // perpendicular (roof slope direction)
+        const px_ = -uy, py_ = ux;
+        const halfSpan = Math.max(4, Math.min(bw, bh) * 0.5);
+        const g0x = cxs - px_*halfSpan, g0y = cys - py_*halfSpan;
+        const g1x = cxs + px_*halfSpan, g1y = cys + py_*halfSpan;
+        // Light from upper-left: pick which side is lit by the slope normal
+        const lit = (px_ * -0.6 + py_ * -0.8) > 0;
+        const grad = ctx.createLinearGradient(g0x, g0y, g1x, g1y);
+        const hi = 'rgba(255,240,210,0.22)', lo = 'rgba(20,10,5,0.22)';
+        grad.addColorStop(0,     lit ? hi : lo);
+        grad.addColorStop(0.48,  lit ? hi : lo);
+        grad.addColorStop(0.5,   'rgba(255,245,220,0.30)'); // ridge glint
+        grad.addColorStop(0.52,  lit ? lo : hi);
+        grad.addColorStop(1,     lit ? lo : hi);
+        ctx.save();
+        roofPath();
+        ctx.clip();
+        ctx.fillStyle = grad;
+        ctx.fillRect(minX-2, minY-roofOff-2, bw+4, bh+4);
+        // Ridge line, drawn inside the clip so it never escapes the roof
+        if (zoom >= 16.5) {
+          const rl = Math.max(bw, bh); // clip handles the ends
+          ctx.strokeStyle = 'rgba(255,235,200,0.5)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cxs - ux*rl, cys - uy*rl);
+          ctx.lineTo(cxs + ux*rl, cys + uy*rl);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else {
+        // Flat / irregular roof: lighter top + soft inner parapet shadow
+        ctx.save();
+        roofPath();
+        ctx.clip();
+        ctx.fillStyle = 'rgba(200,200,205,0.15)';
+        ctx.fillRect(minX-2, minY-roofOff-2, bw+4, bh+4);
+        roofPath();
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = 3;
         ctx.stroke();
-      } else if (roofHint === 'flat' || !rectangular) {
-        ctx.fillStyle = 'rgba(180,180,190,0.18)';
-        ctx.fill();
+        ctx.restore();
       }
     }
 
