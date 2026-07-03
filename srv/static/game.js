@@ -1311,6 +1311,9 @@ async function loadParcels() {
 
 async function loadMoreParcels() {
   const b = viewBounds();
+  // Keep the Enhanced badge in sync with the camera even when zoomed too far
+  // out to fetch more parcels (below), so it reappears/hides on every pan.
+  updateEnhancedBadge();
   if ((b.e-b.w) > 0.04) return;
   try {
     const url = CAD+'/spatial/bbox?west='+b.w+'&south='+b.s+'&east='+b.e+'&north='+b.n+'&layers=parcels&limit=800&format=geojson';
@@ -1322,8 +1325,6 @@ async function loadMoreParcels() {
     if (added > 0) { render(); renderMini(); }
     // Also fetch polygon data for any new KGs
     fetchKGPolygons().then(() => buildEZIndex());
-    // Refresh the "Enhanced Gelände" badge for the new camera position.
-    updateEnhancedBadge();
     // Check for adjacent municipality crossings
     detectAdjacentMunicipalities();
     checkViewportMunicipality();
@@ -1454,6 +1455,9 @@ async function fetchKGPolygons() {
   if (added > 0) { render(); renderMini(); }
   // Enhanced data for any newly-visible enhanced KGs.
   loadEnhancedForKGs();
+  // Refresh the badge: it must reappear when panning back into an already-
+  // loaded enhanced KG (loadEnhancedForKGs skips those, so it won't re-fire).
+  updateEnhancedBadge();
 }
 
 // ================= ENHANCED MODE (lidar terrain, OSM lines, Natura 2000) =================
