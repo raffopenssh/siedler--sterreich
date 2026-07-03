@@ -4594,7 +4594,7 @@ function initGameInput() {
     render();
   };
 
-  // "Developer mode": 5 quick taps on the Enhanced-Gelände badge (like
+  // "Developer mode": 7 quick taps on the Enhanced-Gelände badge (like
   // Android's build-number easter egg) unlock the giant tree nearest to the
   // viewport center and fly to it.
   const enhBadge = document.getElementById('enhanced-badge');
@@ -4622,8 +4622,8 @@ function initGameInput() {
       if (now - devTapAt > 2500) devTaps = 0;   // taps must be quick
       devTapAt = now;
       devTaps++;
-      if (devTaps < 5) {
-        const left = 5 - devTaps;
+      if (devTaps < 7) {
+        const left = 7 - devTaps;
         if (devTaps >= 2) toast('✨ Noch ' + left + (left === 1 ? ' Tap' : ' Taps') + ' …', '');
         return;
       }
