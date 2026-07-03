@@ -170,6 +170,10 @@ const G = {
   n2kSites: {},             // sitecode → {name, habitats, label, geom (GeoJSON), loaded}
   n2kVisible: true,         // layer toggle
   landPrices: {},           // parcel_id → price estimate object (lazy)
+  osmProx: {},              // parcel_id → OSM proximity object (lazy, null = failed/loading)
+  similar: null,            // {refPid, refLon, refLat, data} — active similar-parcels overlay
+  similarCache: {},         // "pid:radius" → /api/similar response (client cache)
+  similarRadius: 5000,      // selected search radius in m (5/10/20/50 km)
   geo: { watching:false, lon:0, lat:0, acc:0, follow:false, id:null },
   tallUnlocked: false,      // giant trees unlock after first treasure collected
   tallRevealed: false,      // tapping the hint tree reveals all giant trees
@@ -1486,7 +1490,8 @@ async function fetchEnhancedKG(kg) {
       G.lidarParcels[p.parcel_id] = {
         elev: p.elevation_m, elevMin: p.elevation_min_m, elevMax: p.elevation_max_m,
         slope: p.slope_mean_deg, aspect: p.aspect_dominant, tclass: p.terrain_class,
-        dom: p.dominant_type, domTerrain: p.dom_terrain, forestFrac: p.forested_fraction, kg: kg,
+        dom: p.dominant_type, domTerrain: p.dom_terrain, forestFrac: p.forested_fraction,
+        fracs: p.fracs, kg: kg,
       };
     }
     for (const b of (d.buildings||[])) {
@@ -1568,6 +1573,97 @@ async function fetchLandPrice(pid) {
     G.landPrices[pid] = (d && !d.error && d.buy_total_eur != null) ? d : null;
   } catch(e) { G.landPrices[pid] = null; }
   return G.landPrices[pid];
+}
+
+/** Lazily fetch OSM proximity data (roads, transit, water, settlement) for a parcel. */
+async function fetchOsmProx(pid) {
+  if (pid in G.osmProx) return G.osmProx[pid];
+  G.osmProx[pid] = null; // in-flight guard
+  try {
+    const d = await GET('/api/cadastre/osm/parcel/' + encodeURIComponent(pid));
+    G.osmProx[pid] = (d && !d.error && d.osm) ? d.osm : null;
+  } catch(e) { G.osmProx[pid] = null; }
+  return G.osmProx[pid];
+}
+
+function fmtDist(m) {
+  if (m == null) return null;
+  return m < 1000 ? Math.round(m) + ' m' : (m/1000).toFixed(1).replace('.', ',') + ' km';
+}
+
+// ---- Land-cover composition (srtm fracs), corrected for road/roof bleed ----
+const FRAC_LABEL = {
+  grass:'Wiese', tree:'Bäume', roof:'Gebäude', crop:'Acker', water:'Wasser',
+  road:'Straße', path:'Weg', parking:'Parkplatz', shrub:'Gestrüpp', hedge:'Hecke',
+  garden:'Garten', vineyard:'Weingarten', bare_soil:'Offen', rock:'Fels',
+  fill:'Schüttung', excavation:'Aushub', construction:'Baustelle', tree_loss:'Rodung',
+};
+const FRAC_COLOR = {
+  grass:'#5a9e3a', tree:'#1e5a1e', roof:'#c8b040', crop:'#a8a040', water:'#2878b8',
+  road:'#484848', path:'#6a6658', parking:'#525252', shrub:'#6b8e4a', hedge:'#4e7a3a',
+  garden:'#739650', vineyard:'#7b5ea0', bare_soil:'#5a5848', rock:'#8a8878',
+  fill:'#625e50', excavation:'#4a4838', construction:'#8a6a4a', tree_loss:'#7a5a38',
+};
+
+/**
+ * Correct srtm's 1m land-cover fractions using cadastre ground truth:
+ * - `roof` is capped at the cadastre built-up ratio (building_area/area); srtm
+ *   roof pixels bleed across parcel borders at 1m resolution. No buildings on
+ *   record → roof dropped entirely.
+ * - `road`/`parking`/`path` are only trusted when the cadastre landuse actually
+ *   contains a Verkehr entry; otherwise capped at 5% (adjacent-street bleed).
+ * Remaining fractions are renormalized to sum to 1.
+ */
+function correctedFracs(fracs, p) {
+  if (!fracs) return null;
+  const out = {};
+  for (const [t, f] of Object.entries(fracs)) out[t] = f;
+  const parsed = parseLanduseSummary(p.landuse_summary);
+  const area = p.area_sqm || 0;
+  const barea = p.total_building_area_sqm || 0;
+  // Buildings on record? Trust cadastre count, footprint area, OR the
+  // landuse summary ("Baufläche (X2)") — point-data props may be missing
+  // on polygon parcels.
+  const hasBldg = (p.building_count > 0) || barea > 0 || (parsed.buildingCount > 0);
+  if (out.roof != null) {
+    if (!hasBldg) delete out.roof;
+    else if (barea > 0 && area > 0) {
+      const builtRatio = Math.min(1, barea / area);
+      if (out.roof > builtRatio + 0.05) out.roof = Math.round((builtRatio + 0.05) * 100) / 100;
+    }
+    // hasBldg but unknown footprint area → keep srtm's roof fraction as-is
+  }
+  const hasRoadLU = (parsed.entries || []).some(e => e.terrain === TERRAIN.road || e.code === '48' || e.code === '90');
+  if (!hasRoadLU) {
+    let imperv = (out.road || 0) + (out.parking || 0) + (out.path || 0);
+    if (imperv > 0.05) {
+      const k = 0.05 / imperv;
+      for (const t of ['road', 'parking', 'path']) {
+        if (out[t] != null) {
+          out[t] = Math.round(out[t] * k * 100) / 100;
+          if (out[t] < 0.02) delete out[t];
+        }
+      }
+    }
+  }
+  const sum = Object.values(out).reduce((s, f) => s + f, 0);
+  if (sum <= 0.05) return null; // correction ate everything — don't show garbage
+  for (const t in out) out[t] = out[t] / sum;
+  return out;
+}
+
+/** Compact stacked pixel bar + top-3 legend for a fracs vector. */
+function fracsBarHTML(fracs) {
+  const entries = Object.entries(fracs).filter(([,f]) => f >= 0.02).sort((a,b) => b[1]-a[1]);
+  if (entries.length === 0) return '';
+  let seg = '';
+  for (const [t, f] of entries) {
+    seg += '<i style="width:' + (f*100).toFixed(1) + '%;background:' + (FRAC_COLOR[t]||'#888') + '"></i>';
+  }
+  let leg = entries.slice(0, 3).map(([t, f]) =>
+    '<em><i style="background:' + (FRAC_COLOR[t]||'#888') + '"></i>' + (FRAC_LABEL[t]||t) + ' ' + Math.round(f*100) + '%</em>').join('');
+  if (entries.length > 3) leg += '<em style="color:var(--text-dim)">+' + (entries.length-3) + '</em>';
+  return '<div class="fracs-bar">' + seg + '</div><div class="fracs-legend">' + leg + '</div>';
 }
 
 /** Is the camera currently over an enhanced (lidar-processed) KG? */
@@ -1797,6 +1893,9 @@ function render() {
 
   // ---- Tallest-tree + landmark markers (enhanced mode) ----
   drawTopLandmarks(ctx);
+
+  // ---- Similar-parcels overlay (below treasures, above parcels) ----
+  if (G.similar) drawSimilarParcels(ctx);
 
   // ---- Treasures ----
   for (const t of G.treasures) drawTreasure(ctx, t);
@@ -4735,6 +4834,28 @@ function onGameClick(e) {
     if (Math.abs(tx-x)<15 && Math.abs(ty-y)<15) { claimTreasure(t); return; }
   }
 
+  // Similar-parcel markers (before parcel hit-testing — they sit on top)
+  const simHit = hitSimilarMarker(x, y);
+  if (simHit) { openSimilarResult(simHit); return; }
+
+  // Similar-parcels edge arrow: fly to the nearest off-screen result that way
+  if (G.similar && G._simEdgeArrows) {
+    for (const a of G._simEdgeArrows) {
+      if (Math.abs(a.ex - x) < 30 && Math.abs(a.ey - y) < 30) {
+        let best = null, bestD = Infinity;
+        for (const r of G.similar.data.results) {
+          const [sx, sy] = toScreen(r.lon, r.lat);
+          if (sx >= 0 && sx <= gc.width && sy >= 0 && sy <= gc.height) continue; // on-screen
+          const ang = Math.atan2(sy - gc.height/2, sx - gc.width/2);
+          let dAng = Math.abs(ang - a.ang);
+          if (dAng > Math.PI) dAng = 2*Math.PI - dAng;
+          if (dAng < 0.5 && r.distance_m < bestD) { bestD = r.distance_m; best = r; }
+        }
+        if (best) { flyTo(best.lon, best.lat, Math.max(G.cam.zoom, 15)); return; }
+      }
+    }
+  }
+
   // Miracle fog hint: tapping the mist flies to the nearest giant tree
   if (fogHintPos && Math.abs(fogHintPos.x - x) < 45 && Math.abs(fogHintPos.y - y) < 45) {
     flyTo(fogHintPos.lon, fogHintPos.lat, Math.max(G.cam.zoom, 15.5));
@@ -4896,6 +5017,15 @@ function showParcelPopup(f) {
     }
   }
 
+  // Similar parcels search (cadastre R-tree + srtm terrain matching)
+  act.innerHTML += `<div class="similar-row">
+    <button class="btn btn-secondary btn-small" id="pp-similar-btn" onclick="findSimilarParcels()">🔍 Ähnliche Parzellen</button>
+    <span class="similar-radius" id="pp-similar-radius">${[5000,10000,20000,50000].map(r =>
+      `<button class="sim-r${r===G.similarRadius?' on':''}" onclick="setSimilarRadius(${r})">${r/1000}</button>`).join('')}<i>km</i></span>
+  </div>`;
+  // Lazy count: prefetch the current radius in background, show "(N)" when it lands
+  prefetchSimilarCount(pid);
+
   // EZ link — make the EZ field clickable to open separate EZ popup
   const ezEl = document.getElementById('pp-ez');
   if (ez && p.kg_code) {
@@ -4949,12 +5079,20 @@ function renderEnhancedPopupRows(pid, gamePrice) {
       const tlabels = {level:'eben', nearly_level:'fast eben', 'nearly level':'fast eben', gentle:'sanft', undulating:'wellig', moderate:'mäßig', hilly:'hügelig', steep:'steil', rugged:'schroff', 'slightly rugged':'leicht schroff', mountainous:'gebirgig'};
       rows.push(['⛰️ Hang', lp.slope.toFixed(1) + '° ' + (arrows[lp.aspect]||'') + (lp.tclass ? ' · ' + (tlabels[lp.tclass]||lp.tclass) : '')]);
     }
-    const domShown = lp.domTerrain || lp.dom;
-    if (domShown) {
-      const domDE = {grass:'Wiese', tree:'Baumbestand', roof:'Bebaut', crop:'Acker', water:'Wasser', bare:'Offen', bare_soil:'Offen', road:'Straße', shrub:'Gestrüpp', hedge:'Hecke', garden:'Garten', vineyard:'Weingarten'};
-      let veg = domDE[domShown] || domShown;
-      if (lp.forestFrac != null && lp.forestFrac > 0.02) veg += ' · ' + Math.round(lp.forestFrac*100) + '% Wald';
-      moreRows.push(['🌿 Bewuchs', veg]);
+    // Land-cover composition: 1m-resolution srtm fracs, corrected against
+    // cadastre building/landuse data (roof + road bleed). Falls back to the
+    // plain dominant-type row when no fracs are available.
+    const cf = correctedFracs(lp.fracs, G.sel?.properties || {});
+    if (cf) {
+      rows.push(['🌿 Bewuchs', fracsBarHTML(cf)]);
+    } else {
+      const domShown = lp.domTerrain || lp.dom;
+      if (domShown) {
+        const domDE = {grass:'Wiese', tree:'Baumbestand', roof:'Bebaut', crop:'Acker', water:'Wasser', bare:'Offen', bare_soil:'Offen', road:'Straße', shrub:'Gestrüpp', hedge:'Hecke', garden:'Garten', vineyard:'Weingarten'};
+        let veg = domDE[domShown] || domShown;
+        if (lp.forestFrac != null && lp.forestFrac > 0.02) veg += ' · ' + Math.round(lp.forestFrac*100) + '% Wald';
+        moreRows.push(['🌿 Bewuchs', veg]);
+      }
     }
   }
 
@@ -4980,6 +5118,24 @@ function renderEnhancedPopupRows(pid, gamePrice) {
         break;
       }
     }
+  }
+
+  // OSM proximity rows (lazy-loaded; skip when not yet fetched)
+  const osmRows = [];
+  const osm = G.osmProx[pid];
+  if (osm) {
+    const nm = (n) => n ? ' <span style="color:var(--text-dim)">' + esc(String(n).slice(0,24)) + '</span>' : '';
+    if (osm.dist_road_m != null) osmRows.push(['🛣️ Straße', fmtDist(osm.dist_road_m) + nm(osm.road_name) + (osm.road_on_parcel ? ' <span style="color:var(--text-dim)">(am Grundstück)</span>' : '')]);
+    if (osm.dist_transit_m != null) osmRows.push(['🚌 Öffi', fmtDist(osm.dist_transit_m) + nm(osm.transit_name)]);
+    if (osm.dist_train_station_m != null) osmRows.push(['🚉 Bahnhof', fmtDist(osm.dist_train_station_m) + nm(osm.train_station_name)]);
+    if (osm.dist_water_m != null) osmRows.push(['💧 Gewässer', fmtDist(osm.dist_water_m) + nm(osm.water_name)]);
+    if (osm.dist_settlement_m != null) osmRows.push(['🏘️ Ort', fmtDist(osm.dist_settlement_m) + nm(osm.settlement_name)]);
+    if (osm.remoteness != null) {
+      const r = osm.remoteness;
+      const lbl = r < 20 ? 'zentral' : r < 45 ? 'gut erschlossen' : r < 70 ? 'ländlich' : 'abgelegen';
+      osmRows.push(['🧭 Lage', Math.round(r) + '/100 <span style="color:var(--text-dim)">' + lbl + '</span>']);
+    }
+    for (const row of osmRows) moreRows.push(row);
   }
 
   const renderRows = () => {
@@ -5013,6 +5169,254 @@ function renderEnhancedPopupRows(pid, gamePrice) {
       if (G.sel && G.sel.properties.parcel_id === pid) renderRows();
     });
   }
+
+  // Lazy OSM proximity fetch (first call per KG can be slow upstream — never blocks)
+  if (!(pid in G.osmProx)) {
+    fetchOsmProx(pid).then((o) => {
+      if (o && G.sel && G.sel.properties.parcel_id === pid) renderEnhancedPopupRows(pid, gamePrice);
+    });
+  }
+}
+
+// ================= SIMILAR PARCELS (cadastre R-tree + srtm terrain) =================
+
+/** Fit camera to a bbox with margin; zoom clamped to [13, maxZoom]. */
+function fitBBox(minLon, minLat, maxLon, maxLat, maxZoom) {
+  const cLon = (minLon + maxLon) / 2, cLat = (minLat + maxLat) / 2;
+  const spanLon = Math.max(maxLon - minLon, 1e-5) * 1.25;
+  const spanLat = Math.max(maxLat - minLat, 1e-5) * 1.25;
+  const s = Math.min(gc.width / spanLon, gc.height / (spanLat * 1.35));
+  let zoom = Math.log2(s / 25000) + 14;
+  zoom = Math.max(13, Math.min(maxZoom || 20, zoom));
+  flyTo(cLon, cLat, zoom);
+}
+
+function similarQueryFor(f) {
+  const p = f.properties;
+  const pLon = p.lon || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[0] : f.geometry.coordinates[0]);
+  const pLat = p.lat || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[1] : f.geometry.coordinates[1]);
+  return { pid: p.parcel_id, pLon, pLat, params: new URLSearchParams({
+    parcel_id: p.parcel_id, lon: pLon, lat: pLat,
+    area: p.area_sqm || 0,
+    bcount: p.building_count || 0,
+    barea: p.total_building_area_sqm || 0,
+  })};
+}
+
+async function fetchSimilar(f, radius) {
+  const { pid, params } = similarQueryFor(f);
+  const key = pid + ':' + radius;
+  if (G.similarCache[key]) return G.similarCache[key];
+  params.set('radius', radius);
+  const d = await GET('/api/similar?' + params.toString());
+  if (d && !d.error && d.results) G.similarCache[key] = d;
+  return d;
+}
+
+function similarBtnLabel(pid) {
+  const cached = G.similarCache[pid + ':' + G.similarRadius];
+  const n = cached ? ' (' + cached.results.length + ')' : '';
+  return '🔍 Ähnliche Parzellen' + n;
+}
+
+/** Background-prefetch the similar count for the popup button label. Only for
+ *  fast radii (≤10km) — 20/50km can take many seconds cold, don't waste that. */
+function prefetchSimilarCount(pid) {
+  const btn = document.getElementById('pp-similar-btn');
+  if (btn) btn.textContent = similarBtnLabel(pid);
+  if (G.similarRadius > 10000) return;
+  const key = pid + ':' + G.similarRadius;
+  if (G.similarCache[key] || !G.sel || G.sel.properties.parcel_id !== pid) return;
+  fetchSimilar(G.sel, G.similarRadius).then(() => {
+    if (G.sel && G.sel.properties.parcel_id === pid) {
+      const b = document.getElementById('pp-similar-btn');
+      if (b && !b.disabled) b.textContent = similarBtnLabel(pid);
+    }
+  }).catch(()=>{});
+}
+
+window.setSimilarRadius = function setSimilarRadius(r) {
+  G.similarRadius = r;
+  const span = document.getElementById('pp-similar-radius');
+  if (span) for (const b of span.querySelectorAll('.sim-r')) b.classList.toggle('on', b.textContent === String(r/1000));
+  if (G.sel) prefetchSimilarCount(G.sel.properties.parcel_id);
+  // If an overlay for this parcel is showing, re-run with the new radius
+  if (G.similar && G.sel && G.similar.refPid === G.sel.properties.parcel_id) findSimilarParcels();
+};
+
+window.findSimilarParcels = async function findSimilarParcels() {
+  if (!G.sel) return;
+  const f = G.sel;
+  const { pid, pLon, pLat } = similarQueryFor(f);
+  const radius = G.similarRadius;
+  const km = radius / 1000 + ' km';
+  const btn = document.getElementById('pp-similar-btn');
+  if (btn) { btn.disabled = true; btn.textContent = radius > 10000 ? '⏳ Suche… (' + km + ', dauert etwas)' : '⏳ Suche ähnliche Parzellen…'; }
+  G.similar = null; render();
+  try {
+    const d = await fetchSimilar(f, radius);
+    if (!d || d.error || !d.results) throw new Error(d && d.error || 'no results');
+    if (d.results.length === 0) {
+      toast('🔍 Keine ähnlichen Parzellen im Umkreis von ' + km + ' gefunden', 'err');
+      return;
+    }
+    G.similar = { refPid: pid, refLon: pLon, refLat: pLat, data: d };
+    const chip = document.getElementById('btn-similar-clear');
+    if (chip) chip.style.display = '';
+    // Zoom out to fit all results + reference
+    let minLon = pLon, maxLon = pLon, minLat = pLat, maxLat = pLat;
+    for (const r of d.results) {
+      minLon = Math.min(minLon, r.lon); maxLon = Math.max(maxLon, r.lon);
+      minLat = Math.min(minLat, r.lat); maxLat = Math.max(maxLat, r.lat);
+    }
+    fitBBox(minLon, minLat, maxLon, maxLat, 16);
+    let msg = '🔍 ' + d.results.length + ' ähnliche Parzellen im Umkreis von ' + km + ' (von ' + (d.candidates || '?') + ' Kandidaten)';
+    if (d.lidar_terms) msg += ' · mit LiDAR-Geländeabgleich ✨';
+    toast(msg, 'ok');
+  } catch(e) {
+    toast('🔍 Ähnlichkeitssuche fehlgeschlagen', 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = similarBtnLabel(pid); }
+  }
+};
+
+window.clearSimilar = function clearSimilar() {
+  G.similar = null;
+  const chip = document.getElementById('btn-similar-clear');
+  if (chip) chip.style.display = 'none';
+  render();
+};
+
+/** Pulsing pixel-art diamond markers for similar-parcel results + gold reference marker. */
+function drawSimilarParcels(ctx) {
+  if (!G.similar) return;
+  const d = G.similar.data;
+  const pulse = 0.75 + Math.sin(Date.now() / 350) * 0.25;
+  const showLabel = G.cam.zoom >= 16;
+
+  // Off-screen results → edge arrows (dedup per border cell so 40 results at
+  // 50 km don't stack). Zoom min is 13 (~8 km viewport), so large radii rely on these.
+  const edgeCells = {};
+  for (const r of d.results) {
+    const [x, y] = toScreen(r.lon, r.lat);
+    if (x < -30 || x > gc.width + 30 || y < -30 || y > gc.height + 30) {
+      // clamp position to screen border (with margin)
+      const m = 22;
+      const cx = gc.width / 2, cy = gc.height / 2;
+      let dx = x - cx, dy = y - cy;
+      const k = Math.min((cx - m) / Math.abs(dx || 1e-9), (cy - m) / Math.abs(dy || 1e-9));
+      const ex = cx + dx * k, ey = cy + dy * k;
+      const cell = Math.round(ex / 60) + ':' + Math.round(ey / 60);
+      if (edgeCells[cell]) { edgeCells[cell].n++; if (r.distance_m < edgeCells[cell].dist) edgeCells[cell].dist = r.distance_m; continue; }
+      edgeCells[cell] = { ex, ey, ang: Math.atan2(dy, dx), n: 1, dist: r.distance_m, score: r.score };
+      continue;
+    }
+    const sc = Math.max(0, Math.min(1, (r.score - 0.5) / 0.5)); // 0.5..1 → 0..1
+    const sz = (7 + sc * 6) * pulse;
+    ctx.globalAlpha = 0.55 + sc * 0.45;
+    // chunky diamond — dark outline + teal fill + bright core
+    ctx.beginPath();
+    ctx.moveTo(x, y - sz); ctx.lineTo(x + sz, y); ctx.lineTo(x, y + sz); ctx.lineTo(x - sz, y); ctx.closePath();
+    ctx.fillStyle = '#0d5c63';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#083b40';
+    ctx.stroke();
+    const isz = sz * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(x, y - isz); ctx.lineTo(x + isz, y); ctx.lineTo(x, y + isz); ctx.lineTo(x - isz, y); ctx.closePath();
+    ctx.fillStyle = sc > 0.6 ? '#4de8dc' : '#2ab5ac';
+    ctx.fill();
+    if (showLabel) {
+      ctx.font = '10px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      const lbl = Math.round(r.score * 100) + '%';
+      ctx.fillStyle = '#062d30';
+      ctx.fillText(lbl, x + 1, y - sz - 5);
+      ctx.fillStyle = '#7ff5eb';
+      ctx.fillText(lbl, x, y - sz - 6);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Edge arrows for off-screen results (tap = fly toward them)
+  G._simEdgeArrows = [];
+  for (const cell in edgeCells) {
+    const a = edgeCells[cell];
+    ctx.save();
+    ctx.translate(a.ex, a.ey);
+    ctx.rotate(a.ang);
+    ctx.globalAlpha = 0.9;
+    // chunky triangle arrow
+    ctx.beginPath();
+    ctx.moveTo(10 * pulse, 0); ctx.lineTo(-6, -8); ctx.lineTo(-6, 8); ctx.closePath();
+    ctx.fillStyle = '#4de8dc';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#083b40';
+    ctx.stroke();
+    ctx.restore();
+    // count + distance label, offset toward screen center
+    const lx = a.ex - Math.cos(a.ang) * 26, ly = a.ey - Math.sin(a.ang) * 26;
+    ctx.font = '9px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    const lbl = (a.n > 1 ? a.n + '× ' : '') + (a.dist >= 1000 ? Math.round(a.dist/1000) + 'km' : Math.round(a.dist) + 'm');
+    ctx.fillStyle = '#062d30';
+    ctx.fillText(lbl, lx + 1, ly + 4);
+    ctx.fillStyle = '#7ff5eb';
+    ctx.fillText(lbl, lx, ly + 3);
+    ctx.globalAlpha = 1;
+    G._simEdgeArrows.push(a);
+  }
+
+  // Reference parcel: gold marker
+  const [rx, ry] = toScreen(G.similar.refLon, G.similar.refLat);
+  if (rx > -30 && rx < gc.width + 30 && ry > -30 && ry < gc.height + 30) {
+    const sz = 11 * pulse;
+    ctx.beginPath();
+    ctx.moveTo(rx, ry - sz); ctx.lineTo(rx + sz, ry); ctx.lineTo(rx, ry + sz); ctx.lineTo(rx - sz, ry); ctx.closePath();
+    ctx.fillStyle = '#8a6a1a';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#4d3a0c';
+    ctx.stroke();
+    const isz = sz * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(rx, ry - isz); ctx.lineTo(rx + isz, ry); ctx.lineTo(rx, ry + isz); ctx.lineTo(rx - isz, ry); ctx.closePath();
+    ctx.fillStyle = '#ffd34d';
+    ctx.fill();
+    if (showLabel) {
+      ctx.font = '10px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#3a2c08';
+      ctx.fillText('REF', rx + 1, ry - sz - 5);
+      ctx.fillStyle = '#ffe9a8';
+      ctx.fillText('REF', rx, ry - sz - 6);
+    }
+  }
+}
+
+/** Tap on a similar-parcel marker: fly there and open its parcel popup. */
+function hitSimilarMarker(x, y) {
+  if (!G.similar) return null;
+  let best = null, bestD = Infinity;
+  for (const r of G.similar.data.results) {
+    const [sx, sy] = toScreen(r.lon, r.lat);
+    const dd = Math.abs(sx - x) + Math.abs(sy - y);
+    if (dd < 22 && dd < bestD) { bestD = dd; best = r; }
+  }
+  return best;
+}
+
+function openSimilarResult(r) {
+  flyTo(r.lon, r.lat, Math.max(G.cam.zoom, 17));
+  const tryOpen = (attempt) => {
+    const f = G.parcelPolys.find(pf => pf.properties.parcel_id === r.parcel_id) ||
+              G.parcels.find(pf => pf.properties.parcel_id === r.parcel_id);
+    if (f) { showParcelPopup(f); return; }
+    if (attempt < 8) setTimeout(() => tryOpen(attempt + 1), 700); // viewport loading will fetch it
+  };
+  setTimeout(() => tryOpen(0), 900);
 }
 
 window.openEZPopup = function openEZPopup(kgCode, ez) {

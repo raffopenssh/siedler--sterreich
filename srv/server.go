@@ -2183,7 +2183,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 	bcount, _ := strconv.Atoi(q.Get("bcount"))
 	barea, _ := strconv.ParseFloat(q.Get("barea"), 64)
 	radius := 5000.0
-	if v, err := strconv.ParseFloat(q.Get("radius"), 64); err == nil && v >= 500 && v <= 20000 {
+	if v, err := strconv.ParseFloat(q.Get("radius"), 64); err == nil && v >= 500 && v <= 50000 {
 		radius = v
 	}
 	limit := 40
@@ -2209,7 +2209,13 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 	if lu != "" {
 		cu += "&landuse=" + url.QueryEscape(lu)
 	}
-	client := &http.Client{Timeout: 12 * time.Second}
+	// Cadastre R-tree latency grows with radius (~0.7s @5km, ~14s @50km cold);
+	// scale the timeout so large-radius searches don't get cut off.
+	clientTimeout := 12 * time.Second
+	if radius > 10000 {
+		clientTimeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: clientTimeout}
 	resp, err := client.Get(cu)
 	if err != nil {
 		jsonErr(w, "cadastre error", 502)

@@ -661,6 +661,50 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .pp-more-btn:hover { color:var(--gold); border-color:var(--gold); }
 #btn-gps.active { background:var(--green); color:#fff; }
+
+/* ---- Similar parcels ---- */
+.similar-row {
+  display:flex; align-items:center; gap:6px; width:100%; margin-top:4px;
+  flex-wrap:wrap;
+}
+.similar-radius {
+  display:inline-flex; align-items:center; gap:2px;
+}
+.similar-radius .sim-r {
+  background:var(--bg); border:2px solid var(--panel-border);
+  color:var(--text-dim); font:8px var(--font-pixel);
+  padding:4px 6px; cursor:pointer; min-width:26px;
+}
+.similar-radius .sim-r.on {
+  border-color:#4de8dc; color:#7ff5eb; background:rgba(8,45,48,0.6);
+}
+.similar-radius .sim-r:hover { border-color:#4de8dc; }
+.similar-radius i { font:14px VT323; font-style:normal; color:var(--text-dim); margin-left:2px; }
+.similar-clear-chip {
+  position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+  background:rgba(8,45,48,0.92); border:2px solid #4de8dc;
+  color:#7ff5eb; font:8px var(--font-pixel);
+  padding:7px 12px; border-radius:3px; z-index:60;
+  cursor:pointer; white-space:nowrap;
+  box-shadow:2px 2px 0 #000;
+}
+.similar-clear-chip:hover { background:rgba(13,92,99,0.95); }
+
+/* ---- Land-cover composition bar (srtm fracs) ---- */
+.fracs-bar {
+  display:flex; height:10px; width:100%;
+  border:1px solid #1a1408; margin:2px 0 3px;
+  image-rendering:pixelated; overflow:hidden;
+}
+.fracs-bar i { display:block; height:100%; }
+.fracs-legend { display:flex; flex-wrap:wrap; gap:2px 8px; font:14px VT323; color:var(--text); }
+.fracs-legend em {
+  font-style:normal; display:inline-flex; align-items:center; gap:3px;
+}
+.fracs-legend em i {
+  display:inline-block; width:8px; height:8px; border:1px solid #1a1408;
+}
+
 #btn-n2k.off { opacity:0.45; }
 @media (max-width:768px) {
   .enhanced-badge { top:52px; font-size:7px; padding:5px 8px; }
