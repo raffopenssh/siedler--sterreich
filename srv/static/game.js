@@ -2479,7 +2479,8 @@ function giantTreeHitBox(t, zoom) {
   return { hw: Math.max(30, dw / 2 + 6), up: Math.max(90, dh + 10), down: 20 };
 }
 
-function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
+function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate) {
+  if (animate === undefined) animate = true;
   const [x, y] = toScreen(t.lon, t.lat);
   const W = gc.width, H = gc.height;
   if (x < -80 || x > W+80 || y < -140 || y > H+80) return;
@@ -2491,7 +2492,10 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
   ctx.beginPath(); ctx.ellipse(x, y+2*s, 9*s, 3.2*s, 0, 0, Math.PI*2); ctx.fill();
   // Per-tree phase so auras/labels don't pulse in sync
   const phase = ((t.lon * 7919 + t.lat * 104729) % 6.283) || 0;
-  const now = Date.now();
+  // When not animating, freeze the clock to a per-tree constant so each sprite
+  // still gets a distinct (but static) sway frame / aura level. `phase*1000`
+  // spreads them across the animation cycles deterministically.
+  const now = animate ? Date.now() : phase * 1000;
   if (isHint) {
     // Hint tree: pulsing golden aura
     const pulse = 0.5 + Math.sin(now/400 + phase) * 0.3;
@@ -2542,6 +2546,36 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
     ctx.fillText(label, x, ly);
     ctx.textAlign = 'left';
   }
+}
+
+/**
+ * How many giant-tree sprites we can afford to animate at once, adapted to the
+ * browser/device: each animated tree redraws a pulsing aura + rotating sweep +
+ * per-frame sprite swap, so on weak hardware we cap it and draw the rest static.
+ * Cached after first call. Honors prefers-reduced-motion, CPU cores, memory,
+ * DPR and a coarse mobile check. Non-animated extras still render (just frozen).
+ */
+let _animBudget = null;
+function giantAnimBudget() {
+  if (_animBudget != null) return _animBudget;
+  let b = 8; // desktop default
+  try {
+    if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      _animBudget = 1; return 1; // accessibility: animate only the single tallest
+    }
+    const cores = navigator.hardwareConcurrency || 4;
+    const mem = navigator.deviceMemory || 4;            // GB, Chromium only
+    const dpr = window.devicePixelRatio || 1;
+    const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+    b = Math.round(cores * 1.5);                         // ~scale with CPU
+    if (mem <= 2) b = Math.min(b, 4);
+    else if (mem <= 4) b = Math.min(b, 8);
+    if (coarse) b = Math.min(b, 6);                      // phones/tablets
+    if (dpr >= 3) b = Math.min(b, 6);                    // lots of pixels to push
+    b = Math.max(3, Math.min(16, b));
+  } catch (e) { b = 8; }
+  _animBudget = b;
+  return b;
 }
 
 // ---- Miracle fog hint: when no giant tree is on screen for a few seconds,
@@ -2631,26 +2665,31 @@ function drawTopLandmarks(ctx) {
   const sway = Math.sin(Date.now() / 1200) * 1.5;
 
   // Giant trees: locked until first treasure; then only the hint tree until tapped.
-  // Always show at least the single tallest hint even when fully zoomed out.
   if (G.tallUnlocked) {
     if (!G.tallRevealed) {
       // Show more hint trees so giants are easier to spot; still at least one
       // when fully zoomed out.
       const n = zoom < 14 ? 3 : 12;
       for (const hint of hintTallTrees(n)) drawGiantTree(ctx, hint, zoom, sway, 1, true);
-    } else if (zoom < 14) {
-      // Zoomed out: show the tallest handful so they stay locatable (>=1)
-      for (const t of hintTallTrees(6)) drawGiantTree(ctx, t, zoom, sway, 1, false);
     } else {
-      // Pop-in animation after reveal (staggered by height rank)
+      // Revealed: show ALL giant trees at every zoom level. To keep frame cost
+      // bounded on weaker devices, only the tallest few (per the device's
+      // animation budget) get the animated aura/sweep/sway; the rest render
+      // static. When only a handful are on screen, animate them all.
       const trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
+      const budget = giantAnimBudget();
       const dt = Date.now() - G.tallRevealAt;
       for (let i = 0; i < trees.length; i++) {
+        // Pop-in animation staggered by height rank (skips off-budget extras).
+        const animate = i < budget;
         const t0 = i * 90;
-        if (dt < t0) continue;
-        const k = Math.min(1, (dt - t0) / 350);
-        const pop = k < 1 ? 0.3 + 0.7 * (1 - (1-k)*(1-k)) * (1 + 0.25*Math.sin(k*Math.PI)) : 1;
-        drawGiantTree(ctx, trees[i], zoom, sway, pop, false);
+        let pop = 1;
+        if (animate) {
+          if (dt < t0) continue;
+          const k = Math.min(1, (dt - t0) / 350);
+          pop = k < 1 ? 0.3 + 0.7 * (1 - (1-k)*(1-k)) * (1 + 0.25*Math.sin(k*Math.PI)) : 1;
+        }
+        drawGiantTree(ctx, trees[i], zoom, sway, pop, false, animate);
       }
     }
     drawTallTreeFogHint(ctx);
