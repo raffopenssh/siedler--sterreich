@@ -2191,7 +2191,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 		limit = v
 	}
 
-	cacheKey := fmt.Sprintf("similar:v2:%s:%s:%.0f:%d", pid, lu, radius, limit)
+	cacheKey := fmt.Sprintf("similar:v3:%s:%s:%.0f:%d", pid, lu, radius, limit)
 	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
@@ -2300,7 +2300,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 		ok                  bool
 	}
 	lidarByPid := map[string]terr{}
-	refKG := pid[:strings.Index(pid, "-")]
+	refKG, _, _ := strings.Cut(pid, "-")
 	ingestSlim := func(data string) {
 		var slim struct {
 			Parcels []struct {
@@ -2513,6 +2513,18 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 		out = append(out, rec)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	// Only keep genuinely similar parcels — without a threshold the result set
+	// always saturates at `limit` (any parcel gets *some* score), so the count
+	// shown in the UI was meaninglessly "always 40".
+	minScore := 0.62
+	cut := len(out)
+	for i, r := range out {
+		if r.Score < minScore {
+			cut = i
+			break
+		}
+	}
+	out = out[:cut]
 	if len(out) > limit {
 		out = out[:limit]
 	}

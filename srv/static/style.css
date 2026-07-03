@@ -375,7 +375,7 @@ input[type=text]:focus { border-color:var(--gold); }
 
 /* Municipality crossing toast */
 .muni-toast {
-  position:absolute; top:56px; left:50%; transform:translateX(-50%); z-index:55;
+  position:absolute; top:96px; left:50%; transform:translateX(-50%); z-index:55;
   display:none; background:var(--panel); border:3px solid var(--gold);
   padding:8px 16px; font:20px var(--font-game); color:var(--text-bright);
   box-shadow:3px 3px 0 #000; white-space:nowrap;
@@ -642,7 +642,7 @@ input[type=text]:focus { border-color:var(--gold); }
 
 /* ---- Enhanced mode ---- */
 .enhanced-badge {
-  position:absolute; top:8px; left:50%; transform:translateX(-50%);
+  position:absolute; top:58px; left:50%; transform:translateX(-50%);
   background:rgba(20,30,15,0.85); border:2px solid var(--gold);
   color:var(--gold); font:8px var(--font-pixel);
   padding:6px 12px; border-radius:3px; z-index:50;
@@ -709,4 +709,21 @@ input[type=text]:focus { border-color:var(--gold); }
 @media (max-width:768px) {
   .enhanced-badge { top:52px; font-size:7px; padding:5px 8px; }
   .pp-enhanced { font-size:16px; }
+  /* Bottom sheet (z200) + parcel popup cover the bottom edge on mobile —
+     park the clear-chip under the enhanced badge instead. */
+  .similar-clear-chip { bottom:auto; top:92px; z-index:210; font-size:7px; padding:6px 10px; }
 }
+
+/* Similarity score breakdown in parcel popup */
+.pp-sim {
+  border-top:1px solid var(--panel-border);
+  margin-top:8px; padding-top:8px;
+}
+.pp-sim .sim-score { color:#4de8dc; }
+.sim-bar {
+  display:inline-block; width:64px; height:8px; vertical-align:middle;
+  background:var(--bg); border:1px solid #083b40; margin-right:5px;
+  image-rendering:pixelated;
+}
+.sim-bar i { display:block; height:100%; background:#2ab5ac; }
+.sim-bar i.hi { background:#4de8dc; }

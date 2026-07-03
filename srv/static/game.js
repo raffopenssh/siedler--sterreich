@@ -1679,6 +1679,8 @@ function updateEnhancedBadge() {
   const el = document.getElementById('enhanced-badge');
   if (!el) return;
   el.style.display = camOverEnhancedKG() ? '' : 'none';
+  // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
+  el.textContent = G.devTree ? '✨ Enhanced Gelände 🌲' : '✨ Enhanced Gelände';
 }
 
 async function loadClaimed() { G.claimed = await GET('/api/session/'+G.session.id+'/parcels') || []; updateParcelCount(); }
@@ -2413,6 +2415,16 @@ function giantTreeSprites() {
 }
 
 /** Draw one giant tree; size scales with real measured height. */
+/** Screen-space hit box of a giant tree sprite — must mirror drawGiantTree's
+ *  scale math so taps anywhere on the visible sprite (incl. canopy) register. */
+function giantTreeHitBox(t, zoom) {
+  const zs = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3));
+  const s = zs * (1.0 + t.height_m / 22);
+  // sprite canvas is 90×126 px, drawn at s*0.55, anchored at base (y)
+  const dw = 90 * s * 0.55, dh = 126 * s * 0.55;
+  return { hw: Math.max(30, dw / 2 + 6), up: Math.max(90, dh + 10), down: 20 };
+}
+
 function drawGiantTree(ctx, t, zoom, sway, pop, isHint) {
   const [x, y] = toScreen(t.lon, t.lat);
   const W = gc.width, H = gc.height;
@@ -4587,8 +4599,25 @@ function initGameInput() {
   // viewport center and fly to it.
   const enhBadge = document.getElementById('enhanced-badge');
   if (enhBadge) {
+    const flyToNearestTree = (unlockMsg) => {
+      const trees = allTallTrees();
+      if (!trees.length) { toast('🌲 Noch keine Riesenbäume geladen …', 'err'); return; }
+      const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
+      let best = null, bd = Infinity;
+      for (const t of trees) {
+        const d = Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540);
+        if (d < bd) { bd = d; best = t; }
+      }
+      G.devTree = best;
+      updateEnhancedBadge();
+      flyTo(best.lon, best.lat, Math.max(G.cam.zoom, 16.5));
+      toast((unlockMsg ? '🔓 Entdeckermodus: ' : '🌲 Nächster Riesenbaum: ') + giantTreeName(best) + ' (' + best.height_m + ' m)' + (unlockMsg ? ' freigeschaltet!' : ''), 'ok');
+      render();
+    };
     let devTaps = 0, devTapAt = 0;
     enhBadge.onclick = () => {
+      // Already unlocked: single tap flies to the giant tree nearest the viewport
+      if (G.devTree) { flyToNearestTree(false); return; }
       const now = Date.now();
       if (now - devTapAt > 2500) devTaps = 0;   // taps must be quick
       devTapAt = now;
@@ -4599,18 +4628,7 @@ function initGameInput() {
         return;
       }
       devTaps = 0;
-      const trees = allTallTrees();
-      if (!trees.length) { toast('🌲 Noch keine Riesenbäume geladen …', 'err'); return; }
-      const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
-      let best = null, bd = Infinity;
-      for (const t of trees) {
-        const d = Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540);
-        if (d < bd) { bd = d; best = t; }
-      }
-      G.devTree = best;
-      flyTo(best.lon, best.lat, Math.max(G.cam.zoom, 16.5));
-      toast('🔓 Entdeckermodus: ' + giantTreeName(best) + ' (' + best.height_m + ' m) freigeschaltet!', 'ok');
-      render();
+      flyToNearestTree(true);
     };
   }
 
@@ -4865,9 +4883,10 @@ function onGameClick(e) {
 
   // Hint giant tree: tapping it reveals ALL giant trees
   if (G.tallUnlocked && !G.tallRevealed) {
-    for (const hint of hintTallTrees(5)) {
+    for (const hint of hintTallTrees(G.cam.zoom < 14 ? 3 : 12)) {
       const [tx, ty] = toScreen(hint.lon, hint.lat);
-      if (Math.abs(tx-x) < 30 && ty-y > -20 && ty-y < 90) {
+      const hb = giantTreeHitBox(hint, G.cam.zoom);
+      if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) {
         G.tallRevealed = true;
         G.tallRevealAt = Date.now();
         const n = allTallTrees().length;
@@ -4881,14 +4900,23 @@ function onGameClick(e) {
   // Revealed giant tree: tap opens info popup with height, age + histogram
   if (G.tallUnlocked && G.tallRevealed) {
     let hitTree = null, hitD = Infinity;
-    for (const t of allTallTrees()) {
+    const treeSet = G.cam.zoom < 14 ? hintTallTrees(6) : allTallTrees();
+    for (const t of treeSet) {
       const [tx, ty] = toScreen(t.lon, t.lat);
-      if (Math.abs(tx-x) < 30 && ty-y > -20 && ty-y < 90) {
-        const d = Math.abs(tx-x) + Math.abs(ty-y-35);
+      const hb = giantTreeHitBox(t, G.cam.zoom);
+      if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) {
+        const d = Math.abs(tx-x) + Math.abs(ty-y - hb.up/2);
         if (d < hitD) { hitD = d; hitTree = t; }
       }
     }
     if (hitTree) { showTreePopup(hitTree); return; }
+  }
+
+  // Dev-mode tree (5-tap badge easter egg) is drawn even before reveal
+  if (G.devTree) {
+    const [tx, ty] = toScreen(G.devTree.lon, G.devTree.lat);
+    const hb = giantTreeHitBox(G.devTree, G.cam.zoom);
+    if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) { showTreePopup(G.devTree); return; }
   }
 
   // Check polygon parcels
@@ -4970,6 +4998,7 @@ function showParcelPopup(f) {
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
   renderEnhancedPopupRows(pid, price);
+  renderSimilarPopupRows(pid);
 
   const act = document.getElementById('pp-actions');
   act.innerHTML = '';
@@ -5284,7 +5313,52 @@ window.clearSimilar = function clearSimilar() {
   G.similar = null;
   const chip = document.getElementById('btn-similar-clear');
   if (chip) chip.style.display = 'none';
+  const simBox = document.getElementById('pp-sim');
+  if (simBox) simBox.style.display = 'none';
   render();
+};
+
+/** Similarity score breakdown in the parcel popup — shown when the selected
+ *  parcel is one of the active similar-search results (or the reference).
+ *  This is the mobile-friendly "score detail": tapping a teal diamond opens
+ *  the parcel popup, which now explains WHY it matched. */
+function renderSimilarPopupRows(pid) {
+  const box = document.getElementById('pp-sim');
+  if (!box) return;
+  box.style.display = 'none';
+  box.innerHTML = '';
+  if (!G.similar) return;
+  if (pid === G.similar.refPid) {
+    box.innerHTML = '<span>🔍 Vergleich</span><b style="color:var(--gold)">Referenzparzelle</b>';
+    box.style.display = '';
+    return;
+  }
+  const r = G.similar.data.results.find(x => x.parcel_id === pid);
+  if (!r) return;
+  const bar = (v) => {
+    const pct = Math.round(Math.max(0, Math.min(1, v)) * 100);
+    return '<span class="sim-bar"><i class="' + (v > 0.75 ? 'hi' : '') + '" style="width:' + pct + '%"></i></span>' + pct + '%';
+  };
+  const labels = { size:'📏 Größe', landuse:'🌾 Nutzung', building:'🏗️ Bebauung', terrain:'⛰️ Gelände', composition:'🌿 Bewuchs' };
+  let html = '<span>🔍 Ähnlichkeit</span><b class="sim-score">' + Math.round(r.score * 100) + '% · ' + fmtDist(r.distance_m) + ' entfernt</b>';
+  const order = ['size','landuse','building','terrain','composition'];
+  for (const k of order) {
+    if (r.parts && r.parts[k] != null) html += '<span>' + labels[k] + '</span><b>' + bar(r.parts[k]) + '</b>';
+  }
+  html += '<span></span><b style="font:14px VT323;color:var(--text-dim)"><a href="#" onclick="flyToSimilarRef();return false" style="color:var(--gold)">→ zur Referenzparzelle</a></b>';
+  box.innerHTML = html;
+  box.style.display = '';
+}
+
+window.flyToSimilarRef = function flyToSimilarRef() {
+  if (!G.similar) return;
+  flyTo(G.similar.refLon, G.similar.refLat, Math.max(G.cam.zoom, 17));
+  const pid = G.similar.refPid;
+  setTimeout(() => {
+    const f = G.parcelPolys.find(pf => pf.properties.parcel_id === pid) ||
+              G.parcels.find(pf => pf.properties.parcel_id === pid);
+    if (f) showParcelPopup(f);
+  }, 700);
 };
 
 /** Pulsing pixel-art diamond markers for similar-parcel results + gold reference marker. */
