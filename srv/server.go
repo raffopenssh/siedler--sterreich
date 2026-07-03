@@ -37,8 +37,8 @@ type Server struct {
 	Q            *dbgen.Queries
 
 	// SSE connections for real-time updates
-	sseClients   map[string]map[chan string]bool // session_id -> set of channels
-	sseMu        sync.RWMutex
+	sseClients map[string]map[chan string]bool // session_id -> set of channels
+	sseMu      sync.RWMutex
 }
 
 func New(dbPath, hostname string) (*Server, error) {
@@ -494,18 +494,18 @@ func (s *Server) handleGetBiodiversity(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID string  `json:"session_id"`
-		PlayerID  string  `json:"player_id"`
-		ParcelID  string  `json:"parcel_id"`
-		KgCode    string  `json:"kg_code"`
-		Gnr       string  `json:"gnr"`
-		Ez        string  `json:"ez"`
-		AreaSqm            float64 `json:"area_sqm"`
-		Landuse            string  `json:"landuse"`
-		BuildingCount      int     `json:"building_count"`
-		TotalBuildingArea  float64 `json:"total_building_area"`
-		TallTreeCount      int     `json:"tall_tree_count"`
-		TallTreeMaxH       float64 `json:"tall_tree_max_h"`
+		SessionID         string  `json:"session_id"`
+		PlayerID          string  `json:"player_id"`
+		ParcelID          string  `json:"parcel_id"`
+		KgCode            string  `json:"kg_code"`
+		Gnr               string  `json:"gnr"`
+		Ez                string  `json:"ez"`
+		AreaSqm           float64 `json:"area_sqm"`
+		Landuse           string  `json:"landuse"`
+		BuildingCount     int     `json:"building_count"`
+		TotalBuildingArea float64 `json:"total_building_area"`
+		TallTreeCount     int     `json:"tall_tree_count"`
+		TallTreeMaxH      float64 `json:"tall_tree_max_h"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -695,12 +695,12 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 
 	updatedPlayer, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
 	jsonResp(w, map[string]any{
-		"success":         true,
-		"claimed_count":   claimed,
-		"total_price":     discountedPrice,
-		"discount":        totalPrice - discountedPrice,
-		"xp_reward":       xpReward,
-		"player":          updatedPlayer,
+		"success":       true,
+		"claimed_count": claimed,
+		"total_price":   discountedPrice,
+		"discount":      totalPrice - discountedPrice,
+		"xp_reward":     xpReward,
+		"player":        updatedPlayer,
 	})
 }
 
@@ -986,10 +986,10 @@ func (s *Server) handleOfferRespond(w http.ResponseWriter, r *http.Request) {
 	})
 
 	jsonResp(w, map[string]any{
-		"success":   true,
-		"action":    "accepted",
-		"buyer":     updatedBuyer,
-		"seller":    seller,
+		"success": true,
+		"action":  "accepted",
+		"buyer":   updatedBuyer,
+		"seller":  seller,
 	})
 }
 
@@ -1695,8 +1695,8 @@ var redListSpecies = []struct {
 func (s *Server) generateTreasures(ctx context.Context, sessionID string, lon, lat float64) {
 	// Generate a mix: some classic coin/xp treasures + species encounters
 	type treasure struct {
-		tType                          string
-		value                          int64
+		tType                                  string
+		value                                  int64
 		speciesName, speciesGerman, speciesCat string
 	}
 	var treasures []treasure
@@ -1909,8 +1909,8 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 	if fr, err := http.Get(lidarAPI + "/flags?kg=" + kg + "&limit=3000"); err == nil {
 		var fd struct {
 			Flags []struct {
-				ObjRef   string `json:"obj_ref"`
-				Severity string `json:"severity"`
+				ObjRef    string `json:"obj_ref"`
+				Severity  string `json:"severity"`
 				Aggregate struct {
 					MaxSeverity string `json:"max_severity"`
 				} `json:"aggregate"`
@@ -2007,14 +2007,14 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 					}
 				}
 				parcels = append(parcels, map[string]any{
-					"parcel_id":         pd["parcel_id"],
-					"elevation_m":       pd["elevation_m"],
-					"elevation_min_m":   pd["elevation_min_m"],
-					"elevation_max_m":   pd["elevation_max_m"],
-					"slope_mean_deg":    pd["slope_mean_deg"],
-					"aspect_dominant":   pd["aspect_dominant"],
-					"terrain_class":     pd["terrain_class"],
-					"dominant_type":     pd["dominant_type"],
+					"parcel_id":       pd["parcel_id"],
+					"elevation_m":     pd["elevation_m"],
+					"elevation_min_m": pd["elevation_min_m"],
+					"elevation_max_m": pd["elevation_max_m"],
+					"slope_mean_deg":  pd["slope_mean_deg"],
+					"aspect_dominant": pd["aspect_dominant"],
+					"terrain_class":   pd["terrain_class"],
+					"dominant_type":   pd["dominant_type"],
 					// Corrected dominant land cover for TERRAIN fill: srtm often
 					// mislabels a parcel's dominant as road/roof (impervious). For
 					// ground coloring we want the dominant *natural* cover, so skip
@@ -2027,7 +2027,7 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 					// {type: fraction} rounded to 2 decimals, tiny slivers dropped.
 					// This 1m-resolution "what is actually ON the parcel" mix is the
 					// strongest similarity signal srtm offers.
-					"fracs":             compactFracs(pd),
+					"fracs": compactFracs(pd),
 				})
 			}
 		}
@@ -2166,6 +2166,7 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 // Finds parcels similar to a reference parcel within radius, combining:
 //   - cadastre /spatial/point (size band + landuse-prefiltered candidates, FAST R-tree)
 //   - cached lidar slim KG data (slope / aspect / elevation / dominant cover)
+//
 // Scores each candidate 0..1 on size, landuse mix, terrain and built density.
 // Fully cached 1h per reference parcel; typical cold latency < 1.5s.
 func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
@@ -2297,9 +2298,9 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 	ingestSlim := func(data string) {
 		var slim struct {
 			Parcels []struct {
-				ParcelID   string   `json:"parcel_id"`
-				Elev       *float64 `json:"elevation_m"`
-				Slope      *float64 `json:"slope_mean_deg"`
+				ParcelID   string             `json:"parcel_id"`
+				Elev       *float64           `json:"elevation_m"`
+				Slope      *float64           `json:"slope_mean_deg"`
 				Aspect     string             `json:"aspect_dominant"`
 				DomTerrain string             `json:"dom_terrain"`
 				ForestFrac *float64           `json:"forested_fraction"`
