@@ -133,6 +133,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/lidar/kg/{code}", s.handleLidarKG)
 	mux.HandleFunc("GET /api/lidar/", s.handleLidarProxy)
 	mux.HandleFunc("GET /api/enhanced-kgs", s.handleEnhancedKGs)
+	mux.HandleFunc("GET /api/similar", s.handleSimilarParcels)
 
 	slog.Info("starting Siedler Österreich", "addr", addr)
 	return http.ListenAndServe(addr, gzipMiddleware(mux))
@@ -1863,6 +1864,45 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cached))
 		return
 	}
+	out, status := s.buildLidarSlim(r.Context(), kg)
+	if status != 200 {
+		jsonErr(w, string(out), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(out)
+}
+
+// compactFracs extracts the parcel's land-cover fraction vector from srtm's
+// area_summary: {type: fraction}, rounded to 2 decimals, entries <2% dropped.
+func compactFracs(pd map[string]any) map[string]float64 {
+	as, ok := pd["area_summary"].(map[string]any)
+	if !ok || len(as) == 0 {
+		return nil
+	}
+	out := map[string]float64{}
+	for t, v := range as {
+		vm, _ := v.(map[string]any)
+		if vm == nil {
+			continue
+		}
+		f, _ := vm["fraction"].(float64)
+		if f < 0.02 {
+			continue
+		}
+		out[t] = math.Round(f*100) / 100
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// buildLidarSlim fetches + slims the KG JSON and stores it in the cache.
+// Returns (payload, 200) or (errMsg, status).
+func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
+	cacheKey := "lidar-slim:/kg/" + kg
 
 	// Fetch flags first (fast) to filter top trees/objects
 	flagged := map[string]bool{} // obj_ref -> true for severity high/critical
@@ -1893,24 +1933,20 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.Get(lidarAPI + "/kg/" + kg)
 	if err != nil {
-		jsonErr(w, "LiDAR API error", 502)
-		return
+		return []byte("LiDAR API error"), 502
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		jsonErr(w, "KG not processed", resp.StatusCode)
-		return
+		return []byte("KG not processed"), resp.StatusCode
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
 	if err != nil {
-		jsonErr(w, "Read error", 502)
-		return
+		return []byte("Read error"), 502
 	}
 
 	var full map[string]any
 	if err := json.Unmarshal(raw, &full); err != nil {
-		jsonErr(w, "Parse error", 500)
-		return
+		return []byte("Parse error"), 500
 	}
 
 	slim := map[string]any{
@@ -1987,6 +2023,11 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 					"dom_terrain":       correctedDomTerrain(pd),
 					"forested_fraction": pd["forested_fraction"],
 					"ndsm_max_m":        pd["ndsm_max_m"],
+					// Compact land-cover composition vector from area_summary:
+					// {type: fraction} rounded to 2 decimals, tiny slivers dropped.
+					// This 1m-resolution "what is actually ON the parcel" mix is the
+					// strongest similarity signal srtm offers.
+					"fracs":             compactFracs(pd),
 				})
 			}
 		}
@@ -2110,15 +2151,388 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 
 	out, err := json.Marshal(slim)
 	if err != nil {
-		jsonErr(w, "Marshal error", 500)
+		return []byte("Marshal error"), 500
+	}
+	s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{
+		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
+	})
+	return out, 200
+}
+
+// ---- Similar parcels ("show all the power" feature) ----
+//
+// GET /api/similar?parcel_id=&lon=&lat=&area=&lu=&bcount=&barea=&radius=5000&limit=40
+//
+// Finds parcels similar to a reference parcel within radius, combining:
+//   - cadastre /spatial/point (size band + landuse-prefiltered candidates, FAST R-tree)
+//   - cached lidar slim KG data (slope / aspect / elevation / dominant cover)
+// Scores each candidate 0..1 on size, landuse mix, terrain and built density.
+// Fully cached 1h per reference parcel; typical cold latency < 1.5s.
+func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	pid := q.Get("parcel_id")
+	lon, _ := strconv.ParseFloat(q.Get("lon"), 64)
+	lat, _ := strconv.ParseFloat(q.Get("lat"), 64)
+	area, _ := strconv.ParseFloat(q.Get("area"), 64)
+	if pid == "" || lon == 0 || lat == 0 || area <= 0 {
+		jsonErr(w, "parcel_id, lon, lat, area required", 400)
 		return
 	}
+	lu := q.Get("lu") // dominant landuse code (e.g. "48") — optional prefilter
+	bcount, _ := strconv.Atoi(q.Get("bcount"))
+	barea, _ := strconv.ParseFloat(q.Get("barea"), 64)
+	radius := 5000.0
+	if v, err := strconv.ParseFloat(q.Get("radius"), 64); err == nil && v >= 500 && v <= 20000 {
+		radius = v
+	}
+	limit := 40
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 200 {
+		limit = v
+	}
+
+	cacheKey := fmt.Sprintf("similar:v2:%s:%s:%.0f:%d", pid, lu, radius, limit)
+	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+	t0 := time.Now()
+
+	// 1. Candidate parcels from the cadastre R-tree: same size band, same dominant
+	// landuse, within radius. attrs_only keeps the payload tiny.
+	minA := area * 0.4
+	maxA := area * 2.5
+	cu := fmt.Sprintf("%s/spatial/point?lon=%.6f&lat=%.6f&radius=%.0f&layer=parcels&attrs_only=true&min_area=%.0f&max_area=%.0f&limit=4000",
+		cadastreAPI, lon, lat, radius, minA, maxA)
+	if lu != "" {
+		cu += "&landuse=" + url.QueryEscape(lu)
+	}
+	client := &http.Client{Timeout: 12 * time.Second}
+	resp, err := client.Get(cu)
+	if err != nil {
+		jsonErr(w, "cadastre error", 502)
+		return
+	}
+	var cres struct {
+		Data struct {
+			Parcels []map[string]any `json:"parcels"`
+		} `json:"data"`
+		Meta struct {
+			Total int `json:"total"`
+		} `json:"meta"`
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
+	resp.Body.Close()
+	if err := json.Unmarshal(body, &cres); err != nil {
+		jsonErr(w, "cadastre parse error", 502)
+		return
+	}
+
+	// 2. Reference landuse mix + built density from the reference row (find it in
+	// candidates, or fall back to query params).
+	type cand struct {
+		row      map[string]any
+		luSet    map[string]bool
+		bc       int
+		ba, area float64
+	}
+	luSetOf := func(row map[string]any) map[string]bool {
+		set := map[string]bool{}
+		if ls, ok := row["landuse_summary"].(map[string]any); ok {
+			for k := range ls {
+				set[k] = true
+			}
+		}
+		return set
+	}
+	var refLU map[string]bool
+	cands := make([]cand, 0, len(cres.Data.Parcels))
+	for _, row := range cres.Data.Parcels {
+		id, _ := row["parcel_id"].(string)
+		a, _ := row["area_sqm"].(float64)
+		bcF, _ := row["building_count"].(float64)
+		baF, _ := row["total_building_area_sqm"].(float64)
+		c := cand{row: row, luSet: luSetOf(row), bc: int(bcF), ba: baF, area: a}
+		if id == pid {
+			refLU = c.luSet
+			continue
+		}
+		cands = append(cands, c)
+	}
+	// The size/landuse-filtered candidate query can miss the reference parcel
+	// itself (filters, dedup) — fetch its row directly so the landuse-mix
+	// Jaccard term always has real reference data. Tiny radius → few ms.
+	if len(refLU) == 0 {
+		ru := fmt.Sprintf("%s/spatial/point?lon=%.6f&lat=%.6f&radius=25&layer=parcels&attrs_only=true&limit=20", cadastreAPI, lon, lat)
+		if rr, err := client.Get(ru); err == nil {
+			var rres struct {
+				Data struct {
+					Parcels []map[string]any `json:"parcels"`
+				} `json:"data"`
+			}
+			rb, _ := io.ReadAll(io.LimitReader(rr.Body, 2<<20))
+			rr.Body.Close()
+			if json.Unmarshal(rb, &rres) == nil {
+				for _, row := range rres.Data.Parcels {
+					if id, _ := row["parcel_id"].(string); id == pid {
+						refLU = luSetOf(row)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Lidar terrain attributes: pull from already-cached slim KG JSONs (never
+	// block on cold KGs — warm them in the background instead).
+	type terr struct {
+		slope, elev, forest float64
+		aspect, dom         string
+		fracs               map[string]float64
+		ok                  bool
+	}
+	lidarByPid := map[string]terr{}
+	refKG := pid[:strings.Index(pid, "-")]
+	ingestSlim := func(data string) {
+		var slim struct {
+			Parcels []struct {
+				ParcelID   string   `json:"parcel_id"`
+				Elev       *float64 `json:"elevation_m"`
+				Slope      *float64 `json:"slope_mean_deg"`
+				Aspect     string             `json:"aspect_dominant"`
+				DomTerrain string             `json:"dom_terrain"`
+				ForestFrac *float64           `json:"forested_fraction"`
+				Fracs      map[string]float64 `json:"fracs"`
+			} `json:"parcels"`
+		}
+		if json.Unmarshal([]byte(data), &slim) != nil {
+			return
+		}
+		for _, p := range slim.Parcels {
+			t := terr{aspect: p.Aspect, dom: p.DomTerrain, fracs: p.Fracs, ok: true}
+			if p.Elev != nil {
+				t.elev = *p.Elev
+			}
+			if p.Slope != nil {
+				t.slope = *p.Slope
+			}
+			if p.ForestFrac != nil {
+				t.forest = *p.ForestFrac
+			}
+			lidarByPid[p.ParcelID] = t
+		}
+	}
+	kgSeen := map[string]bool{}
+	kgOf := func(row map[string]any) string { s, _ := row["kg_code"].(string); return s }
+	allKGs := append([]cand{{row: map[string]any{"kg_code": refKG}}}, cands...)
+	for _, c := range allKGs {
+		kg := kgOf(c.row)
+		if kg == "" || kgSeen[kg] {
+			continue
+		}
+		kgSeen[kg] = true
+		cached, err := s.Q.GetCachedData(r.Context(), "lidar-slim:/kg/"+kg)
+		if err != nil {
+			if kg == refKG {
+				// The srtm terms are the whole point — warm the reference KG
+				// synchronously (bounded) so terrain scoring is available even on
+				// a cold cache. Candidate KGs warm in the background.
+				done := make(chan []byte, 1)
+				go func() {
+					out, st := s.buildLidarSlim(context.Background(), kg)
+					if st == 200 {
+						done <- out
+					} else {
+						done <- nil
+					}
+				}()
+				select {
+				case out := <-done:
+					if out != nil {
+						ingestSlim(string(out))
+					}
+				case <-time.After(3 * time.Second):
+					// keeps warming in background; this request goes cadastre-only
+				}
+			} else {
+				go s.buildLidarSlim(context.Background(), kg)
+			}
+			continue
+		}
+		ingestSlim(cached)
+	}
+	refT, refHasT := lidarByPid[pid]
+
+	// 4. Score candidates.
+	aspectIdx := map[string]int{"N": 0, "NE": 1, "E": 2, "SE": 3, "S": 4, "SW": 5, "W": 6, "NW": 7}
+	scoreOf := func(c cand) (float64, map[string]float64) {
+		parts := map[string]float64{}
+		// size: ratio of smaller/larger
+		sz := math.Min(c.area, area) / math.Max(c.area, area)
+		parts["size"] = sz
+		// landuse mix: Jaccard of landuse_summary keys
+		luS := 0.5
+		if len(refLU) > 0 && len(c.luSet) > 0 {
+			inter, uni := 0, 0
+			seen := map[string]bool{}
+			for k := range refLU {
+				seen[k] = true
+				uni++
+				if c.luSet[k] {
+					inter++
+				}
+			}
+			for k := range c.luSet {
+				if !seen[k] {
+					uni++
+				}
+			}
+			luS = float64(inter) / float64(uni)
+		}
+		parts["landuse"] = luS
+		// built density
+		bld := 1.0
+		refDens := 0.0
+		if area > 0 {
+			refDens = barea / area
+		}
+		cDens := 0.0
+		if c.area > 0 {
+			cDens = c.ba / c.area
+		}
+		switch {
+		case bcount == 0 && c.bc == 0:
+			bld = 1
+		case bcount > 0 && c.bc > 0:
+			bld = 1 - math.Min(1, math.Abs(refDens-cDens)*2.5)
+		default:
+			bld = 0.15
+		}
+		parts["building"] = bld
+		// terrain (only when both sides have lidar)
+		hasTerr := false
+		terrS := 0.0
+		if refHasT {
+			id, _ := c.row["parcel_id"].(string)
+			if ct, ok := lidarByPid[id]; ok {
+				hasTerr = true
+				slopeS := 1 - math.Min(1, math.Abs(refT.slope-ct.slope)/15)
+				elevS := 1 - math.Min(1, math.Abs(refT.elev-ct.elev)/250)
+				aspS := 0.5
+				if ai, ok1 := aspectIdx[refT.aspect]; ok1 {
+					if bi, ok2 := aspectIdx[ct.aspect]; ok2 {
+						d := int(math.Abs(float64(ai - bi)))
+						if d > 4 {
+							d = 8 - d
+						}
+						aspS = 1 - float64(d)/4
+					}
+				}
+				domS := 0.5
+				if refT.dom != "" && ct.dom != "" {
+					if refT.dom == ct.dom {
+						domS = 1
+					} else {
+						domS = 0
+					}
+				}
+				// forested fraction: srtm's 1m canopy measurement — far sharper
+				// than cadastre "Wald" codes
+				forS := 1 - math.Min(1, math.Abs(refT.forest-ct.forest)*1.5)
+				// land-cover composition: histogram intersection of the srtm
+				// area_summary fraction vectors (1m-resolution actual cover).
+				// This tells us more about what the parcel IS than any single
+				// attribute — weight it dominantly when both sides have it.
+				if len(refT.fracs) > 0 && len(ct.fracs) > 0 {
+					compS := 0.0
+					for t, fv := range refT.fracs {
+						compS += math.Min(fv, ct.fracs[t])
+					}
+					parts["composition"] = compS
+					terrS = compS*0.45 + slopeS*0.18 + elevS*0.15 + aspS*0.08 + domS*0.04 + forS*0.1
+				} else {
+					terrS = slopeS*0.28 + elevS*0.24 + aspS*0.12 + domS*0.16 + forS*0.2
+				}
+				parts["terrain"] = terrS
+			}
+		}
+		if hasTerr {
+			return sz*0.28 + luS*0.24 + bld*0.14 + terrS*0.34, parts
+		}
+		return sz*0.42 + luS*0.36 + bld*0.22, parts
+	}
+
+	type scored struct {
+		Score    float64            `json:"score"`
+		Parts    map[string]float64 `json:"parts"`
+		ParcelID string             `json:"parcel_id"`
+		KgCode   string             `json:"kg_code"`
+		Gnr      string             `json:"gnr"`
+		Ez       string             `json:"ez"`
+		Lon      float64            `json:"lon"`
+		Lat      float64            `json:"lat"`
+		AreaSqm  float64            `json:"area_sqm"`
+		DistM    float64            `json:"distance_m"`
+		Slope    *float64           `json:"slope,omitempty"`
+		Elev     *float64           `json:"elev,omitempty"`
+		Aspect   string             `json:"aspect,omitempty"`
+		Forest   *float64           `json:"forest_frac,omitempty"`
+		Dom      string             `json:"dom,omitempty"`
+		Fracs    map[string]float64 `json:"fracs,omitempty"`
+		Landuse  map[string]any     `json:"landuse_summary,omitempty"`
+		BCount   int                `json:"building_count"`
+	}
+	var out []scored
+	for _, c := range cands {
+		sc, parts := scoreOf(c)
+		id, _ := c.row["parcel_id"].(string)
+		kgc, _ := c.row["kg_code"].(string)
+		gnr, _ := c.row["gnr"].(string)
+		ez, _ := c.row["ez"].(string)
+		clon, _ := c.row["lon"].(float64)
+		clat, _ := c.row["lat"].(float64)
+		dm, _ := c.row["distance_m"].(float64)
+		lsum, _ := c.row["landuse_summary"].(map[string]any)
+		rec := scored{Score: math.Round(sc*1000) / 1000, Parts: parts, ParcelID: id, KgCode: kgc,
+			Gnr: gnr, Ez: ez, Lon: clon, Lat: clat, AreaSqm: math.Round(c.area), DistM: math.Round(dm),
+			Landuse: lsum, BCount: c.bc}
+		if t, ok := lidarByPid[id]; ok {
+			sl, el, ff := math.Round(t.slope*10)/10, math.Round(t.elev), math.Round(t.forest*100)/100
+			rec.Slope, rec.Elev, rec.Aspect = &sl, &el, t.aspect
+			rec.Forest, rec.Dom = &ff, t.dom
+			rec.Fracs = t.fracs
+		}
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+
+	respMap := map[string]any{
+		"parcel_id":   pid,
+		"radius_m":    radius,
+		"candidates":  cres.Meta.Total,
+		"scored":      len(cands),
+		"lidar_terms": refHasT,
+		"results":     out,
+		"took_ms":     time.Since(t0).Milliseconds(),
+	}
+	if refHasT {
+		respMap["ref"] = map[string]any{
+			"slope": math.Round(refT.slope*10) / 10, "elev": math.Round(refT.elev),
+			"aspect": refT.aspect, "forest_frac": math.Round(refT.forest*100) / 100,
+			"dom": refT.dom, "fracs": refT.fracs,
+		}
+	}
+	payload, _ := json.Marshal(respMap)
 	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
-		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
+		CacheKey: cacheKey, Data: string(payload), ExpiresAt: time.Now().Add(1 * time.Hour),
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")
-	w.Write(out)
+	w.Write(payload)
 }
 
 // handleEnhancedKGs returns the list of lidar-processed KGs (the "enhanced" set).
