@@ -2979,8 +2979,11 @@ function drawBuildingFootprints(ctx) {
     for (let i=0; i<pts.length; i++) {
       const j = (i+1) % pts.length;
       const ex = pts[j][0]-pts[i][0];
-      // outward normal = (-ey, ex)*wind → normal.y = ex*wind; visible if > 0
-      if (ex * wind <= 0.01) continue;
+      // Screen coords have y down: for a screen-CW ring (sa>0, wind=1) the
+      // interior lies left of each directed edge, so the outward normal is
+      // (ey,-ex)... in practice: a bottom (viewer-facing) edge runs right→left
+      // (ex<0) on a CW ring. Wall visible iff ex*wind < 0.
+      if (ex * wind >= -0.01) continue;
       ctx.moveTo(pts[i][0], pts[i][1]);
       ctx.lineTo(pts[j][0], pts[j][1]);
       ctx.lineTo(pts[j][0], pts[j][1]-roofOff);
