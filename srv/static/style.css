@@ -646,7 +646,8 @@ input[type=text]:focus { border-color:var(--gold); }
   background:rgba(20,30,15,0.85); border:2px solid var(--gold);
   color:var(--gold); font:8px var(--font-pixel);
   padding:6px 12px; border-radius:3px; z-index:50;
-  pointer-events:none; white-space:nowrap;
+  pointer-events:auto; cursor:pointer; user-select:none; -webkit-user-select:none;
+  white-space:nowrap;
   box-shadow:2px 2px 0 #000;
 }
 .pp-enhanced {

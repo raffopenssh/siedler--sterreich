@@ -174,6 +174,7 @@ const G = {
   tallUnlocked: false,      // giant trees unlock after first treasure collected
   tallRevealed: false,      // tapping the hint tree reveals all giant trees
   tallRevealAt: 0,          // timestamp for pop-in animation
+  devTree: null,            // giant tree unlocked via 5-tap "developer mode" on the enhanced badge
   lidarGen: 0,              // bumped when new lidar building data arrives (invalidates footprint matches)
 };
 
@@ -2490,6 +2491,16 @@ function drawTopLandmarks(ctx) {
     drawTallTreeFogHint(ctx);
   }
 
+  // Dev-mode tree (5-tap badge easter egg): always visible once unlocked,
+  // even before treasures/reveal. With GPS active, show distance + bearing
+  // from the player's real position at the tree base.
+  if (G.devTree && !(G.tallUnlocked && G.tallRevealed)) {
+    drawGiantTree(ctx, G.devTree, zoom, sway, 1, false);
+  }
+  if (G.devTree && G.geo.watching && G.geo.lon) {
+    drawGeoDistanceAtTree(ctx, G.devTree);
+  }
+
   if (zoom < 14) return;
 
   if (zoom >= 15.5) {
@@ -2518,6 +2529,43 @@ function drawTopLandmarks(ctx) {
       }
     }
   }
+}
+
+/** Distance + compass bearing from the GPS position, drawn at a giant
+ * tree's base (dev-mode easter egg helper for finding the tree on foot). */
+function drawGeoDistanceAtTree(ctx, t) {
+  const [x, y] = toScreen(t.lon, t.lat);
+  const W = gc.width, H = gc.height;
+  if (x < -100 || x > W+100 || y < -140 || y > H+100) return;
+  const mLon = 111320 * Math.cos(t.lat * Math.PI/180);
+  const dx = (t.lon - G.geo.lon) * mLon;      // east meters
+  const dy = (t.lat - G.geo.lat) * 110540;    // north meters
+  const dist = Math.hypot(dx, dy);
+  const distTxt = dist >= 1000 ? (dist/1000).toFixed(1) + ' km' : Math.round(dist) + ' m';
+  const brg = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360; // 0=N, cw
+  const dirs = ['N','NO','O','SO','S','SW','W','NW'];
+  const dir = dirs[Math.round(brg / 45) % 8];
+  const label = '📍 ' + distTxt + ' ' + dir;
+  ctx.font = '13px VT323, monospace';
+  ctx.textAlign = 'center';
+  const tw = ctx.measureText(label).width;
+  const by = y + 14;
+  ctx.fillStyle = 'rgba(10,18,10,0.8)';
+  ctx.fillRect(x - tw/2 - 14, by - 11, tw + 28, 16);
+  ctx.strokeStyle = '#68d0ff'; ctx.lineWidth = 1;
+  ctx.strokeRect(x - tw/2 - 14, by - 11, tw + 28, 16);
+  ctx.fillStyle = '#aee6ff';
+  ctx.fillText(label, x + 6, by + 2);
+  // Little arrow rotated to the walking bearing (player → tree)
+  ctx.save();
+  ctx.translate(x - tw/2 - 4, by - 3);
+  ctx.rotate(brg * Math.PI / 180);
+  ctx.fillStyle = '#68d0ff';
+  ctx.beginPath();
+  ctx.moveTo(0, -6); ctx.lineTo(4, 4); ctx.lineTo(0, 2); ctx.lineTo(-4, 4);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.textAlign = 'left';
 }
 
 /** Pulsing blue GPS dot + accuracy circle. */
@@ -4435,12 +4483,56 @@ function initGameInput() {
     render();
   };
 
+  // "Developer mode": 5 quick taps on the Enhanced-Gelände badge (like
+  // Android's build-number easter egg) unlock the giant tree nearest to the
+  // viewport center and fly to it.
+  const enhBadge = document.getElementById('enhanced-badge');
+  if (enhBadge) {
+    let devTaps = 0, devTapAt = 0;
+    enhBadge.onclick = () => {
+      const now = Date.now();
+      if (now - devTapAt > 2500) devTaps = 0;   // taps must be quick
+      devTapAt = now;
+      devTaps++;
+      if (devTaps < 5) {
+        const left = 5 - devTaps;
+        if (devTaps >= 2) toast('✨ Noch ' + left + (left === 1 ? ' Tap' : ' Taps') + ' …', '');
+        return;
+      }
+      devTaps = 0;
+      const trees = allTallTrees();
+      if (!trees.length) { toast('🌲 Noch keine Riesenbäume geladen …', 'err'); return; }
+      const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
+      let best = null, bd = Infinity;
+      for (const t of trees) {
+        const d = Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540);
+        if (d < bd) { bd = d; best = t; }
+      }
+      G.devTree = best;
+      flyTo(best.lon, best.lat, Math.max(G.cam.zoom, 16.5));
+      toast('🔓 Entdeckermodus: ' + giantTreeName(best) + ' (' + best.height_m + ' m) freigeschaltet!', 'ok');
+      render();
+    };
+  }
+
   // GPS "show my location" (mobile flagship feature; requires HTTPS)
   if ('geolocation' in navigator) {
     const gpsBtn = document.getElementById('btn-gps');
     gpsBtn.style.display = '';
     gpsBtn.onclick = () => {
       if (G.geo.watching) {
+        // First tap while active: re-center current location (e.g. after manual
+        // pan disabled follow-mode). Only a second tap when already centered
+        // actually turns GPS off.
+        const [gx, gy] = toScreen(G.geo.lon, G.geo.lat);
+        const centered = G.geo.follow && gc &&
+          Math.abs(gx - gc.width/2) < 40 && Math.abs(gy - gc.height/2) < 40;
+        if (!centered && G.geo.lon) {
+          G.geo.follow = true;
+          flyTo(G.geo.lon, G.geo.lat, Math.max(G.cam.zoom, 17));
+          toast('📍 Auf Standort zentriert — nochmal tippen zum Ausschalten', '');
+          return;
+        }
         navigator.geolocation.clearWatch(G.geo.id);
         G.geo.watching = false; G.geo.follow = false; G.geo.id = null;
         gpsBtn.classList.remove('active');
