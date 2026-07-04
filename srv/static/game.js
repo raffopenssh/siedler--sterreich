@@ -2957,12 +2957,16 @@ function drawBuildingFootprints(ctx) {
     const bw = maxX - minX;
     const bh = maxY - minY;
     const area = bw * bh;
+    // Real-world footprint area (m²) — use this for size-based classification
+    // (color, roof type) so decisions are zoom-independent. Screen `area`
+    // above is only for pixel-visibility gates & gradient sizing.
+    const areaM2 = (f.properties && f.properties.area_sqm) || 100;
 
     // Pick roof style based on building size & hash
     const hash = Math.round(coords[0][0] * 100000) ^ Math.round(coords[0][1] * 100000);
     const colorIdx = (Math.abs(hash) % ROOF_COLORS.length);
-    // Large buildings (>600px area) get industrial/slate colors
-    const rc = area > 600 ? ROOF_COLORS[3 + (Math.abs(hash) % 2)] : ROOF_COLORS[colorIdx % 3];
+    // Large buildings (>400m²) get industrial/slate colors
+    const rc = areaM2 > 400 ? ROOF_COLORS[3 + (Math.abs(hash) % 2)] : ROOF_COLORS[colorIdx % 3];
 
     // 3D roof offset scales with building size — or with REAL lidar height when available
     let roofOff = Math.max(2, Math.min(8, Math.sqrt(area) * 0.12));
@@ -2981,7 +2985,7 @@ function drawBuildingFootprints(ctx) {
       roofOff = Math.max(2, Math.min(16, lidarB.stories_est * 3 * zs));
     } else if (enhanced) {
       // Default for unmeasured buildings in enhanced KGs: 1–2 stories by footprint size
-      const defStories = area > 400 ? 2 : 1.5;
+      const defStories = areaM2 > 250 ? 2 : 1.5;
       roofOff = Math.max(2, Math.min(16, defStories * 3 * zs));
     }
 
@@ -3052,7 +3056,7 @@ function drawBuildingFootprints(ctx) {
     // ridge line overshot on merged/terraced blocks). Flat roofs get a
     // lighter top with a parapet inset.
     let roofHint = lidarB && lidarB.roof_type_hint;
-    if (!roofHint) roofHint = area > 900 ? 'flat' : 'pitched';
+    if (!roofHint) roofHint = areaM2 > 600 ? 'flat' : 'pitched';
     const props = f.properties || {};
     const rectangular = props.compactness == null || props.compactness >= 0.55;
     if (zoom >= 15.5 && (bw > 6 || bh > 6)) {
