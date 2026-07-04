@@ -78,7 +78,13 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /static/og-image.png", s.handleOGImage)
 
 	// Static files and main page
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
+	staticFS := http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir)))
+	mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
+		// Force revalidation: without this, mobile browsers heuristically
+		// cache game.js/style.css and serve stale code after deploys.
+		w.Header().Set("Cache-Control", "no-cache")
+		staticFS.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /join/{code}", s.handleIndex) // invite link
 	mux.HandleFunc("GET /rejoin/{token}", s.handleRejoin)
@@ -216,6 +222,7 @@ func readJSON(r *http.Request, v any) error {
 // ---- Index ----
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, filepath.Join(s.StaticDir, "index.html"))
 }
 

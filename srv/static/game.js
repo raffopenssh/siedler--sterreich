@@ -2068,6 +2068,8 @@ const LANDUSE_POLY_COLORS = {
   '96': {fill:'#2888c8', stroke:'#1878b8', a:0.8}, // Gewässer — vivid blue
 };
 const LANDUSE_POLY_DEFAULT = {fill:'#5a8a40', stroke:'#4a7a30'};
+// Compact Verkehrsfläche (farmyard/courtyard, not a road): light gravel
+const LANDUSE_YARD = {fill:'#b0a488', stroke:'#94886c', a:0.7};
 
 function drawLandusePolygons(ctx) {
   const W = gc.width, H = gc.height;
@@ -2075,7 +2077,25 @@ function drawLandusePolygons(ctx) {
     const geom = f.geometry;
     if (!geom) continue;
     const code = f.properties.landuse_code || '';
-    const colors = LANDUSE_POLY_COLORS[code] || LANDUSE_POLY_DEFAULT;
+    let colors = LANDUSE_POLY_COLORS[code] || LANDUSE_POLY_DEFAULT;
+    // Verkehrsfläche (48/90): distinguish real roads (long, thin) from paved
+    // farmyards/courtyards (compact blobs). Compact ones drawn as dark tarmac
+    // read like flat gray buildings — render them as light gravel instead.
+    if (code === '48' || code === '90') {
+      if (f._yard === undefined) {
+        const r0 = (geom.type === 'MultiPolygon' ? geom.coordinates[0] : geom.coordinates)[0];
+        let per = 0;
+        const latm = 111320, lonm = latm * Math.cos(r0[0][1] * Math.PI / 180);
+        for (let i = 1; i < r0.length; i++) {
+          const dx = (r0[i][0] - r0[i-1][0]) * lonm, dy = (r0[i][1] - r0[i-1][1]) * latm;
+          per += Math.sqrt(dx*dx + dy*dy);
+        }
+        const a = f.properties.area_sqm || 0;
+        // isoperimetric compactness: circle=1, roads ≈ <0.1, yards ≈ >0.2
+        f._yard = a > 0 && per > 0 && (4 * Math.PI * a) / (per * per) > 0.22 && a < 20000;
+      }
+      if (f._yard) colors = LANDUSE_YARD;
+    }
     const rings = geom.type === 'MultiPolygon'
       ? geom.coordinates.flatMap(p => p)
       : geom.coordinates;
