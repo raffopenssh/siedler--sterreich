@@ -279,7 +279,6 @@
         <div class="pp-grid">
           <span>Parzelle</span><b id="pp-id">-</b>
           <span>KG</span><b id="pp-kg">-</b>
-          <span id="pp-addr-label" style="display:none">Adresse</span><b id="pp-addr" style="display:none">-</b>
           <span>EZ</span><b id="pp-ez">-</b>
           <span>Fläche</span><b id="pp-area">-</b>
           <span>Nutzung</span><b id="pp-use">-</b>
@@ -287,9 +286,14 @@
           <span>Besitzer</span><b id="pp-owner">-</b>
           <span>Preis</span><b id="pp-price">-</b>
         </div>
-        <div class="pp-bldg" id="pp-bldg" style="display:none"></div>
-        <div class="pp-grid pp-enhanced" id="pp-enhanced" style="display:none"></div>
-        <button class="pp-more-btn" id="pp-more" style="display:none">Mehr ▸</button>
+        <div class="pp-sec" id="pp-sec-bldg" style="display:none">
+          <button class="pp-sec-h" data-sec="bldg">🏚️ Gebäude <i>▸</i></button>
+          <div class="pp-sec-b" id="pp-bldg"></div>
+        </div>
+        <div class="pp-sec" id="pp-sec-env" style="display:none">
+          <button class="pp-sec-h" data-sec="env">⛰️ Gelände &amp; Umgebung <i>▸</i></button>
+          <div class="pp-sec-b"><div class="pp-grid pp-enhanced" id="pp-enhanced"></div></div>
+        </div>
         <div class="pp-grid pp-sim" id="pp-sim" style="display:none"></div>
         <div id="pp-actions" class="pp-actions"></div>
       </div>

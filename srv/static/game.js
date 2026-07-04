@@ -498,33 +498,36 @@ function initPicker() {
     }
   });
 
-  // Search
+  // Search: municipalities + addresses in parallel (race-guarded)
   const inp = document.getElementById('input-search');
   const dd = document.getElementById('search-results');
-  let timer;
+  let timer, seq = 0;
   inp.addEventListener('input', () => {
     clearTimeout(timer);
     const q = inp.value.trim();
     if (q.length < 2) { dd.classList.remove('open'); return; }
     timer = setTimeout(async () => {
-      // Try municipality lookup first, then address
-      const res = await GET(CAD+'/lookup?q='+encodeURIComponent(q)+'&type=gemeinde&limit=10');
-      const items = res.data || [];
-      if (!items.length) {
-        // Try address
-        const addr = await GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=5');
-        const addrItems = addr.data || [];
-        dd.innerHTML = addrItems.map(a =>
-          `<div class="search-item" data-lon="${a.lon}" data-lat="${a.lat}" data-name="${esc(a.display_name)}">
-            ${esc(a.display_name)}<br><small>${a.address?.municipality||''}</small></div>`
-        ).join('') || '<div class="search-item">Keine Ergebnisse</div>';
-      } else {
-        dd.innerHTML = items.map(m =>
-          `<div class="search-item" data-code="${m.code||m.gemeinde_code}" data-name="${esc(m.name||m.gemeinde_name)}">
-            ${esc(m.name||m.gemeinde_name)}<br><small>${m.gemeinde_name!==m.name?m.gemeinde_name+' · ':'' }${m.code||m.gemeinde_code}</small></div>`
-        ).join('');
-      }
+      const mySeq = ++seq;
+      dd.innerHTML = '<div class="search-item"><small>Suche…</small></div>';
       dd.classList.add('open');
+      const [muniRes, addrRes] = await Promise.allSettled([
+        GET(CAD+'/lookup?q='+encodeURIComponent(q)+'&type=gemeinde&limit=6'),
+        GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=4'),
+      ]);
+      if (mySeq !== seq) return; // stale — newer query in flight
+      const munis = muniRes.status==='fulfilled' ? (muniRes.value.data||[]) : [];
+      const addrs = addrRes.status==='fulfilled' ? (addrRes.value.data||[]) : [];
+      let html = munis.map(m => {
+        const enh = G.enhancedGemeinden.some(g => String(g.gemeinde_code) === String(m.code||m.gemeinde_code));
+        return `<div class="search-item" data-code="${m.code||m.gemeinde_code}" data-name="${esc(m.name||m.gemeinde_name)}">
+          🏘️ ${esc(m.name||m.gemeinde_name)}${enh?' <span style="color:#7ee8fa">✨</span>':''}<br><small>${m.gemeinde_name&&m.gemeinde_name!==m.name?esc(m.gemeinde_name)+' · ':''}${m.code||m.gemeinde_code}</small></div>`;
+      }).join('');
+      html += addrs.map((a,i) => {
+        const l = addrLabel(a);
+        return `<div class="search-item" data-lon="${a.lon}" data-lat="${a.lat}" data-name="${esc(l.main)}">
+          📍 ${esc(l.main)}${l.sub?'<br><small>'+esc(l.sub)+'</small>':''}</div>`;
+      }).join('');
+      dd.innerHTML = html || '<div class="search-item">Keine Ergebnisse</div>';
       dd.querySelectorAll('.search-item').forEach(el => {
         el.onclick = () => {
           dd.classList.remove('open');
@@ -536,7 +539,14 @@ function initPicker() {
           }
         };
       });
-    }, 350);
+    }, 300);
+  });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { dd.classList.remove('open'); inp.blur(); }
+    if (e.key === 'Enter') {
+      const first = dd.querySelector('.search-item[data-code],.search-item[data-lon]');
+      if (first) first.click();
+    }
   });
 
   document.getElementById('btn-back-pick').onclick = () => {
@@ -1239,8 +1249,16 @@ async function startGameWithLoading() {
   gt.textContent = G.session.municipality_name;
   gt.classList.add('kg-link');
   gt.title = 'KG-Übersicht anzeigen';
-  gt.onclick = () => {
-    const kg = kgAtCamera() || G.kgsLoaded.values().next().value;
+  gt.onclick = async () => {
+    let kg = kgAtCamera();
+    if (!kg) {
+      // Resolve the KG under the camera via the fast spatial point lookup
+      try {
+        const r = await GET(CAD + '/spatial/point?lon=' + G.cam.lon + '&lat=' + G.cam.lat + '&attrs_only=1&limit=1');
+        kg = r?.data?.parcels?.[0]?.kg_code || null;
+      } catch(e) {}
+    }
+    if (!kg) kg = G.kgsLoaded.values().next().value;
     if (kg) openKGSummary(kg);
     else toast('Noch keine KG-Daten geladen', 'err');
   };
@@ -1975,6 +1993,9 @@ function render() {
 
   // ---- Selected parcel highlight ----
   if (G.sel) drawSelection(ctx, G.sel);
+
+  // ---- Tapped building highlight ----
+  if (G.selFp) drawFpHighlight(ctx, G.selFp);
 
   // Scale bar
   drawScaleBar(ctx, W, H);
@@ -4630,6 +4651,33 @@ function drawSpeciesTreasure(ctx, x, y, t) {
   ctx.restore();
 }
 
+/** Gold pulsing outline around the tapped building footprint. */
+function drawFpHighlight(ctx, fp) {
+  const g = fp.geometry;
+  if (!g || g.type !== 'Polygon') return;
+  const pts = g.coordinates[0].map(c => toScreen(c[0], c[1]));
+  let onScreen = false;
+  for (const pt of pts) {
+    if (pt[0] > -50 && pt[0] < gc.width + 50 && pt[1] > -50 && pt[1] < gc.height + 50) { onScreen = true; break; }
+  }
+  if (!onScreen) return;
+  const pulse = 0.55 + 0.35 * Math.sin(performance.now() / 300);
+  ctx.save();
+  ctx.beginPath();
+  pts.forEach((pt, i) => i === 0 ? ctx.moveTo(pt[0], pt[1]) : ctx.lineTo(pt[0], pt[1]));
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(255,204,64,' + pulse.toFixed(2) + ')';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([5, 3]);
+  ctx.stroke();
+  ctx.restore();
+  // Keep the pulse animating while a building is selected
+  if (!G._fpPulse) {
+    G._fpPulse = true;
+    requestAnimationFrame(() => { G._fpPulse = false; if (G.selFp) render(); });
+  }
+}
+
 function drawEZHighlight(ctx) {
   const key = G.ezHighlight.kg + '-EZ' + G.ezHighlight.ez;
   const parcels = G.ezIndex[key] || [];
@@ -5020,50 +5068,88 @@ function flyTo(lon, lat, zoom) {
 }
 
 // ================= IN-GAME ADDRESS SEARCH =================
+
+/** Short two-line label for an OSM address result. */
+function addrLabel(a) {
+  const ad = a.address || {};
+  const parts = (a.display_name || '').split(', ');
+  // First segment is the most specific (POI/house number/street)
+  let main = parts.slice(0, 2).join(', ');
+  if (ad.road) {
+    main = ad.road + (ad.house_number ? ' ' + ad.house_number : '');
+    if (parts[0] && parts[0] !== ad.road && parts[0] !== ad.house_number) main = parts[0] + ' · ' + main;
+  }
+  const place = ad.municipality || ad.city || ad.town || ad.village || a.nearest_kg?.gemeinde_name || '';
+  const sub = [ad.postcode, place, ad.state].filter(Boolean).join(' · ');
+  return { main: main || a.display_name || '?', sub };
+}
+
+/** Zoom level so the result's bbox fills a sensible part of the screen. */
+function zoomForResult(a) {
+  const b = a.bbox;
+  if (b && b.east > b.west) {
+    const span = Math.max(b.east - b.west, (b.north - b.south) * 1.5, 1e-5);
+    // mapScale: screenpx = spanLon * 2^(z-14)*25000 → solve for z
+    const px = (gc ? gc.width : 900) * 0.7;
+    let z = Math.log2(px / (span * 25000)) + 14;
+    return Math.max(13, Math.min(18.5, z));
+  }
+  // House-number results get closer than street/place results
+  return a.address?.house_number ? 18 : 16.5;
+}
+
 function initGameSearch() {
   const inp = document.getElementById('game-search-input');
   const dd = document.getElementById('game-search-results');
   if (!inp || !dd) return;
-  let timer;
+  let timer, seq = 0, items = [], hi = -1;
+
+  const pick = (a) => {
+    if (!a) return;
+    dd.classList.remove('open');
+    inp.value = addrLabel(a).main;
+    inp.blur();
+    flyTo(parseFloat(a.lon), parseFloat(a.lat), zoomForResult(a));
+  };
+  const renderDD = () => {
+    if (!items.length) { dd.innerHTML = '<div class="search-item"><small>Keine Ergebnisse</small></div>'; return; }
+    dd.innerHTML = items.map((a, i) => {
+      const l = addrLabel(a);
+      return `<div class="search-item${i===hi?' hi':''}" data-idx="${i}">${esc(l.main)}${l.sub?'<br><small>'+esc(l.sub)+'</small>':''}</div>`;
+    }).join('');
+    dd.querySelectorAll('.search-item[data-idx]').forEach(el => {
+      el.onmousedown = e => { e.preventDefault(); pick(items[+el.dataset.idx]); };
+    });
+  };
+
   inp.addEventListener('input', () => {
     clearTimeout(timer);
     const q = inp.value.trim();
-    if (q.length < 2) { dd.classList.remove('open'); return; }
+    if (q.length < 2) { dd.classList.remove('open'); items = []; return; }
     timer = setTimeout(async () => {
+      const mySeq = ++seq;
+      dd.innerHTML = '<div class="search-item"><small>Suche…</small></div>';
+      dd.classList.add('open');
       try {
-        const res = await GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=5');
-        const items = res.data || [];
-        if (!items.length) {
-          dd.innerHTML = '<div class="search-item"><small>Keine Ergebnisse</small></div>';
-        } else {
-          dd.innerHTML = items.map((a,i) =>
-            `<div class="search-item" data-idx="${i}">`+
-            esc(a.display_name)+'<br><small>'+(a.address?.municipality||a.address?.city||a.address?.town||'')+'</small></div>'
-          ).join('');
-          dd.querySelectorAll('.search-item').forEach(el => {
-            el.onclick = () => {
-              const idx = parseInt(el.dataset.idx);
-              const a = items[idx];
-              if (!a) return;
-              dd.classList.remove('open');
-              inp.value = a.display_name || '';
-              inp.blur();
-              flyTo(parseFloat(a.lon), parseFloat(a.lat), 18);
-            };
-          });
-        }
-        dd.classList.add('open');
-      } catch(e) { console.error('Search error:', e); }
-    }, 350);
+        const res = await GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=6');
+        if (mySeq !== seq) return; // stale response — a newer query is in flight
+        items = res.data || [];
+        hi = items.length ? 0 : -1;
+        renderDD();
+      } catch(e) {
+        if (mySeq !== seq) return;
+        dd.innerHTML = '<div class="search-item"><small>Fehler bei der Suche</small></div>';
+      }
+    }, 300);
   });
-  // ESC and blur
   inp.addEventListener('keydown', e => {
-    if (e.key==='Escape') { dd.classList.remove('open'); inp.blur(); }
-    if (e.key==='Enter') {
-      const first = dd.querySelector('.search-item[data-idx]');
-      if (first) first.click();
-    }
+    if (e.key === 'Escape') { dd.classList.remove('open'); inp.blur(); return; }
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); hi = (hi + 1) % items.length; renderDD(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hi = (hi - 1 + items.length) % items.length; renderDD(); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(items[hi >= 0 ? hi : 0]); }
   });
+  inp.addEventListener('focus', () => { if (items.length) dd.classList.add('open'); });
   // Close dropdown on outside click
   document.addEventListener('click', e => {
     if (!e.target.closest('#game-search')) dd.classList.remove('open');
@@ -5251,7 +5337,7 @@ function onGameClick(e) {
   resetPopupPosition('parcel-popup');
   resetPopupPosition('ez-popup');
   resetPopupPosition('tree-popup');
-  G.sel = null; G.ezHighlight = null; render();
+  G.sel = null; G.selFp = null; G.ezHighlight = null; render();
 }
 
 function showParcelPopup(f, tappedFp) {
@@ -5423,16 +5509,29 @@ async function fetchBuildingInfo(fpId, lon, lat) {
 
 const NS_NAMES = {'41':'Baufläche (befestigt)','42':'Gebäude','43':'Keller/Tiefgarage','44':'Ruine','45':'Gewächshaus'};
 
+// ---- Collapsible popup sections (pixel-art headers) ----
+G.ppSec = { bldg: true, env: window.innerWidth >= 768 }; // remembered per session
+function ppSecSync(name) {
+  const sec = document.getElementById('pp-sec-' + name);
+  if (!sec) return;
+  sec.classList.toggle('open', !!G.ppSec[name]);
+}
+document.querySelectorAll('.pp-sec-h').forEach(btn => {
+  btn.onclick = () => {
+    const n = btn.dataset.sec;
+    G.ppSec[n] = !G.ppSec[n];
+    ppSecSync(n);
+  };
+});
+
 /** Render the tapped building's section in the parcel popup.
  *  Instant rows come from data already on the client (footprint metrics from
  *  the viewport payload + lidar height match); addresses arrive lazily. */
 function renderBuildingRows(fp) {
+  const sec = document.getElementById('pp-sec-bldg');
   const box = document.getElementById('pp-bldg');
-  const addrL = document.getElementById('pp-addr-label');
-  const addrV = document.getElementById('pp-addr');
   if (!box) return;
-  addrL.style.display = 'none'; addrV.style.display = 'none';
-  if (!fp) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  if (!fp) { sec.style.display = 'none'; box.innerHTML = ''; return; }
 
   const p = fp.properties || {};
   const fpId = p.footprint_id;
@@ -5461,10 +5560,11 @@ function renderBuildingRows(fp) {
   }
   if (p.orientation_axis) rows.push(['🧭 Ausrichtung', p.orientation_axis]);
 
-  box.innerHTML = '<div class="pp-bldg-title">🏚️ Gebäude</div><div class="pp-grid">' +
+  box.innerHTML = '<div class="pp-grid">' +
     rows.map(([k,v]) => '<span>'+k+'</span><b>'+v+'</b>').join('') +
     '</div><div class="pp-bldg-lazy" id="pp-bldg-lazy"></div>';
-  box.style.display = 'block';
+  sec.style.display = '';
+  ppSecSync('bldg');
 
   // Lazy: addresses + multi-parcel span from the server aggregate
   if (!fpId) return;
@@ -5477,12 +5577,7 @@ function renderBuildingRows(fp) {
     if (!lazy) return;
     let html = '';
     if (info.addresses && info.addresses.length) {
-      // Show first address in the main grid (most useful line)
-      addrV.textContent = info.addresses[0];
-      addrL.style.display = ''; addrV.style.display = '';
-      if (info.addresses.length > 1) {
-        html += '<div class="pp-bldg-addrs">' + info.addresses.slice(1).map(esc).join('<br>') + '</div>';
-      }
+      html += '<div class="pp-bldg-addrs">📫 ' + info.addresses.map(esc).join('<br>📫 ') + '</div>';
     }
     if (info.parcels && info.parcels.length > 1) {
       html += '<div class="pp-bldg-span">⚠️ Gebäude erstreckt sich über ' + info.parcels.length + ' Parzellen</div>';
@@ -5515,7 +5610,7 @@ async function openKGSummary(kg) {
   if (d.buildings != null) rows.push(['Gebäude', d.buildings.toLocaleString('de-AT')]);
   if (d.avg_area_sqm != null) rows.push(['Ø Parzelle', Math.round(d.avg_area_sqm) + ' m²']);
   if (d.elev_min != null && d.elev_max != null) {
-    const tl = {level:'eben', gentle:'sanft', moderate:'mäßig', hilly:'hügelig', steep:'steil', mountainous:'gebirgig', rugged:'schroff'};
+    const tl = {level:'eben', nearly_level:'fast eben', 'nearly level':'fast eben', gentle:'sanft', undulating:'wellig', moderate:'mäßig', hilly:'hügelig', steep:'steil', mountainous:'gebirgig', rugged:'schroff', 'slightly rugged':'leicht schroff'};
     rows.push(['⛰️ Seehöhe', Math.round(d.elev_min) + '–' + Math.round(d.elev_max) + ' m' + (d.terrain_class ? ' · ' + (tl[d.terrain_class]||d.terrain_class) : '')]);
   }
   if (d.tallest_tree_m) rows.push(['🌲 Höchster Baum', d.tallest_tree_m + ' m' + (d.giant_trees ? ' (' + d.giant_trees + ' Riesen)' : '')]);
@@ -5552,11 +5647,10 @@ async function openKGSummary(kg) {
 /** Enhanced-mode rows in the parcel popup: elevation, slope, vegetation, market value, Natura 2000. */
 function renderEnhancedPopupRows(pid, gamePrice) {
   const box = document.getElementById('pp-enhanced');
-  const moreBtn = document.getElementById('pp-more');
+  const sec = document.getElementById('pp-sec-env');
   if (!box) return;
-  const isMobile = window.innerWidth < 768;
-  const rows = [];      // always visible
-  const moreRows = [];  // behind "Mehr ▸" on mobile
+  const rows = [];
+  const moreRows = [];  // secondary rows, rendered after the primary ones
 
   const lp = G.lidarParcels[pid];
   if (lp) {
@@ -5632,9 +5726,8 @@ function renderEnhancedPopupRows(pid, gamePrice) {
   }
 
   const renderRows = () => {
-    const showMore = !isMobile || box.dataset.expanded === '1';
-    const list = showMore ? rows.concat(moreRows) : rows;
-    if (list.length === 0 && !(pid in G.landPrices)) { box.style.display = 'none'; moreBtn.style.display = 'none'; return; }
+    const list = rows.concat(moreRows);
+    if (list.length === 0 && !(pid in G.landPrices)) { sec.style.display = 'none'; return; }
     let html = '';
     for (const [k, v] of list) html += '<span>' + k + '</span><b>' + v + '</b>';
     // Market value row (lazy loaded)
@@ -5643,17 +5736,15 @@ function renderEnhancedPopupRows(pid, gamePrice) {
       const eur = mv.buy_total_eur >= 1e6 ? (mv.buy_total_eur/1e6).toFixed(2) + ' Mio €' : Math.round(mv.buy_total_eur).toLocaleString('de-AT') + ' €';
       const cls = {bauland_built:'Bauland (bebaut)', bauland_zoned:'Bauland', ackerland:'Ackerland', gruenland:'Grünland', wald:'Wald', other:'Sonstig'}[mv.class] || mv.class;
       html += '<span>💶 Marktwert</span><b style="color:var(--gold)">' + eur + ' <span style="color:var(--text-dim)">(' + cls + ')</span></b>';
-      if (showMore && gamePrice > 0) {
+      if (gamePrice > 0) {
         html += '<span></span><b style="color:var(--text-dim);font-size:14px">Spielpreis: ' + gamePrice + '🪙 · ' + Math.round(mv.buy_eur_per_sqm) + ' €/m² echt</b>';
       }
     }
     box.innerHTML = html;
-    box.style.display = html ? '' : 'none';
-    moreBtn.style.display = (isMobile && moreRows.length > 0 && box.dataset.expanded !== '1') ? '' : 'none';
+    sec.style.display = html ? '' : 'none';
+    if (html) ppSecSync('env');
   };
 
-  box.dataset.expanded = '';
-  moreBtn.onclick = () => { box.dataset.expanded = '1'; renderRows(); };
   renderRows();
 
   // Lazy market value fetch (only for enhanced... actually land_prices covers most of AT — always try)

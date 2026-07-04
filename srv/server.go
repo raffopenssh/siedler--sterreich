@@ -2919,14 +2919,29 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 	lk, qr, n2k, leg := <-lCh, <-qCh, <-nCh, <-gCh
 
 	out := map[string]any{"kg_code": kg}
+	foundKG := false
 	if lk != nil {
-		if data, ok := lk["data"].([]any); ok && len(data) > 0 {
-			if d0, ok := data[0].(map[string]any); ok {
-				out["kg_name"] = d0["name"]
-				out["gemeinde_name"] = d0["gemeinde_name"]
-				out["gemeinde_code"] = d0["gemeinde_code"]
+		if data, ok := lk["data"].([]any); ok {
+			// lookup matches gemeinde codes too — only accept the exact KG code.
+			for _, dv := range data {
+				d0, _ := dv.(map[string]any)
+				if d0 == nil {
+					continue
+				}
+				if c, _ := d0["kg_code"].(string); c == kg {
+					out["kg_name"] = d0["name"]
+					out["gemeinde_name"] = d0["gemeinde_name"]
+					out["gemeinde_code"] = d0["gemeinde_code"]
+					foundKG = true
+					break
+				}
 			}
 		}
+	}
+	if !foundKG {
+		// Not a valid KG code (e.g. a Gemeinde code was passed) — don't cache junk.
+		jsonErr(w, "unknown KG code", 404)
+		return
 	}
 	if qr != nil {
 		if st, ok := qr["stats"].(map[string]any); ok {

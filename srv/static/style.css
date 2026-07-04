@@ -150,7 +150,7 @@ input[type=text]:focus { border-color:var(--gold); }
   padding:8px 12px; cursor:pointer; font:20px var(--font-game); color:var(--text);
   border-bottom:1px solid var(--panel-light);
 }
-.search-item:hover { background:var(--panel-light); color:var(--gold); }
+.search-item:hover, .search-item.hi { background:var(--panel-light); color:var(--gold); }
 .search-item small { font-size:16px; color:var(--text-dim); }
 #pick-canvas { flex:1; display:block; cursor:grab; image-rendering:auto; }
 #pick-canvas.dragging { cursor:grabbing; }
@@ -315,10 +315,19 @@ input[type=text]:focus { border-color:var(--gold); }
 #game-title.kg-link { cursor:pointer; text-decoration:underline dotted; }
 #game-title.kg-link:hover { color:#fff; }
 
-/* Building section in the parcel popup */
-.pp-bldg { margin-top:8px; padding-top:8px; border-top:1px solid var(--panel-border); }
-.pp-bldg-title { font:8px var(--font-pixel); color:var(--gold); margin-bottom:4px; }
-.pp-bldg-addrs { font:16px var(--font-game); color:var(--text-dim); margin-top:4px; }
+/* Collapsible sections in the parcel popup */
+.pp-sec { margin-top:8px; border-top:1px solid var(--panel-border); }
+.pp-sec-h {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  width:100%; padding:6px 0 4px; background:none; border:none; cursor:pointer;
+  font:8px var(--font-pixel); color:var(--gold); text-align:left;
+}
+.pp-sec-h:hover { color:#fff; }
+.pp-sec-h i { font-style:normal; transition:transform .15s; color:var(--text-dim); }
+.pp-sec.open .pp-sec-h i { transform:rotate(90deg); }
+.pp-sec-b { display:none; }
+.pp-sec.open .pp-sec-b { display:block; }
+.pp-bldg-addrs { font:18px var(--font-game); color:var(--text-bright); margin-top:4px; }
 .pp-bldg-span { font:16px var(--font-game); color:var(--gold); margin-top:4px; }
 .ez-popup h3 { color:var(--green-light); }
 .pp-ez-link {
@@ -675,16 +684,7 @@ input[type=text]:focus { border-color:var(--gold); }
   white-space:nowrap;
   box-shadow:2px 2px 0 #000;
 }
-.pp-enhanced {
-  border-top:1px solid var(--panel-border);
-  margin-top:8px; padding-top:8px;
-}
-.pp-more-btn {
-  display:block; width:100%; margin-top:6px; padding:4px;
-  background:none; border:1px dashed var(--panel-border);
-  color:var(--text-dim); font:8px var(--font-pixel); cursor:pointer;
-}
-.pp-more-btn:hover { color:var(--gold); border-color:var(--gold); }
+
 #btn-gps.active { background:var(--green); color:#fff; }
 
 /* ---- Similar parcels ---- */
