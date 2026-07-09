@@ -244,6 +244,12 @@ Austrian land register folio grouping parcels under one ownership entry. A farm 
   synchronous=NORMAL set via DSN pragmas (apply to all pooled conns);
   `SetMaxOpenConns(8)`. Hourly `cacheJanitor` prunes expired `api_cache` rows
   (the file once ballooned to 3.2GB of dead cache).
+- All upstream proxy handlers (cadastre, viewport, lidar, lidar-slim,
+  enhanced-kgs, kg-data) dedupe concurrent cache-miss fetches via
+  singleflight (`s.sf`, helper `s.cachedFetch`): N users hitting the same
+  cold key share one upstream request (`X-Cache: MISS-SHARED`). Fetch
+  closures use `context.Background()` so one client disconnect doesn't fail
+  the waiters. Error responses are no longer cached.
 - Static assets: `?v=` query → cached immutable 1y. **Bump the `?v=` version in
   `index.html` whenever game.js/style.css change**, or clients keep old code.
 - systemd service: `/etc/systemd/system/srv.service`

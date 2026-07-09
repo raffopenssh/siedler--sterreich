@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"srv.exe.dev/db"
 	"srv.exe.dev/db/dbgen"
 )
@@ -39,6 +41,54 @@ type Server struct {
 	// SSE connections for real-time updates
 	sseClients map[string]map[chan string]bool // session_id -> set of channels
 	sseMu      sync.RWMutex
+
+	// sf collapses concurrent cache-miss fetches for the same key into a
+	// single upstream request (see cachedFetch).
+	sf singleflight.Group
+}
+
+// cachedFetch serves cacheKey from api_cache if present; on a miss it runs
+// fetch exactly once across all concurrent requests for the same key
+// (singleflight) — the other requests wait and share the result. This
+// prevents N users panning over the same cold tile/KG from triggering N
+// identical multi-second upstream fetches.
+//
+// fetch returns (body, status). status==200 bodies are written as JSON;
+// any other status is passed through as-is with Content-Type JSON. Caching
+// (with the right TTL / conditions) remains the fetch closure's job.
+// fetch must not depend on a single request's context — use
+// context.Background() inside, so one client disconnecting doesn't fail
+// the waiters sharing the flight.
+func (s *Server) cachedFetch(w http.ResponseWriter, cacheKey string, fetch func() ([]byte, int)) {
+	if cached, err := s.Q.GetCachedData(context.Background(), cacheKey); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+	type sfRes struct {
+		body   []byte
+		status int
+	}
+	v, _, shared := s.sf.Do(cacheKey, func() (any, error) {
+		// Another flight may have filled the cache while we queued.
+		if cached, err := s.Q.GetCachedData(context.Background(), cacheKey); err == nil {
+			return sfRes{[]byte(cached), 200}, nil
+		}
+		body, status := fetch()
+		return sfRes{body, status}, nil
+	})
+	res := v.(sfRes)
+	xc := "MISS"
+	if shared {
+		xc = "MISS-SHARED"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", xc)
+	if res.status != 200 {
+		w.WriteHeader(res.status)
+	}
+	w.Write(res.body)
 }
 
 func New(dbPath, hostname string) (*Server, error) {
@@ -251,6 +301,12 @@ func randomID(n int) string {
 func jsonResp(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
+}
+
+// jsonErrBody builds an error body for use inside cachedFetch closures.
+func jsonErrBody(msg string) []byte {
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	return b
 }
 
 func jsonErr(w http.ResponseWriter, msg string, code int) {
@@ -1275,34 +1331,40 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 		pageSize = 200
 	}
 
-	// Get cached full GeoJSON or fetch from upstream
+	// Get cached full GeoJSON or fetch from upstream. Singleflight: concurrent
+	// page requests for the same cold KG share one multi-MB upstream fetch.
 	cacheKey := "/export/geojson?kg=" + kg + "&layers=" + layer
 	var body []byte
 	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
 		body = []byte(cached)
 	} else {
-		url := cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer
-		resp, err := http.Get(url)
-		if err != nil {
-			jsonErr(w, "Cadastre API error", 502)
-			return
-		}
-		defer resp.Body.Close()
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-		if err != nil {
-			jsonErr(w, "Read error", 502)
-			return
-		}
-		// Compact coordinates
-		if compacted, err := compactGeoJSON(raw); err == nil {
-			body = compacted
-		} else {
-			body = raw
-		}
-		expiry := time.Now().Add(1 * time.Hour)
-		s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
-			CacheKey: cacheKey, Data: string(body), ExpiresAt: expiry,
+		v, err, _ := s.sf.Do(cacheKey, func() (any, error) {
+			if cached, err := s.Q.GetCachedData(context.Background(), cacheKey); err == nil {
+				return []byte(cached), nil
+			}
+			resp, err := http.Get(cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer)
+			if err != nil {
+				return nil, fmt.Errorf("cadastre API error")
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+			if err != nil {
+				return nil, fmt.Errorf("read error")
+			}
+			b := raw
+			if compacted, err := compactGeoJSON(raw); err == nil {
+				b = compacted
+			}
+			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
+				CacheKey: cacheKey, Data: string(b), ExpiresAt: time.Now().Add(1 * time.Hour),
+			})
+			return b, nil
 		})
+		if err != nil {
+			jsonErr(w, err.Error(), 502)
+			return
+		}
+		body = v.([]byte)
 	}
 
 	// Parse features and paginate
@@ -1482,13 +1544,14 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 		return strconv.FormatFloat(math.Round(f/0.002)*0.002, 'f', 3, 64)
 	}
 	cacheKey := "viewport:" + qz(west) + "," + qz(south) + "," + qz(east) + "," + qz(north) + "," + limit
-	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		w.Write([]byte(cached))
-		return
-	}
+	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
+		return s.buildViewport(bboxQS, cacheKey)
+	})
+}
 
+// buildViewport fetches parcels+footprints for a bbox, merges them and caches
+// the result (6h) when upstream reports the tile fully warm.
+func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 	// Fetch both layers in parallel.
 	type res struct {
 		body []byte
@@ -1509,8 +1572,7 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 	go func() { fCh <- fetch("/spatial/footprints") }()
 	pr, fr := <-pCh, <-fCh
 	if pr.err != nil || fr.err != nil {
-		jsonErr(w, "Cadastre API error", 502)
-		return
+		return jsonErrBody("Cadastre API error"), 502
 	}
 
 	// Extract the arrays + ready flags, round coords, re-emit as one object.
@@ -1556,13 +1618,11 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 	// Only cache once upstream reports the tile fully warm, so we don't pin a
 	// half-loaded viewport for 6h.
 	if pReady && fReady {
-		s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 			CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
 		})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
-	w.Write(out)
+	return out, 200
 }
 
 func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
@@ -1571,56 +1631,47 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.RawQuery
 	cacheKey := path + "?" + query
 
-	// Check cache
-	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		w.Write([]byte(cached))
-		return
-	}
-
-	url := cadastreAPI + path
-	if query != "" {
-		url += "?" + query
-	}
-
-	resp, err := http.Get(url)
-	if err != nil {
-		jsonErr(w, "Cadastre API error", 502)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max
-	if err != nil {
-		jsonErr(w, "Read error", 502)
-		return
-	}
-
-	// Compact GeoJSON: round coordinates to 6 decimals, minify JSON
-	// This reduces ~1.6MB responses to ~1MB (and ~300KB with gzip)
-	if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/spatial/") {
-		if compacted, err := compactGeoJSON(body); err == nil {
-			body = compacted
+	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
+		url := cadastreAPI + path
+		if query != "" {
+			url += "?" + query
 		}
-	}
 
-	// Cache: KG geometry exports are static → 24h; everything else 1h
-	ttl := 1 * time.Hour
-	if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/osm/geometry") || strings.Contains(path, "/natura2000/") {
-		ttl = 24 * time.Hour
-	}
-	expiry := time.Now().Add(ttl)
-	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
-		CacheKey:  cacheKey,
-		Data:      string(body),
-		ExpiresAt: expiry,
+		resp, err := http.Get(url)
+		if err != nil {
+			return jsonErrBody("Cadastre API error"), 502
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max
+		if err != nil {
+			return jsonErrBody("Read error"), 502
+		}
+
+		// Compact GeoJSON: round coordinates to 6 decimals, minify JSON
+		// This reduces ~1.6MB responses to ~1MB (and ~300KB with gzip)
+		if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/spatial/") {
+			if compacted, err := compactGeoJSON(body); err == nil {
+				body = compacted
+			}
+		}
+
+		// Cache only successful responses (previously error bodies could get
+		// pinned in cache and replayed as 200s for an hour).
+		if resp.StatusCode == 200 {
+			// KG geometry exports are static → 24h; everything else 1h
+			ttl := 1 * time.Hour
+			if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/osm/geometry") || strings.Contains(path, "/natura2000/") {
+				ttl = 24 * time.Hour
+			}
+			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
+				CacheKey:  cacheKey,
+				Data:      string(body),
+				ExpiresAt: time.Now().Add(ttl),
+			})
+		}
+		return body, resp.StatusCode
 	})
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
 }
 
 // compactGeoJSON rounds coordinates to 6 decimal places and minifies JSON.
@@ -1876,36 +1927,27 @@ func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.RawQuery
 	cacheKey := "lidar:" + path + "?" + query
-	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		w.Write([]byte(cached))
-		return
-	}
-	url := lidarAPI + path
-	if query != "" {
-		url += "?" + query
-	}
-	resp, err := http.Get(url)
-	if err != nil {
-		jsonErr(w, "LiDAR API error", 502)
-		return
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
-	if err != nil {
-		jsonErr(w, "Read error", 502)
-		return
-	}
-	if resp.StatusCode == 200 {
-		s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
-			CacheKey: cacheKey, Data: string(body), ExpiresAt: time.Now().Add(1 * time.Hour),
-		})
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
+	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
+		url := lidarAPI + path
+		if query != "" {
+			url += "?" + query
+		}
+		resp, err := http.Get(url)
+		if err != nil {
+			return jsonErrBody("LiDAR API error"), 502
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+		if err != nil {
+			return jsonErrBody("Read error"), 502
+		}
+		if resp.StatusCode == 200 {
+			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
+				CacheKey: cacheKey, Data: string(body), ExpiresAt: time.Now().Add(1 * time.Hour),
+			})
+		}
+		return body, resp.StatusCode
+	})
 }
 
 // imperviousCover are srtm land-cover classes that are frequently the *reported*
@@ -1970,6 +2012,8 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(cached))
 		return
 	}
+	// buildLidarSlim is itself singleflight-wrapped, so concurrent requests
+	// for the same KG share one upstream fetch.
 	out, status := s.buildLidarSlim(r.Context(), kg)
 	if status != 200 {
 		jsonErr(w, string(out), status)
@@ -2006,8 +2050,27 @@ func compactFracs(pd map[string]any) map[string]float64 {
 }
 
 // buildLidarSlim fetches + slims the KG JSON and stores it in the cache.
-// Returns (payload, 200) or (errMsg, status).
+// Returns (payload, 200) or (errMsg, status). Wrapped in singleflight so a
+// handler request and concurrent background warms (handleSimilarParcels)
+// for the same KG share one upstream fetch of the ~4-7MB source JSON.
 func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
+	type sfRes struct {
+		body   []byte
+		status int
+	}
+	v, _, _ := s.sf.Do("lidar-slim2:/kg/"+kg, func() (any, error) {
+		// A parallel flight may have cached it while we queued.
+		if cached, err := s.Q.GetCachedData(context.Background(), "lidar-slim2:/kg/"+kg); err == nil {
+			return sfRes{[]byte(cached), 200}, nil
+		}
+		b, st := s.buildLidarSlimUncached(kg)
+		return sfRes{b, st}, nil
+	})
+	res := v.(sfRes)
+	return res.body, res.status
+}
+
+func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 	cacheKey := "lidar-slim2:/kg/" + kg
 
 	// Fetch flags first (fast) to filter top trees/objects
@@ -2286,7 +2349,7 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 	if err != nil {
 		return []byte("Marshal error"), 500
 	}
-	s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{
+	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
 	})
 	return out, 200
@@ -2691,13 +2754,12 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 // Cached 15 minutes — the lidar service processes more KGs continuously.
 func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
 	cacheKey := "enhanced-kgs:v1"
-	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		w.Write([]byte(cached))
-		return
-	}
+	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
+		return s.buildEnhancedKGs(cacheKey)
+	})
+}
 
+func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	type kgEntry struct {
 		KgCode       string  `json:"kg_code"`
 		KgName       string  `json:"kg_name"`
@@ -2712,8 +2774,7 @@ func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
 		url := fmt.Sprintf("%s/query?bbox=9,46,18,49.5&processed_only=true&limit=1000&offset=%d", lidarAPI, offset)
 		resp, err := http.Get(url)
 		if err != nil {
-			jsonErr(w, "LiDAR API error", 502)
-			return
+			return jsonErrBody("LiDAR API error"), 502
 		}
 		var page struct {
 			Total   int `json:"total"`
@@ -2729,8 +2790,7 @@ func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
 		resp.Body.Close()
 		if err != nil || json.Unmarshal(body, &page) != nil {
-			jsonErr(w, "LiDAR API parse error", 502)
-			return
+			return jsonErrBody("LiDAR API parse error"), 502
 		}
 		for _, res := range page.Results {
 			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat})
@@ -2742,12 +2802,10 @@ func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, _ := json.Marshal(map[string]any{"count": len(all), "kgs": all})
-	s.Q.SetCachedData(r.Context(), dbgen.SetCachedDataParams{
+	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(15 * time.Minute),
 	})
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
-	w.Write(out)
+	return out, 200
 }
 
 // generateN2KTreasures places extra high-value rare-species treasures on parcels
