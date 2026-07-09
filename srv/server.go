@@ -1344,7 +1344,7 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 			}
 			resp, err := http.Get(cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer)
 			if err != nil {
-				return nil, fmt.Errorf("cadastre API error")
+				return nil, fmt.Errorf("data service error")
 			}
 			defer resp.Body.Close()
 			raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
@@ -1458,7 +1458,7 @@ func (s *Server) handleGeometryBatch(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]any{"ids": miss})
 		resp, err := http.Post(cadastreAPI+upstreamPath, "application/json", bytes.NewReader(body))
 		if err != nil {
-			jsonErr(w, "Cadastre API error", 502)
+			jsonErr(w, "data service error", 502)
 			return
 		}
 		defer resp.Body.Close()
@@ -1572,7 +1572,7 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 	go func() { fCh <- fetch("/spatial/footprints") }()
 	pr, fr := <-pCh, <-fCh
 	if pr.err != nil || fr.err != nil {
-		return jsonErrBody("Cadastre API error"), 502
+		return jsonErrBody("data service error"), 502
 	}
 
 	// Extract the arrays + ready flags, round coords, re-emit as one object.
@@ -1628,6 +1628,12 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 	// Strip our prefix and forward to cadastre API
 	path := strings.TrimPrefix(r.URL.Path, "/api/cadastre")
+	// Don't expose upstream meta endpoints (docs, openapi, health) — they
+	// identify the upstream service. The game only needs data endpoints.
+	if strings.HasPrefix(path, "/docs") || strings.HasPrefix(path, "/openapi") || path == "/health" || path == "/" || path == "" {
+		jsonErr(w, "not found", 404)
+		return
+	}
 	query := r.URL.RawQuery
 	cacheKey := path + "?" + query
 
@@ -1639,7 +1645,7 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 
 		resp, err := http.Get(url)
 		if err != nil {
-			return jsonErrBody("Cadastre API error"), 502
+			return jsonErrBody("data service error"), 502
 		}
 		defer resp.Body.Close()
 
@@ -1669,8 +1675,11 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 				Data:      string(body),
 				ExpiresAt: time.Now().Add(ttl),
 			})
+			return body, 200
 		}
-		return body, resp.StatusCode
+		// Don't pass upstream error bodies through — they can leak the
+		// upstream service identity. Generic error, preserve status.
+		return jsonErrBody("upstream error"), resp.StatusCode
 	})
 }
 
@@ -1920,9 +1929,14 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 // Only fast endpoints should be requested (query, flags) — never overlay/elevation.
 func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/lidar")
-	// Block slow endpoints
+	// Block slow endpoints, plus upstream meta endpoints (docs/openapi/health)
+	// that would identify the upstream service.
 	if strings.Contains(path, "/overlay") || strings.Contains(path, "/elevation") || strings.Contains(path, "/dtm") {
 		jsonErr(w, "endpoint too slow for gameplay", 400)
+		return
+	}
+	if strings.HasPrefix(path, "/docs") || strings.HasPrefix(path, "/openapi") || path == "/health" || path == "/" || path == "" {
+		jsonErr(w, "not found", 404)
 		return
 	}
 	query := r.URL.RawQuery
@@ -1934,7 +1948,7 @@ func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err := http.Get(url)
 		if err != nil {
-			return jsonErrBody("LiDAR API error"), 502
+			return jsonErrBody("data service error"), 502
 		}
 		defer resp.Body.Close()
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
@@ -1945,8 +1959,10 @@ func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 				CacheKey: cacheKey, Data: string(body), ExpiresAt: time.Now().Add(1 * time.Hour),
 			})
+			return body, 200
 		}
-		return body, resp.StatusCode
+		// Generic error body — never relay upstream error details.
+		return jsonErrBody("upstream error"), resp.StatusCode
 	})
 }
 
@@ -2102,7 +2118,7 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 
 	resp, err := http.Get(lidarAPI + "/kg/" + kg)
 	if err != nil {
-		return []byte("LiDAR API error"), 502
+		return jsonErrBody("data service error"), 502
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -2414,7 +2430,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: clientTimeout}
 	resp, err := client.Get(cu)
 	if err != nil {
-		jsonErr(w, "cadastre error", 502)
+		jsonErr(w, "data service error", 502)
 		return
 	}
 	var cres struct {
@@ -2428,7 +2444,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
 	resp.Body.Close()
 	if err := json.Unmarshal(body, &cres); err != nil {
-		jsonErr(w, "cadastre parse error", 502)
+		jsonErr(w, "data service parse error", 502)
 		return
 	}
 
@@ -2774,7 +2790,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		url := fmt.Sprintf("%s/query?bbox=9,46,18,49.5&processed_only=true&limit=1000&offset=%d", lidarAPI, offset)
 		resp, err := http.Get(url)
 		if err != nil {
-			return jsonErrBody("LiDAR API error"), 502
+			return jsonErrBody("data service error"), 502
 		}
 		var page struct {
 			Total   int `json:"total"`
@@ -2790,7 +2806,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
 		resp.Body.Close()
 		if err != nil || json.Unmarshal(body, &page) != nil {
-			return jsonErrBody("LiDAR API parse error"), 502
+			return jsonErrBody("data service parse error"), 502
 		}
 		for _, res := range page.Results {
 			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat})
