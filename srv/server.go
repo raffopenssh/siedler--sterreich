@@ -69,7 +69,26 @@ func (s *Server) setUpDatabase(dbPath string) error {
 	return nil
 }
 
+// cacheJanitor periodically deletes expired api_cache rows so the SQLite file
+// doesn't accumulate gigabytes of dead cached API blobs (which slows every
+// table scan and bloats backups). Runs hourly.
+func (s *Server) cacheJanitor() {
+	for {
+		n, err := s.Q.DeleteExpiredCache(context.Background())
+		if err != nil {
+			slog.Warn("cache janitor", "err", err)
+		} else if n > 0 {
+			slog.Info("cache janitor: pruned expired entries", "rows", n)
+			// Return freed pages to the OS-visible free list promptly.
+			s.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+		}
+		time.Sleep(1 * time.Hour)
+	}
+}
+
 func (s *Server) Serve(addr string) error {
+	go s.cacheJanitor()
+
 	mux := http.NewServeMux()
 
 	// SEO / meta
@@ -80,9 +99,15 @@ func (s *Server) Serve(addr string) error {
 	// Static files and main page
 	staticFS := http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir)))
 	mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
-		// Force revalidation: without this, mobile browsers heuristically
-		// cache game.js/style.css and serve stale code after deploys.
-		w.Header().Set("Cache-Control", "no-cache")
+		if r.URL.Query().Get("v") != "" {
+			// Versioned asset (game.js?v=..., style.css?v=...): the URL changes
+			// on deploy, so it's safe to cache forever.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			// Force revalidation: without this, mobile browsers heuristically
+			// cache assets and serve stale code after deploys.
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		staticFS.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /{$}", s.handleIndex)

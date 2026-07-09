@@ -240,7 +240,12 @@ Austrian land register folio grouping parcels under one ownership entry. A farm 
 
 ## Environment
 
-- Go 1.24+, SQLite via modernc.org/sqlite (pure Go)
+- Go 1.24+, SQLite via modernc.org/sqlite (pure Go). WAL + busy_timeout=5s +
+  synchronous=NORMAL set via DSN pragmas (apply to all pooled conns);
+  `SetMaxOpenConns(8)`. Hourly `cacheJanitor` prunes expired `api_cache` rows
+  (the file once ballooned to 3.2GB of dead cache).
+- Static assets: `?v=` query → cached immutable 1y. **Bump the `?v=` version in
+  `index.html` whenever game.js/style.css change**, or clients keep old code.
 - systemd service: `/etc/systemd/system/srv.service`
 - Binary: `./siedler`, DB: `./db.sqlite3`
 - Cadastre API: `https://cadastre-process-api.exe.xyz/api/v1` (docs: `/api/v1/docs/llm.txt`)

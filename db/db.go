@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -19,23 +20,29 @@ import (
 var migrationFS embed.FS
 
 // Open opens an sqlite database and prepares pragmas suitable for a small web app.
+// Pragmas are set via the DSN so they apply to EVERY pooled connection
+// (a plain db.Exec("PRAGMA ...") only configures whichever connection
+// happens to run it).
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := "file:" + path + "?" + strings.Join([]string{
+		"_pragma=journal_mode(WAL)",
+		"_pragma=busy_timeout(5000)",
+		"_pragma=foreign_keys(1)",
+		"_pragma=synchronous(NORMAL)", // safe with WAL, much faster commits
+		"_pragma=cache_size(-64000)",  // 64MB page cache per connection
+		"_pragma=temp_store(MEMORY)",
+	}, "&")
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	// Light pragmas similar
-	if _, err := db.Exec("PRAGMA foreign_keys=ON;"); err != nil {
+	// SQLite allows only one writer; cap connections to avoid SQLITE_BUSY
+	// storms under load while still allowing concurrent readers via WAL.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
+	if err := db.Ping(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=wal;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set WAL: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA busy_timeout=1000;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set busy_timeout: %w", err)
+		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
 	return db, nil
 }

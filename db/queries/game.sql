@@ -99,6 +99,9 @@ SELECT data FROM api_cache WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAM
 INSERT OR REPLACE INTO api_cache (cache_key, data, fetched_at, expires_at)
 VALUES (?, ?, CURRENT_TIMESTAMP, ?);
 
+-- name: DeleteExpiredCache :execrows
+DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP;
+
 -- name: GetSessionBiodiversityPercent :one
 SELECT
     COALESCE(SUM(CASE WHEN converted_to = 'biodiversity' THEN area_sqm ELSE 0 END), 0) as bio_area,
