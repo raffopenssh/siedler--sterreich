@@ -88,7 +88,7 @@ type ParcelOffer struct {
 type Player struct {
 	ID                string    `json:"id"`
 	Name              string    `json:"name"`
-	RejoinToken       string    `json:"rejoin_token"`
+	RejoinToken       string    `json:"-"`
 	MunicipalityCode  *string   `json:"municipality_code"`
 	MunicipalityName  *string   `json:"municipality_name"`
 	Coins             int64     `json:"coins"`

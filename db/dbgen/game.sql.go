@@ -57,7 +57,7 @@ func (q *Queries) ClaimParcel(ctx context.Context, arg ClaimParcelParams) error 
 	return err
 }
 
-const claimTreasure = `-- name: ClaimTreasure :exec
+const claimTreasure = `-- name: ClaimTreasure :execrows
 UPDATE treasures SET found_by = ?, found_at = CURRENT_TIMESTAMP WHERE id = ? AND found_by IS NULL
 `
 
@@ -66,9 +66,12 @@ type ClaimTreasureParams struct {
 	ID      int64   `json:"id"`
 }
 
-func (q *Queries) ClaimTreasure(ctx context.Context, arg ClaimTreasureParams) error {
-	_, err := q.db.ExecContext(ctx, claimTreasure, arg.FoundBy, arg.ID)
-	return err
+func (q *Queries) ClaimTreasure(ctx context.Context, arg ClaimTreasureParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimTreasure, arg.FoundBy, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const completeChallenge = `-- name: CompleteChallenge :exec
@@ -180,7 +183,7 @@ INSERT INTO players (id, name, rejoin_token, coins) VALUES (?, ?, ?, 10000)
 type CreatePlayerParams struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
-	RejoinToken string `json:"rejoin_token"`
+	RejoinToken string `json:"-"`
 }
 
 func (q *Queries) CreatePlayer(ctx context.Context, arg CreatePlayerParams) error {

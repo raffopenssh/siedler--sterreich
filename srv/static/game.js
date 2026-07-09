@@ -135,6 +135,7 @@ const PLAYER_COLORS = ['#e04040','#4080e0','#e0c040','#a040e0','#40e0a0','#e0804
 // ---- Game State ----
 const G = {
   player: null, session: null,
+  playerToken: null,    // rejoin token, sent as X-Player-Token on API calls
   parcels: [],          // from cadastre (point data)
   parcelPolys: [],      // from export/geojson (polygon data for current KGs)
   buildingFootprints: [], // real building footprint polygons from cadastre
@@ -188,6 +189,10 @@ const G = {
 // ---- Helpers ----
 async function api(method, url, body) {
   const opts = { method, headers: {'Content-Type':'application/json'} };
+  // Authenticate as the current player: the server verifies this token
+  // against player_id on every mutating endpoint.
+  const tok = G.playerToken || getUrlParam('rejoin');
+  if (tok) opts.headers['X-Player-Token'] = tok;
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(url, opts);
   return r.json();
@@ -327,7 +332,8 @@ function setUrlParams(obj) {
     const res = await POST('/api/register', {name});
     if (res.error) { err.textContent=res.error; return null; }
     savePlayer(res.player);
-    setUrlParams({rejoin: res.rejoin_url ? res.rejoin_url.split('/').pop() : null});
+    G.playerToken = res.rejoin_token || null;
+    setUrlParams({rejoin: res.rejoin_token || null});
     toast('🎉 Willkommen, ' + res.player.name + '!', 'ok');
     return res.player;
   }

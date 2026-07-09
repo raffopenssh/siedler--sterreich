@@ -12,3 +12,9 @@ sql:
         emit_pointers_for_null_types: true
         json_tags_case_style: "snake"
         sql_package: "database/sql"
+        overrides:
+          # Never serialize the rejoin token: it is the account-takeover
+          # credential and player structs are returned to other players
+          # (session player lists, SSE broadcasts, etc).
+          - column: "players.rejoin_token"
+            go_struct_tag: 'json:"-"'

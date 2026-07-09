@@ -91,7 +91,6 @@ func (s *Server) Serve(addr string) error {
 
 	// Auth API
 	mux.HandleFunc("POST /api/register", s.handleRegister)
-	mux.HandleFunc("POST /api/login", s.handleLogin)
 
 	// Game API
 	mux.HandleFunc("POST /api/session/create", s.handleCreateSession)
@@ -146,7 +145,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/similar", s.handleSimilarParcels)
 
 	slog.Info("starting Siedler Österreich", "addr", addr)
-	return http.ListenAndServe(addr, gzipMiddleware(mux))
+	return http.ListenAndServe(addr, securityHeaders(gzipMiddleware(mux)))
 }
 
 // ---- Gzip Middleware ----
@@ -178,6 +177,16 @@ func (w *gzipResponseWriter) Flush() {
 	}
 }
 
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip gzip for SSE and non-gzip clients
@@ -193,6 +202,20 @@ func gzipMiddleware(next http.Handler) http.Handler {
 }
 
 // ---- Helpers ----
+
+// validKG matches Austrian KG codes (5 digits). Path values are interpolated
+// into upstream URLs and cache keys, so reject anything else.
+func validKG(kg string) bool {
+	if len(kg) != 5 {
+		return false
+	}
+	for _, c := range kg {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 func randomID(n int) string {
 	b := make([]byte, n)
@@ -289,23 +312,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
+// authPlayer authenticates a request as the given player via the
+// X-Player-Token header (the player's rejoin token). Every mutating
+// endpoint that acts on behalf of a player MUST call this — the
+// client-supplied player_id alone is spoofable.
+func (s *Server) authPlayer(r *http.Request, playerID string) (dbgen.Player, bool) {
+	token := r.Header.Get("X-Player-Token")
+	if token == "" || playerID == "" {
+		return dbgen.Player{}, false
 	}
-	if err := readJSON(r, &req); err != nil {
-		jsonErr(w, "invalid request", 400)
-		return
+	p, err := s.Q.GetPlayerByToken(r.Context(), token)
+	if err != nil || p.ID != playerID {
+		return dbgen.Player{}, false
 	}
-	player, err := s.Q.GetPlayerByName(r.Context(), strings.TrimSpace(req.Name))
-	if err != nil {
-		jsonErr(w, "Player not found", 404)
-		return
-	}
-	jsonResp(w, map[string]any{
-		"player":       player,
-		"rejoin_token": player.RejoinToken,
-	})
+	return p, true
 }
 
 // ---- Session Management ----
@@ -321,6 +341,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
+		return
+	}
+
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 
@@ -388,6 +413,11 @@ func (s *Server) handleJoinSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
+		return
+	}
+
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 
@@ -535,10 +565,10 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 	// Calculate price based on area, landuse, and building density
 	price := calculatePrice(req.AreaSqm, req.Landuse, req.BuildingCount, req.TotalBuildingArea)
 
-	// Check player has enough coins
-	player, err := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
-	if err != nil {
-		jsonErr(w, "Player not found", 404)
+	// Authenticate and check player has enough coins
+	player, ok := s.authPlayer(r, req.PlayerID)
+	if !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 	if player.Coins < int64(price) {
@@ -547,7 +577,7 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	landuse := req.Landuse
-	err = s.Q.ClaimParcel(r.Context(), dbgen.ClaimParcelParams{
+	err := s.Q.ClaimParcel(r.Context(), dbgen.ClaimParcelParams{
 		SessionID:     req.SessionID,
 		PlayerID:      req.PlayerID,
 		ParcelID:      req.ParcelID,
@@ -642,10 +672,10 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 	// 20% discount for bulk EZ claim
 	discountedPrice := int(float64(totalPrice) * 0.8)
 
-	// Check player has enough coins
-	player, err := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
-	if err != nil {
-		jsonErr(w, "Player not found", 404)
+	// Authenticate and check player has enough coins
+	player, ok := s.authPlayer(r, req.PlayerID)
+	if !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 	if player.Coins < int64(discountedPrice) {
@@ -727,6 +757,11 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+
 	claim, err := s.Q.GetParcelClaim(r.Context(), dbgen.GetParcelClaimParams{
 		SessionID: req.SessionID,
 		ParcelID:  req.ParcelID,
@@ -775,6 +810,11 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
+		return
+	}
+
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 
@@ -833,8 +873,8 @@ func (s *Server) handleOfferParcel(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "invalid request", 400)
 		return
 	}
-	if req.OfferPrice < 10 {
-		jsonErr(w, "Mindestangebot: 10 Münzen", 400)
+	if req.OfferPrice < 10 || req.OfferPrice > 1_000_000 {
+		jsonErr(w, "Angebot muss zwischen 10 und 1.000.000 Münzen liegen", 400)
 		return
 	}
 
@@ -852,10 +892,10 @@ func (s *Server) handleOfferParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify buyer exists and has enough coins (soft check — coins aren't locked)
-	buyer, err := s.Q.GetPlayerByID(r.Context(), req.BuyerID)
-	if err != nil {
-		jsonErr(w, "Spieler nicht gefunden", 404)
+	// Authenticate buyer and check coins (soft check — coins aren't locked)
+	buyer, ok := s.authPlayer(r, req.BuyerID)
+	if !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 	if buyer.Coins < req.OfferPrice {
@@ -900,6 +940,11 @@ func (s *Server) handleOfferRespond(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
+		return
+	}
+
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
 		return
 	}
 
@@ -1024,11 +1069,18 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.Q.ClaimTreasure(r.Context(), dbgen.ClaimTreasureParams{
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+
+	rows, err := s.Q.ClaimTreasure(r.Context(), dbgen.ClaimTreasureParams{
 		FoundBy: &req.PlayerID,
 		ID:      req.TreasureID,
 	})
-	if err != nil {
+	if err != nil || rows == 0 {
+		// rows==0: treasure doesn't exist or was already claimed (guarded by
+		// "AND found_by IS NULL" in the UPDATE — prevents double-claiming).
 		jsonErr(w, "Treasure already claimed", 409)
 		return
 	}
@@ -1066,6 +1118,11 @@ func (s *Server) handleCompleteChallenge(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+
 	// Get challenge
 	var coins, xp int64
 	var sessionID string
@@ -1096,7 +1153,7 @@ func (s *Server) handleCompleteChallenge(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 	limitStr := r.URL.Query().Get("limit")
 	limit := int64(50)
-	if l, err := strconv.ParseInt(limitStr, 10, 64); err == nil && l > 0 {
+	if l, err := strconv.ParseInt(limitStr, 10, 64); err == nil && l > 0 && l <= 200 {
 		limit = l
 	}
 	msgs, err := s.Q.GetRecentChat(r.Context(), dbgen.GetRecentChatParams{
@@ -1120,10 +1177,20 @@ func (s *Server) handlePostChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	req.Message = strings.TrimSpace(req.Message)
+	if req.Message == "" || len(req.Message) > 500 {
+		jsonErr(w, "Nachricht muss 1-500 Zeichen lang sein", 400)
+		return
+	}
+
 	msg, err := s.Q.CreateChatMessage(r.Context(), dbgen.CreateChatMessageParams{
 		SessionID: r.PathValue("id"),
 		PlayerID:  req.PlayerID,
-		Message:   strings.TrimSpace(req.Message),
+		Message:   req.Message,
 	})
 	if err != nil {
 		jsonErr(w, "Failed to send", 500)
@@ -1172,8 +1239,8 @@ func (s *Server) handleGetPlayerSessions(w http.ResponseWriter, r *http.Request)
 // GET /api/kg/{code}?layer=parcels&page=0&pagesize=200
 // Returns {features: [...], page, pagesize, total, hasMore}
 func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
-	kg := r.PathValue("code")
-	layer := r.URL.Query().Get("layer")
+	kg := url.QueryEscape(r.PathValue("code"))
+	layer := url.QueryEscape(r.URL.Query().Get("layer"))
 	if layer == "" {
 		layer = "parcels"
 	}
@@ -1579,7 +1646,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1868,6 +1934,10 @@ func correctedDomTerrain(pd map[string]any) any {
 // top trees/objects), and caches the slim result for 6h.
 func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 	kg := r.PathValue("code")
+	if !validKG(kg) {
+		jsonErr(w, "invalid kg code", 400)
+		return
+	}
 	cacheKey := "lidar-slim2:/kg/" + kg
 	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -2892,6 +2962,10 @@ func (s *Server) handleBuildingInfo(w http.ResponseWriter, r *http.Request) {
 // fast; result cached 6h (~2KB).
 func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 	kg := r.PathValue("code")
+	if !validKG(kg) {
+		jsonErr(w, "invalid kg code", 400)
+		return
+	}
 	cacheKey := "kg-summary:" + kg
 	if cached, err := s.Q.GetCachedData(r.Context(), cacheKey); err == nil {
 		w.Header().Set("Content-Type", "application/json")

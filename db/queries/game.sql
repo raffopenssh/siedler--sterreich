@@ -80,7 +80,7 @@ INSERT INTO treasures (session_id, lon, lat, treasure_type, value, species_name,
 -- name: GetSessionTreasures :many
 SELECT * FROM treasures WHERE session_id = ? AND found_by IS NULL;
 
--- name: ClaimTreasure :exec
+-- name: ClaimTreasure :execrows
 UPDATE treasures SET found_by = ?, found_at = CURRENT_TIMESTAMP WHERE id = ? AND found_by IS NULL;
 
 -- name: CreateChatMessage :one
