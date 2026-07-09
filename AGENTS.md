@@ -156,8 +156,8 @@ SQLite with sqlc. Key tables:
 ## API Endpoints
 
 ### Auth
-- `POST /api/register` — create player with name
-- `POST /api/login` — find player by name
+- `POST /api/register` — create player with name; returns `rejoin_token` (the only time it's sent)
+- All mutating player endpoints require header `X-Player-Token: <rejoin_token>` matching `player_id` (server: `authPlayer`; client: `api()` helper sends `G.playerToken` or the `rejoin` URL param). `Player.RejoinToken` has `json:"-"` (sqlc override in `db/sqlc.yaml`) so it never leaks via player lists/SSE.
 
 ### Session
 - `POST /api/session/create` — new game session
@@ -231,7 +231,7 @@ Austrian land register folio grouping parcels under one ownership entry. A farm 
 
 ## Known Limitations
 
-- No persistent auth — players identified by localStorage `pid`/`pname` + rejoin token
+- Auth is bearer-token only (rejoin token in URL) — anyone with the rejoin link is the player
 - Parcel polygons only load for KGs visible at zoom; panning loads more incrementally
 - Canvas rendering (no WebGL) — performance drops with very dense urban areas
 - Price calculation is duplicated in Go and JS — keep them in sync
