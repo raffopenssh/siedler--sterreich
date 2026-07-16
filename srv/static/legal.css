@@ -1,0 +1,48 @@
+/* Legal pages (Impressum / Datenschutz) — Siedler Österreich */
+body.legal {
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-game);
+  font-size: 20px;
+  line-height: 1.5;
+}
+.legal-wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+}
+.legal-wrap h1 {
+  font-family: var(--font-pixel);
+  font-size: 18px;
+  color: var(--gold);
+  margin: 24px 0 20px;
+  line-height: 1.6;
+}
+.legal-wrap h2 {
+  font-family: var(--font-pixel);
+  font-size: 11px;
+  color: var(--gold-light);
+  margin: 28px 0 10px;
+  line-height: 1.8;
+}
+.legal-wrap p, .legal-wrap ul { margin: 0 0 12px; }
+.legal-wrap ul { padding-left: 24px; }
+.legal-wrap a { color: var(--green-light); }
+.legal-wrap a:hover { color: var(--gold-light); }
+.legal-back {
+  display: inline-block;
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  color: var(--text-dim);
+  text-decoration: none;
+  margin-bottom: 8px;
+}
+.legal-back:hover { color: var(--gold); }
+.legal-footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 2px solid var(--panel-border);
+  color: var(--text-dim);
+  font-size: 18px;
+}

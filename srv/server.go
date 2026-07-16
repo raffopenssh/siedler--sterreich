@@ -161,6 +161,10 @@ func (s *Server) Serve(addr string) error {
 		staticFS.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /impressum", s.handleLegalPage("impressum.html"))
+	mux.HandleFunc("GET /datenschutz", s.handleLegalPage("datenschutz.html"))
+	mux.HandleFunc("GET /imprint", s.handleLegalPage("imprint.html"))
+	mux.HandleFunc("GET /privacy", s.handleLegalPage("privacy.html"))
 	mux.HandleFunc("GET /join/{code}", s.handleIndex) // invite link
 	mux.HandleFunc("GET /rejoin/{token}", s.handleRejoin)
 
@@ -330,6 +334,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.StaticDir, "index.html"))
 }
 
+// handleLegalPage serves a static legal page (Impressum / Datenschutz).
+func (s *Server) handleLegalPage(file string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFile(w, r, filepath.Join(s.StaticDir, file))
+	}
+}
+
 func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 	player, err := s.Q.GetPlayerByToken(r.Context(), token)
@@ -457,6 +469,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Generate initial treasures
 	s.generateTreasures(r.Context(), sessionID, req.CenterLon, req.CenterLat)
+
+	// Quests for the session creator (joiners get theirs in handleJoinSession)
+	s.generateChallenges(r.Context(), sessionID, req.PlayerID, req.CenterLon, req.CenterLat)
 
 	// Natura-2000 bonus treasures: placed asynchronously (fast API, but don't block session create)
 	go s.generateN2KTreasures(context.Background(), sessionID, req.MunicipalityName)
@@ -1902,11 +1917,12 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 		cType, title, desc string
 		coins, xp          int64
 	}{
-		{"explore", "Erkunde deine Gemeinde", "Claim your first parcel to begin exploring", 100, 50},
-		{"restore", "Naturschützer", "Convert a parcel to biodiversity", 200, 100},
-		{"explore", "Landvermesser", "Claim 5 parcels", 300, 150},
-		{"treasure", "Schatzsucher", "Find a hidden treasure", 150, 75},
-		{"restore", "Waldmeister", "Convert 3 parcels to forest or biodiversity", 500, 250},
+		// Canonical German — translated client-side via the i18n exact dictionary.
+		{"explore", "Erkunde deine Gemeinde", "Kaufe deine erste Parzelle", 100, 50},
+		{"restore", "Naturschützer", "Wandle eine Parzelle in ein Naturschutzgebiet um", 200, 100},
+		{"explore", "Landvermesser", "Kaufe 5 Parzellen", 300, 150},
+		{"treasure", "Schatzsucher", "Finde einen versteckten Schatz", 150, 75},
+		{"restore", "Waldmeister", "Wandle 3 Parzellen in Wald oder Naturschutz um", 500, 250},
 	}
 
 	for _, c := range challenges {

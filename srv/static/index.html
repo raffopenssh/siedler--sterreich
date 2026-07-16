@@ -70,9 +70,10 @@
 }
 </script>
 
-<!-- Fonts & Styles -->
-<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=20260704a">
+<!-- Fonts (self-hosted) & Styles -->
+<link rel="preload" href="/static/fonts/press-start-2p-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/vt323-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/style.css?v=20260716e">
 </head>
 <body>
 <div id="app">
@@ -102,6 +103,14 @@
         <div id="welcome-error" class="error-text"></div>
       </div>
       <div id="quick-rejoin" class="quick-rejoin"></div>
+      <div class="welcome-legal">
+        <span class="legal-note">Alpha · keine Cookies · kein Tracking</span>
+        <nav>
+          <a href="/impressum">Impressum</a> ·
+          <a href="/datenschutz">Datenschutz</a> ·
+          <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener" target="_blank">GitHub</a>
+        </nav>
+      </div>
     </div>
   </div>
 
@@ -336,6 +345,7 @@
   </div>
 </div>
 
-<script src="/static/game.js?v=20260704a"></script>
+<script src="/static/i18n.js?v=20260716e"></script>
+<script src="/static/game.js?v=20260716e"></script>
 </body>
 </html>

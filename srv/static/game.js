@@ -4,6 +4,9 @@
 // ============================================================
 'use strict';
 
+// Fallback if i18n.js failed to load: identity translator.
+if (typeof window.tr !== 'function') window.tr = function(s){ return s; };
+
 const CAD = '/api/cadastre';
 
 // ---- Colors inspired by Settlers IV ----
@@ -284,7 +287,9 @@ function setUrlParams(obj) {
         const banner = document.getElementById('invite-banner');
         const creatorName = invitePreview.creator_name || '???';
         const muniName = invitePreview.session.municipality_name || '';
-        banner.innerHTML = `⚔️ In <b style="color:var(--gold)">${esc(creatorName)}s</b> Spiel` +
+        banner.innerHTML = (window.LANG === 'en'
+          ? `⚔️ Joining <b style="color:var(--gold)">${esc(creatorName)}'s</b> game`
+          : `⚔️ In <b style="color:var(--gold)">${esc(creatorName)}s</b> Spiel`) +
           (muniName ? `<div class="invite-muni">📍 ${esc(muniName)}</div>` : '');
         banner.style.display = 'block';
         document.getElementById('welcome-buttons-normal').style.display = 'none';
@@ -303,7 +308,9 @@ function setUrlParams(obj) {
 
   if (savedPid && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
-      `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b> gespielt — <a onclick="quickLogin()">Weiter ▸</a>`;
+      (window.LANG === 'en'
+        ? `Last played as <b style="color:var(--gold)">${esc(savedName)}</b> — <a onclick="quickLogin()">Continue ▸</a>`
+        : `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b> gespielt — <a onclick="quickLogin()">Weiter ▸</a>`);
   }
 
   // Auto-rejoin: if sid is in URL, go directly to game
@@ -2896,7 +2903,7 @@ function drawGeoDistanceAtTree(ctx, t) {
   const dist = Math.hypot(dx, dy);
   const distTxt = dist >= 1000 ? (dist/1000).toFixed(1) + ' km' : Math.round(dist) + ' m';
   const brg = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360; // 0=N, cw
-  const dirs = ['N','NO','O','SO','S','SW','W','NW'];
+  const dirs = window.LANG === 'en' ? ['N','NE','E','SE','S','SW','W','NW'] : ['N','NO','O','SO','S','SW','W','NW'];
   const dir = dirs[Math.round(brg / 45) % 8];
   const label = '📍 ' + distTxt + ' ' + dir;
   ctx.font = '13px VT323, monospace';
@@ -4945,7 +4952,7 @@ function initGameInput() {
     // Prefer native share sheet on mobile, clipboard otherwise
     if (navigator.share && /Mobi|Android/i.test(navigator.userAgent)) {
       try {
-        await navigator.share({ title: 'Siedler Österreich', text: 'Komm zu mir auf die Karte!', url });
+        await navigator.share({ title: 'Siedler Österreich', text: tr('Komm zu mir auf die Karte!'), url });
         return;
       } catch(e) { if (e.name === 'AbortError') return; /* fall through to clipboard */ }
     }
@@ -4953,7 +4960,7 @@ function initGameInput() {
       await navigator.clipboard.writeText(url);
       toast('🔗 Link zu dieser Ansicht kopiert — einfach weiterschicken!', 'ok');
     } catch(e) {
-      prompt('Link kopieren:', url);
+      prompt(tr('Link kopieren:'), url);
     }
   };
 
@@ -5239,7 +5246,9 @@ let muniToastTimer;
 function showMuniCrossingToast(name) {
   const el = document.getElementById('muni-toast');
   if (!el) return;
-  el.innerHTML = '\uD83D\uDDFA\uFE0F Du verlässt <span class="muni-name">'+esc(G.homeMuni)+'</span> — Parzellen aus <span class="muni-name">'+esc(name)+'</span> werden geladen';
+  el.innerHTML = window.LANG === 'en'
+    ? '\uD83D\uDDFA\uFE0F Leaving <span class="muni-name">'+esc(G.homeMuni)+'</span> — loading parcels from <span class="muni-name">'+esc(name)+'</span>'
+    : '\uD83D\uDDFA\uFE0F Du verlässt <span class="muni-name">'+esc(G.homeMuni)+'</span> — Parzellen aus <span class="muni-name">'+esc(name)+'</span> werden geladen';
   el.classList.add('show');
   clearTimeout(muniToastTimer);
   muniToastTimer = setTimeout(() => el.classList.remove('show'), 5000);

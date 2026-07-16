@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy – Siedler Österreich</title>
+<meta name="robots" content="noindex, follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<link rel="stylesheet" href="/static/style.css?v=20260716e">
+<link rel="stylesheet" href="/static/legal.css?v=20260716e">
+</head>
+<body class="legal">
+<div class="legal-wrap">
+  <a class="legal-back" href="/">◀ Back to the game</a>
+  <h1>Privacy Policy</h1>
+  <p><em><a href="/datenschutz">Deutsche Version</a> — the German version is legally authoritative.</em></p>
+
+  <h2>1. Controller</h2>
+  <p>Raffael Hickisch<br>
+  Goldschlagstraße 23/18<br>
+  1150 Vienna<br>
+  Austria<br>
+  E-mail: <a href="#" class="obf-email" data-label="Show e-mail ▸"></a></p>
+
+  <h2>2. Principle: no personal data, no tracking</h2>
+  <p>Siedler Österreich is built so that no personal data is collected:</p>
+  <ul>
+    <li>No registration with e-mail, name or other identity data — you play
+    under a freely chosen <strong>pseudonym</strong>.</li>
+    <li><strong>No cookies</strong>, no localStorage, no fingerprinting.</li>
+    <li><strong>No analytics or tracking services</strong> (no Google
+    Analytics or similar).</li>
+    <li><strong>No advertising</strong>, no sharing of data with third
+    parties for advertising purposes.</li>
+    <li>Fonts and all other resources are served
+    <strong>from our own server</strong> — no third-party CDNs (e.g. Google
+    Fonts) are embedded.</li>
+  </ul>
+
+  <h2>3. Game data</h2>
+  <p>To run the game, the following <em>non-personal</em> data is stored on
+  the server: your pseudonym, your game state (coins, experience points,
+  claimed parcels, quests, treasures) and chat messages you write within a
+  game session. Please do not enter any personal data in your pseudonym or
+  in the chat.</p>
+  <p>Access to your game state works via a random rejoin link (token in the
+  URL). This link is only shown to you; it is not linked to your person.</p>
+
+  <h2>4. Server logs and hosting</h2>
+  <p>The application itself does not log IP addresses and does not create
+  user profiles. Hosting is provided by exe.dev; at infrastructure level,
+  technical connection data (e.g. IP address, time of request) may briefly
+  arise there to ensure operation. The legal basis is Art. 6(1)(f) GDPR
+  (legitimate interest in secure and functional operation).</p>
+
+  <h2>5. Map data and external services</h2>
+  <p>All map and cadastre data is retrieved via our own server
+  (server-to-server); your IP address is <strong>not</strong> transmitted to
+  the data providers.</p>
+  <p>Some features open external websites in a new tab upon your explicit
+  action (e.g. Google Maps via the corresponding button). The privacy policy
+  of the respective provider only applies once you open it.</p>
+
+  <h2>6. Location data (GPS)</h2>
+  <p>The optional GPS feature uses your browser's location query
+  exclusively <strong>locally on your device</strong> to centre the map.
+  Your location is <strong>not transmitted to the server</strong> and not
+  stored. The feature is only active after your explicit consent in the
+  browser and can be revoked at any time.</p>
+
+  <h2>7. Retention</h2>
+  <p>Game states and chat messages are stored for game operation and may be
+  deleted or reset at any time without notice during the alpha phase.
+  Cached map data is discarded automatically after expiry.</p>
+
+  <h2>8. Your rights</h2>
+  <p>Since no personal data is processed, stored game data can generally not
+  be attributed to your person. Notwithstanding this, under the GDPR you
+  have the right of access (Art. 15), rectification (Art. 16), erasure
+  (Art. 17), restriction of processing (Art. 18), data portability (Art. 20)
+  and objection (Art. 21), as well as the right to lodge a complaint with
+  the Austrian Data Protection Authority
+  (<a href="https://www.dsb.gv.at" rel="noopener">dsb.gv.at</a>).</p>
+  <p>If you wish your game state to be deleted, simply send us your rejoin
+  link or your pseudonym at the e-mail address given above.</p>
+
+  <div class="legal-footer">
+    <a href="/">Home</a> · <a href="/imprint">Imprint</a> ·
+    <a href="/datenschutz">Deutsch</a> ·
+    <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>
+  </div>
+</div>
+<script>
+(function(){
+  var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email').forEach(function(a){
+    a.textContent=a.dataset.label||'Show e-mail ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
+})();
+</script>
+</body>
+</html>

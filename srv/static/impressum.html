@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Impressum – Siedler Österreich</title>
+<meta name="robots" content="noindex, follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<link rel="stylesheet" href="/static/style.css?v=20260716e">
+<link rel="stylesheet" href="/static/legal.css?v=20260716e">
+</head>
+<body class="legal">
+<div class="legal-wrap">
+  <a class="legal-back" href="/">◀ Zurück zum Spiel</a>
+  <h1>Impressum</h1>
+  <p><em><a href="/imprint">English version</a></em></p>
+
+  <h2>Angaben gemäß § 25 MedienG und § 5 ECG</h2>
+  <p><strong>Medieninhaber und Herausgeber:</strong></p>
+  <p>Raffael Hickisch<br>
+  Goldschlagstraße 23/18<br>
+  1150 Wien<br>
+  Österreich</p>
+
+  <p><strong>Kontakt:</strong><br>
+  E-Mail: <a href="#" class="obf-email"></a></p>
+
+  <h2>Grundlegende Richtung</h2>
+  <p>Siedler Österreich ist ein nicht-kommerzielles Browserspiel in der
+  Alpha-Phase. Es dient der spielerischen Erkundung öffentlicher
+  österreichischer Katasterdaten und der Sensibilisierung für Naturschutz
+  und Biodiversität, sowie der Demonstration von Datenverarbeitungsmethoden.</p>
+
+  <h2>Quellcode</h2>
+  <p>Der Quellcode dieses Projekts ist offen verfügbar auf
+  <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>.</p>
+
+  <h2>Datenquellen</h2>
+  <p>Die Kartendarstellung basiert auf offenen Daten, u.&nbsp;a. des
+  österreichischen Katasters (BEV – Bundesamt für Eich- und Vermessungswesen),
+  OpenStreetMap sowie offenen Geo- und Fernerkundungsdaten. Die Darstellung im
+  Spiel ist vereinfacht und spielerisch verfremdet; sie ist keine amtliche
+  Auskunft und hat keinerlei Rechtswirkung.</p>
+
+  <h2>Haftungsausschluss</h2>
+  <p>Die Inhalte dieser Website wurden mit größtmöglicher Sorgfalt erstellt.
+  Für die Richtigkeit, Vollständigkeit und Aktualität der Inhalte kann jedoch
+  keine Gewähr übernommen werden. Die Nutzung erfolgt auf eigene Gefahr.
+  Insbesondere stellen die im Spiel angezeigten Grundstücks-, Eigentums- und
+  Preisinformationen keine realen Rechtsverhältnisse dar.</p>
+  <p>Für die Inhalte externer Links übernehmen wir keine Haftung. Für den
+  Inhalt der verlinkten Seiten sind ausschließlich deren Betreiber
+  verantwortlich.</p>
+
+  <h2>Urheberrecht</h2>
+  <p>Die durch den Seitenbetreiber erstellten Inhalte und Werke auf diesen
+  Seiten unterliegen dem österreichischen Urheberrecht. Der Quellcode steht
+  über das oben verlinkte Repository zur Verfügung. Verwendete offene Daten
+  unterliegen den Lizenzbedingungen der jeweiligen Datenanbieter.</p>
+
+  <div class="legal-footer">
+    <a href="/">Startseite</a> · <a href="/datenschutz">Datenschutz</a> ·
+    <a href="/imprint">English</a> ·
+    <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>
+  </div>
+</div>
+<script>
+(function(){
+  // Contact address is char-shifted and only assembled on user interaction.
+  var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
+})();
+</script>
+</body>
+</html>
