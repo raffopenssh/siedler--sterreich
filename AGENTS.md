@@ -101,6 +101,21 @@ the current bbox** in ~100ms:
   `G.parcelPolys` / `G.buildingFootprints` with the same `{properties, geometry}`
   shape the renderer + EZ index expect. Footprint props now include real shape data
   (`obb_length_m`, `obb_width_m`, `orientation_deg`, `ns_code`, etc.).
+- **Tiling + retries (important).** Upstream warms geometry per KG lazily and caps
+  rows per request, surfacing this as `ready:false` / `truncated:true`. Ignoring
+  either makes the map silently stop filling in (big empty green areas). So:
+  `fetchKGPolygons()` splits the padded viewport into ≤0.02° tiles via `tileBox()`
+  (nearest-camera first, ≤12 tiles) and runs them through `runPool(..., 4)`;
+  `loadTileResilient()` retries `ready:false` tiles up to 4× with backoff (only
+  while still on screen) and subdivides `truncated` tiles into quarters (depth ≤2).
+  `loadViewportGeometry()` returns `{added, ready, truncated}` and un-marks its
+  `G.vpTiles` entry when not ready/truncated so a re-fetch is allowed. Server-side
+  `buildViewportWarm` retries `ready:false` twice (2s apart) so all clients share
+  one warm-up via singleflight. `#map-loading` shows while tiles are in flight
+  (`vpBusy()`).
+- **Never gate polygon loading on zoom/span.** `viewBounds()` is in *device*
+  pixels, so span thresholds trip much earlier than expected on wide/retina
+  screens. Only the capped 800-row `/spatial/bbox` point fallback is span-gated.
 - Landuse backdrop: the viewport endpoint carries **no** landuse polygons. For
   non-enhanced KGs seen for the first time, `loadLanduseBackground(kg)` still streams
   the landuse layer in the background (deduped via `G.landuseKGs`). Enhanced KGs skip
@@ -156,7 +171,8 @@ SQLite with sqlc. Key tables:
 ## API Endpoints
 
 ### Auth
-- `POST /api/register` — create player with name; returns `rejoin_token` (the only time it's sent)
+- `POST /api/register` — create player with name; returns `rejoin_token` (the only time it's sent). On 409 (name taken) it also returns `suggested` — a server-verified free name the client auto-retries with.
+- `GET /api/suggest-name` — a guaranteed-unused Adjective+Noun name (numbered suffix fallback). Used for the welcome-screen prefill and the 🎲 reroll; never generate names client-side (only ~900 combos vs. hundreds of players).
 - All mutating player endpoints require header `X-Player-Token: <rejoin_token>` matching `player_id` (server: `authPlayer`; client: `api()` helper sends `G.playerToken` or the `rejoin` URL param). `Player.RejoinToken` has `json:"-"` (sqlc override in `db/sqlc.yaml`) so it never leaks via player lists/SSE.
 
 ### Session
