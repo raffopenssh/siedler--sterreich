@@ -256,6 +256,23 @@ Austrian land register folio grouping parcels under one ownership entry. A farm 
 
 ## Environment
 
+- **All upstream calls must use `upstreamGet` / `upstreamClient`** (shared pooled
+  client: 24 idle conns/host, 32 max, HTTP/2, 60s timeout). Never
+  `http.Get`/`http.DefaultClient` — it keeps only 2 idle conns per host (we fan
+  out 4-12 viewport tiles × 2 layers at one host, so nearly every request paid a
+  fresh TLS handshake) and has no timeout (a hung request pins a singleflight
+  key and blocks all waiters forever).
+- **Never set `Accept-Encoding` by hand** on upstream calls. Go's transport sets
+  it and decompresses transparently (~-60% on the wire); setting it manually
+  means you must gunzip yourself.
+- **KG codes: compare with `unpadKG`.** Upstream `/lookup` returns `kg_code`
+  without the leading zero (`3301`), while `/query?kg=` requires the padded form
+  (`03301`). A literal comparison silently breaks every KG in states 1-9.
+- Our gzip middleware runs at level 5 (not BestSpeed): -22% bytes on viewport
+  payloads for ~1ms CPU.
+- Prefer batch/viewport endpoints over per-ID loops. Add `?geometry=0` /
+  `attrs_only` when only attributes are needed. Quantize coordinates in any
+  query that fires on every pan, or the response cache never hits.
 - Go 1.24+, SQLite via modernc.org/sqlite (pure Go). WAL + busy_timeout=5s +
   synchronous=NORMAL set via DSN pragmas (apply to all pooled conns);
   `SetMaxOpenConns(8)`. Hourly `cacheJanitor` prunes expired `api_cache` rows
