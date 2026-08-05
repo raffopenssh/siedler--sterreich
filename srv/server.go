@@ -276,13 +276,50 @@ func gzipMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		// BestSpeed is the wrong tradeoff for our payloads: a viewport response
+		// gzips to 161KB at level 1 vs 130KB at level 5 (-19%) for ~1ms more CPU
+		// on a ~1MB body. Bandwidth is the bottleneck on mobile, not our CPU.
+		gz, _ := gzip.NewWriterLevel(w, 5)
 		defer gz.Close()
 		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, gz: gz}, r)
 	})
 }
 
 // ---- Helpers ----
+
+// upstreamClient is the shared client for ALL calls to the cadastre / lidar
+// APIs. Two reasons not to use http.DefaultClient:
+//
+//  1. DefaultTransport keeps only 2 idle conns per host. We fan out 4-12
+//     concurrent viewport tiles × 2 layers to one host, so most requests were
+//     paying a fresh TCP + TLS handshake (~100ms to an HTTPS host) instead of
+//     reusing a connection. Upstream docs say ~8-16 in flight is the sweet spot,
+//     so size the pool for that.
+//  2. DefaultClient has NO timeout — one hung upstream request pinned a
+//     goroutine (and a singleflight key, blocking every waiter) forever.
+//
+// Go's transport also sets Accept-Encoding: gzip and decompresses transparently,
+// so we get upstream's compression (a viewport is ~-60% on the wire) for free
+// as long as we never set that header by hand.
+var upstreamClient = &http.Client{
+	Timeout: 60 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 24,
+		MaxConnsPerHost:     32,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+	},
+}
+
+func upstreamGet(url string) (*http.Response, error) { return upstreamClient.Get(url) }
+
+// unpadKG strips leading zeros from a KG code. Upstream is inconsistent about
+// zero-padding: /lookup echoes back "3301" for a query of "03301", while
+// /query?kg= only matches the zero-padded form. Compare codes unpadded.
+func unpadKG(s string) string {
+	return strings.TrimLeft(s, "0")
+}
 
 // validKG matches Austrian KG codes (5 digits). Path values are interpolated
 // into upstream URLs and cache keys, so reject anything else.
@@ -1410,7 +1447,7 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 			if cached, err := s.Q.GetCachedData(context.Background(), cacheKey); err == nil {
 				return []byte(cached), nil
 			}
-			resp, err := http.Get(cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer)
+			resp, err := upstreamGet(cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer)
 			if err != nil {
 				return nil, fmt.Errorf("data service error")
 			}
@@ -1643,7 +1680,7 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 		err  error
 	}
 	fetch := func(path string) res {
-		resp, err := http.Get(cadastreAPI + path + "?" + bboxQS)
+		resp, err := upstreamGet(cadastreAPI + path + "?" + bboxQS)
 		if err != nil {
 			return res{err: err}
 		}
@@ -1660,8 +1697,23 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 		return jsonErrBody("data service error"), 502
 	}
 
-	// Extract the arrays + ready flags, round coords, re-emit as one object.
-	extract := func(body []byte, key string) (items []json.RawMessage, ready bool, truncated bool) {
+	// Extract the arrays + ready flags, round coords, drop props the renderer
+	// never reads, re-emit as one object.
+	//
+	// Upstream now ships a rich shape-metrics block per footprint. We only use
+	// ns_code, obb_length_m, obb_width_m, orientation_deg, orientation_axis,
+	// area_sqm and lon/lat — the rest (short/long_side_faces_deg, obb_elongation,
+	// perimeter_m, vertex_count, compactness) is ~40% of the footprint payload
+	// (measured: 487KB of 821KB was properties, not geometry). Dropping them cuts
+	// the raw viewport response ~18% and the gzipped one ~12%.
+	dropFootprint := map[string]bool{
+		"short_side_faces_deg": true, "long_side_faces_deg": true,
+		"obb_elongation": true, "perimeter_m": true, "vertex_count": true,
+		"compactness": true,
+	}
+	// Parcel 'status' is always the same literal and unused by the renderer.
+	dropParcel := map[string]bool{"status": true}
+	extract := func(body []byte, key string, drop map[string]bool) (items []json.RawMessage, ready bool, truncated bool) {
 		var parsed map[string]json.RawMessage
 		if json.Unmarshal(body, &parsed) != nil {
 			return nil, false, false
@@ -1671,6 +1723,9 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 		var arr []map[string]any
 		if json.Unmarshal(parsed[key], &arr) == nil {
 			for _, it := range arr {
+				for k := range drop {
+					delete(it, k)
+				}
 				roundCoords(it)
 				if enc, err := json.Marshal(it); err == nil {
 					items = append(items, enc)
@@ -1679,8 +1734,8 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 		}
 		return
 	}
-	parcels, pReady, pTrunc := extract(pr.body, "parcels")
-	foots, fReady, fTrunc := extract(fr.body, "footprints")
+	parcels, pReady, pTrunc := extract(pr.body, "parcels", dropParcel)
+	foots, fReady, fTrunc := extract(fr.body, "footprints", dropFootprint)
 
 	var b bytes.Buffer
 	b.WriteString(`{"parcels":[`)
@@ -1728,7 +1783,7 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 			url += "?" + query
 		}
 
-		resp, err := http.Get(url)
+		resp, err := upstreamGet(url)
 		if err != nil {
 			return jsonErrBody("data service error"), 502
 		}
@@ -2032,7 +2087,7 @@ func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 		if query != "" {
 			url += "?" + query
 		}
-		resp, err := http.Get(url)
+		resp, err := upstreamGet(url)
 		if err != nil {
 			return jsonErrBody("data service error"), 502
 		}
@@ -2177,7 +2232,7 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 
 	// Fetch flags first (fast) to filter top trees/objects
 	flagged := map[string]bool{} // obj_ref -> true for severity high/critical
-	if fr, err := http.Get(lidarAPI + "/flags?kg=" + kg + "&limit=3000"); err == nil {
+	if fr, err := upstreamGet(lidarAPI + "/flags?kg=" + kg + "&limit=3000"); err == nil {
 		var fd struct {
 			Flags []struct {
 				ObjRef    string `json:"obj_ref"`
@@ -2202,7 +2257,7 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 		fr.Body.Close()
 	}
 
-	resp, err := http.Get(lidarAPI + "/kg/" + kg)
+	resp, err := upstreamGet(lidarAPI + "/kg/" + kg)
 	if err != nil {
 		return jsonErrBody("data service error"), 502
 	}
@@ -2874,7 +2929,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	offset := 0
 	for {
 		url := fmt.Sprintf("%s/query?bbox=9,46,18,49.5&processed_only=true&limit=1000&offset=%d", lidarAPI, offset)
-		resp, err := http.Get(url)
+		resp, err := upstreamGet(url)
 		if err != nil {
 			return jsonErrBody("data service error"), 502
 		}
@@ -3052,7 +3107,7 @@ func (s *Server) handleBuildingInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	get := func(path string, out chan<- map[string]any) {
-		resp, err := http.Get(cadastreAPI + path)
+		resp, err := upstreamGet(cadastreAPI + path)
 		if err != nil {
 			out <- nil
 			return
@@ -3159,20 +3214,29 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// get fetches+parses one upstream JSON endpoint, retrying once on a
+	// transport/parse failure. These calls all hit the same host in parallel, so
+	// an occasional hiccup is expected — and a nil from the /lookup leg used to
+	// turn the whole card into a bogus "unknown KG code" / "Keine Daten".
 	get := func(path string, out chan<- map[string]any) {
-		resp, err := http.Get(cadastreAPI + path)
-		if err != nil {
-			out <- nil
+		for attempt := 0; attempt < 2; attempt++ {
+			if attempt > 0 {
+				time.Sleep(250 * time.Millisecond)
+			}
+			resp, err := upstreamGet(cadastreAPI + path)
+			if err != nil {
+				continue
+			}
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+			resp.Body.Close()
+			var m map[string]any
+			if json.Unmarshal(b, &m) != nil {
+				continue
+			}
+			out <- m
 			return
 		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		var m map[string]any
-		if json.Unmarshal(b, &m) != nil {
-			out <- nil
-			return
-		}
-		out <- m
+		out <- nil
 	}
 	lCh := make(chan map[string]any, 1) // lookup (names)
 	qCh := make(chan map[string]any, 1) // query stats
@@ -3189,12 +3253,14 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 	if lk != nil {
 		if data, ok := lk["data"].([]any); ok {
 			// lookup matches gemeinde codes too — only accept the exact KG code.
+			// Upstream /lookup drops the leading zero ("3301" for "03301"), so
+			// compare unpadded or every KG in states 1-9 reports "unknown".
 			for _, dv := range data {
 				d0, _ := dv.(map[string]any)
 				if d0 == nil {
 					continue
 				}
-				if c, _ := d0["kg_code"].(string); c == kg {
+				if c, _ := d0["kg_code"].(string); unpadKG(c) == unpadKG(kg) {
 					out["kg_name"] = d0["name"]
 					out["gemeinde_name"] = d0["gemeinde_name"]
 					out["gemeinde_code"] = d0["gemeinde_code"]
@@ -3205,6 +3271,15 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !foundKG {
+		// Distinguish "this really isn't a KG code" from "the name lookup call
+		// failed". lk==nil means the upstream fetch/parse errored (transient:
+		// timeout, cold pool, 5xx) — reporting that as 404 unknown-KG is what
+		// surfaced as a bogus "Keine Daten verfügbar" card for a perfectly valid
+		// KG. Return 503 so the client can retry instead of caching a lie.
+		if lk == nil {
+			jsonErr(w, "KG-Daten momentan nicht verfügbar — bitte erneut versuchen", 503)
+			return
+		}
 		// Not a valid KG code (e.g. a Gemeinde code was passed) — don't cache junk.
 		jsonErr(w, "unknown KG code", 404)
 		return

@@ -5342,10 +5342,17 @@ function detectAdjacentMunicipalities() {
 }
 
 async function checkViewportMunicipality() {
-  // Check corners of viewport for municipality crossings
+  // Reverse-geocode the view centre to spot municipality crossings.
+  // Quantize to a ~110m grid: this fires on every pan, and the server caches by
+  // exact query string, so raw float coords meant a cache MISS (i.e. a real
+  // upstream round-trip) on literally every pan. Quantized, panning around the
+  // same area is served from cache.
   const b = viewBounds();
-  const centerLon = (b.w + b.e) / 2;
-  const centerLat = (b.s + b.n) / 2;
+  const qz = v => (Math.round(v / 0.001) * 0.001).toFixed(3);
+  const centerLon = qz((b.w + b.e) / 2);
+  const centerLat = qz((b.s + b.n) / 2);
+  if (G._muniCheckKey === centerLon+','+centerLat) return;
+  G._muniCheckKey = centerLon+','+centerLat;
   try {
     const res = await GET(CAD+'/search/municipalities?contains_lon='+centerLon+'&contains_lat='+centerLat+'&limit=1&format=json');
     const items = res.data || [];
@@ -5755,10 +5762,24 @@ async function openKGSummary(kg) {
   pop.classList.add('open');
   let d = G.kgSummaries[kg];
   if (!d) {
-    try { d = await GET('/api/kg-summary/' + encodeURIComponent(kg)); } catch(e) { d = null; }
+    // Retry transient upstream failures (server answers 503 with a retryable
+    // error, vs 404 for a genuinely unknown code) rather than flashing
+    // "Keine Daten verfügbar" at the player for a perfectly valid KG.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 600 * attempt));
+      try { d = await GET('/api/kg-summary/' + encodeURIComponent(kg)); } catch(e) { d = null; }
+      if (d && !d.error) break;
+      if (d && d.error === 'unknown KG code') break; // permanent — don't retry
+      if (!pop.classList.contains('open')) return;  // player closed it
+    }
     if (d && !d.error) G.kgSummaries[kg] = d;
   }
-  if (!d || d.error) { body.innerHTML = '<div class="kg-loading">Keine Daten verfügbar</div>'; return; }
+  if (!d || d.error) {
+    body.innerHTML = '<div class="kg-loading">' +
+      (d && d.error === 'unknown KG code' ? 'Keine Daten verfügbar'
+        : 'Daten momentan nicht erreichbar — bitte nochmal antippen') + '</div>';
+    return;
+  }
 
   document.getElementById('kg-title').textContent = '🏘️ ' + (d.kg_name || 'KG ' + kg);
   const rows = [];
