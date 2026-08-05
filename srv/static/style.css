@@ -719,6 +719,15 @@ input[type=text]:focus { border-color:var(--gold); }
   box-shadow:2px 2px 0 #000;
 }
 
+/* Viewport geometry loading indicator (shown while /api/viewport tiles are in flight) */
+.map-loading {
+  position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+  background:rgba(20,30,15,0.85); border:2px solid var(--panel-border);
+  color:var(--gold); font:7px var(--font-pixel);
+  padding:5px 10px; border-radius:3px; z-index:45;
+  pointer-events:none; white-space:nowrap; box-shadow:2px 2px 0 #000;
+}
+
 #btn-gps.active { background:var(--green); color:#fff; }
 
 /* ---- Similar parcels ---- */

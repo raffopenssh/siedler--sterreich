@@ -248,10 +248,23 @@ const _NOUN = [
   'Wald','Turm','Schild','Schwert','Eiche','Linde','Fels','Blitz',
   'Donner','Schatten','Flamme','Frost','Stern','Mond',
 ];
+/** Local fallback only. Prefer suggestFreeName() — the server knows which names
+ *  are already taken (there are only ~900 adj+noun combos, so blind picks
+ *  collide constantly once a few hundred players exist). */
 function randomName() {
   const a = _ADJ[Math.floor(Math.random()*_ADJ.length)];
   const n = _NOUN[Math.floor(Math.random()*_NOUN.length)];
-  return a + n;
+  return a + n + Math.floor(2 + Math.random()*9000);
+}
+
+/** Ask the server for a guaranteed-unused name. Falls back to a locally
+ *  generated numbered name if the request fails. */
+async function suggestFreeName() {
+  try {
+    const r = await GET('/api/suggest-name');
+    if (r && r.name) return r.name;
+  } catch(e) { console.error('suggest-name failed', e); }
+  return randomName();
 }
 
 // ================= URL STATE (no cookies, no localStorage) =================
@@ -302,9 +315,16 @@ function setUrlParams(obj) {
   const savedPid = getUrlParam('pid');
   const savedName = getUrlParam('pname');
 
-  // Pre-fill name: from URL or random suggestion
+  // Pre-fill name: from URL, else a server-checked free suggestion
   inp.value = savedName || '';
-  document.getElementById('btn-reroll').onclick = () => { inp.value = randomName(); inp.focus(); };
+  if (!savedName) suggestFreeName().then(n => { if (!inp.value) inp.value = n; });
+  document.getElementById('btn-reroll').onclick = async () => {
+    const btn = document.getElementById('btn-reroll');
+    btn.disabled = true;
+    inp.value = await suggestFreeName();
+    btn.disabled = false;
+    inp.focus();
+  };
 
   if (savedPid && savedName) {
     document.getElementById('quick-rejoin').innerHTML =
@@ -335,8 +355,15 @@ function setUrlParams(obj) {
 
   async function registerAndProceed(goLucky) {
     let name = inp.value.trim();
-    if (!name || name.length < 2) { name = randomName(); inp.value = name; }
-    const res = await POST('/api/register', {name});
+    if (!name || name.length < 2) { name = await suggestFreeName(); inp.value = name; }
+    let res = await POST('/api/register', {name});
+    // Name taken (someone grabbed it between suggestion and submit, or the user
+    // typed an existing one): auto-retry once with the server's free suggestion.
+    if (res.error && res.suggested) {
+      inp.value = res.suggested;
+      res = await POST('/api/register', {name: res.suggested});
+      if (!res.error) toast('Name war vergeben — du spielst als ' + res.player.name, 'ok');
+    }
     if (res.error) { err.textContent=res.error; return null; }
     savePlayer(res.player);
     G.playerToken = res.rejoin_token || null;
@@ -1354,8 +1381,20 @@ async function loadParcels() {
 async function loadMoreParcels() {
   const b = viewBounds();
   // Keep the Enhanced badge in sync with the camera even when zoomed too far
-  // out to fetch more parcels (below), so it reappears/hides on every pan.
+  // out to fetch point parcels (below), so it reappears/hides on every pan.
   updateEnhancedBadge();
+
+  // Polygon geometry ALWAYS loads, at every zoom: fetchKGPolygons tiles the
+  // viewport itself, so a wide view just means more (smaller) tiles. This used
+  // to sit behind the `span > 0.04` guard below, which — because gc.width is in
+  // *device* pixels — tripped at zoom ≈15 on a wide/retina screen and made the
+  // map silently stop loading when you panned into a new KG.
+  fetchKGPolygons().then(() => buildEZIndex()).catch(e => console.error(e));
+  detectAdjacentMunicipalities();
+  checkViewportMunicipality();
+
+  // Point-parcel fallback layer (centroids only) stays gated: it's capped at
+  // 800 rows, so over a huge bbox it would return a useless random subset.
   if ((b.e-b.w) > 0.04) return;
   try {
     const url = CAD+'/spatial/bbox?west='+b.w+'&south='+b.s+'&east='+b.e+'&north='+b.n+'&layers=parcels&limit=800&format=geojson';
@@ -1365,11 +1404,6 @@ async function loadMoreParcels() {
     let added = 0;
     for (const f of feats) { if (!ids.has(f.properties.parcel_id)) { G.parcels.push(f); added++; } }
     if (added > 0) { render(); renderMini(); }
-    // Also fetch polygon data for any new KGs
-    fetchKGPolygons().then(() => buildEZIndex());
-    // Check for adjacent municipality crossings
-    detectAdjacentMunicipalities();
-    checkViewportMunicipality();
   } catch(e) { console.error(e); }
 }
 
@@ -1424,15 +1458,20 @@ async function loadViewportGeometry(b, opts) {
   // Quantize bbox to a ~150m grid; skip if we've already fetched this exact tile.
   const q = v => Math.round(v / 0.002) * 0.002;
   const tileKey = [q(b.w), q(b.s), q(b.e), q(b.n)].map(x => x.toFixed(3)).join(',');
-  if (!opts.force && G.vpTiles.has(tileKey)) return 0;
+  if (!opts.force && G.vpTiles.has(tileKey)) return { added: 0, ready: true, truncated: false, cached: true };
   G.vpTiles.add(tileKey);
   let data;
+  vpBusy(1);
   try {
     data = await GET('/api/viewport?west='+b.w+'&south='+b.s+'&east='+b.e+'&north='+b.n+'&limit='+(opts.limit||6000));
-  } catch(e) { console.error('viewport fetch failed', e); G.vpTiles.delete(tileKey); return 0; }
-  if (!data) { G.vpTiles.delete(tileKey); return 0; }
+  } catch(e) { console.error('viewport fetch failed', e); G.vpTiles.delete(tileKey); return { added:0, ready:false, truncated:false }; }
+  finally { vpBusy(-1); }
+  if (!data) { G.vpTiles.delete(tileKey); return { added:0, ready:false, truncated:false }; }
   // If upstream wasn't fully warm yet, allow a later re-fetch of this tile.
   if (data.ready === false) G.vpTiles.delete(tileKey);
+  // Truncated means the tile hit the row limit: some geometry in this bbox was
+  // dropped, so let a subdivided re-fetch cover it.
+  if (data.truncated) G.vpTiles.delete(tileKey);
 
   let addedP = 0;
   for (const it of (data.parcels||[])) {
@@ -1458,7 +1497,86 @@ async function loadViewportGeometry(b, opts) {
     const { geometry, ...props } = it;
     G.buildingFootprints.push({ type:'Feature', properties: props, geometry });
   }
-  return addedP;
+  return { added: addedP, ready: data.ready !== false, truncated: !!data.truncated };
+}
+
+// ---- Viewport tiling / retry ----
+// Upstream warms parcel+footprint geometry per KG lazily (a cold KG is fetched
+// from Zenodo, ~2s) and caps rows per request. Both show up in the response as
+// `ready:false` / `truncated:true`. If we ignore them the map just silently
+// stops filling in — exactly what happened when panning across a KG border.
+// So: tile the viewport, retry not-ready tiles, subdivide truncated ones.
+
+let _vpBusy = 0;
+function vpBusy(delta) {
+  _vpBusy = Math.max(0, _vpBusy + delta);
+  const el = document.getElementById('map-loading');
+  if (el) el.style.display = _vpBusy > 0 ? '' : 'none';
+}
+
+/** Split a bbox into tiles of at most maxSpan degrees, nearest-to-camera first,
+ *  capped so a fully zoomed-out view can't fan out into dozens of requests. */
+function tileBox(b, maxSpan, maxTiles) {
+  const nx = Math.max(1, Math.ceil((b.e - b.w) / maxSpan));
+  const ny = Math.max(1, Math.ceil((b.n - b.s) / (maxSpan * 0.72)));
+  const dx = (b.e - b.w) / nx, dy = (b.n - b.s) / ny;
+  const tiles = [];
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+    const t = { w: b.w + i*dx, e: b.w + (i+1)*dx, s: b.s + j*dy, n: b.s + (j+1)*dy };
+    t._d = Math.hypot((t.w+t.e)/2 - G.cam.lon, ((t.s+t.n)/2 - G.cam.lat) / 0.72);
+    tiles.push(t);
+  }
+  tiles.sort((a,z) => a._d - z._d);
+  return tiles.slice(0, maxTiles || 12);
+}
+
+const _vpRetries = new Map(); // tileKey -> attempts already made
+
+/** Load one tile; if upstream is still warming, retry with backoff (the first
+ *  call is what triggers warming upstream, so retries converge). If the tile
+ *  was truncated, subdivide it once into quarters. */
+async function loadTileResilient(t, depth) {
+  depth = depth || 0;
+  const key = [t.w,t.s,t.e,t.n].map(x=>x.toFixed(4)).join(',');
+  let res = await loadViewportGeometry(t);
+  if (res.cached) return 0;
+  let added = res.added;
+  if (added > 0) { render(); renderMini(); }
+
+  if (!res.ready) {
+    const tries = (_vpRetries.get(key) || 0);
+    if (tries < 4) {
+      _vpRetries.set(key, tries + 1);
+      setTimeout(() => {
+        // Only retry while the tile is still (roughly) on screen.
+        const v = viewBounds();
+        if (t.e < v.w - 0.02 || t.w > v.e + 0.02 || t.n < v.s - 0.02 || t.s > v.n + 0.02) return;
+        loadTileResilient(t, depth).then(a => { if (a > 0) { buildEZIndex(); loadEnhancedForKGs(); } });
+      }, 1500 * (tries + 1));
+    }
+  } else {
+    _vpRetries.delete(key);
+  }
+
+  if (res.truncated && depth < 2) {
+    const mx = (t.w+t.e)/2, my = (t.s+t.n)/2;
+    const quarters = [
+      {w:t.w,s:t.s,e:mx,n:my}, {w:mx,s:t.s,e:t.e,n:my},
+      {w:t.w,s:my,e:mx,n:t.n}, {w:mx,s:my,e:t.e,n:t.n},
+    ];
+    for (const qt of quarters) added += await loadTileResilient(qt, depth+1);
+  }
+  return added;
+}
+
+/** Run loaders with bounded concurrency (upstream sees no benefit past ~8). */
+async function runPool(items, worker, conc) {
+  let i = 0, total = 0;
+  const runners = Array.from({length: Math.min(conc||4, items.length)}, async () => {
+    while (i < items.length) total += await worker(items[i++]);
+  });
+  await Promise.all(runners);
+  return total;
 }
 
 async function fetchKGPolygonsBlocking() {
@@ -1472,7 +1590,7 @@ async function fetchKGPolygonsBlocking() {
   // directly (roughly one screen at the start zoom). ~0.007° ≈ the initial view.
   const rad = 0.007;
   const box = { w: G.cam.lon - rad, s: G.cam.lat - rad*0.72, e: G.cam.lon + rad, n: G.cam.lat + rad*0.72 };
-  const added = await loadViewportGeometry(box, { force: true });
+  const added = (await loadViewportGeometry(box, { force: true })).added;
   setLoadProgress(70);
   setLoadSub(`${G.parcelPolys.length} Parzellen, ${G.buildingFootprints.length} Gebäude geladen`);
 
@@ -1481,19 +1599,21 @@ async function fetchKGPolygonsBlocking() {
 
   // Background: widen ~2.5× so panning outward is already primed.
   const wide = { w: G.cam.lon - rad*2.5, s: G.cam.lat - rad*1.8, e: G.cam.lon + rad*2.5, n: G.cam.lat + rad*1.8 };
-  loadViewportGeometry(wide).then(a => {
+  runPool(tileBox(wide, 0.02, 9), t => loadTileResilient(t), 4).then(a => {
     if (a > 0) { buildEZIndex(); loadEnhancedForKGs(); render(); renderMini(); }
   }).catch(()=>{});
 }
 
 async function fetchKGPolygons() {
-  // Incremental viewport load on pan/zoom. Grabs polygon geometry for the current
-  // view (padded) from the /api/viewport fast path; the tile-dedup in
-  // loadViewportGeometry keeps repeat pans cheap.
+  // Incremental viewport load on pan/zoom. Splits the (padded) current view into
+  // ≤0.02° tiles — one request per tile, nearest-to-camera first — and each tile
+  // retries while upstream warms / subdivides if it was truncated. Tiling matters
+  // at low zoom: a single huge bbox blows past the row limit and comes back
+  // `truncated`, which is what made panning look "stuck".
   const b = viewBounds();
-  const padX = (b.e - b.w) * 0.3, padY = (b.n - b.s) * 0.3;
+  const padX = (b.e - b.w) * 0.25, padY = (b.n - b.s) * 0.25;
   const box = { w: b.w - padX, s: b.s - padY, e: b.e + padX, n: b.n + padY };
-  const added = await loadViewportGeometry(box);
+  const added = await runPool(tileBox(box, 0.02, 12), t => loadTileResilient(t), 4);
   if (added > 0) { render(); renderMini(); }
   // Enhanced data for any newly-visible enhanced KGs.
   loadEnhancedForKGs();

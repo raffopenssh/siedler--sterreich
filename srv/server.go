@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	mrand "math/rand/v2"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -170,6 +171,7 @@ func (s *Server) Serve(addr string) error {
 
 	// Auth API
 	mux.HandleFunc("POST /api/register", s.handleRegister)
+	mux.HandleFunc("GET /api/suggest-name", s.handleSuggestName)
 
 	// Game API
 	mux.HandleFunc("POST /api/session/create", s.handleCreateSession)
@@ -363,6 +365,52 @@ func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
 
 // ---- Auth ----
 
+var nameAdj = []string{
+	"Tapfer", "Kühn", "Edel", "Stolz", "Wild", "Flink", "Mutig", "Weise",
+	"Stark", "Listig", "Grimmig", "Eisern", "Treu", "Finster", "Feurig",
+	"Schnell", "Leise", "Dunkel", "Golden", "Silbern", "Steinig", "Kalt",
+	"Schattig", "Stürmisch", "Sanft", "Alt", "Jung", "Groß", "Klein", "Mächtig",
+}
+
+var nameNoun = []string{
+	"Ritter", "Jäger", "Bauer", "Schmied", "Falke", "Wolf", "Bär", "Adler",
+	"Fuchs", "Hirsch", "Löwe", "Drache", "Rabe", "Stein", "Berg", "Bach",
+	"Wald", "Turm", "Schild", "Schwert", "Eiche", "Linde", "Fels", "Blitz",
+	"Donner", "Schatten", "Flamme", "Frost", "Stern", "Mond",
+}
+
+func (s *Server) nameFree(ctx context.Context, name string) bool {
+	_, err := s.Q.GetPlayerByName(ctx, name)
+	return err != nil
+}
+
+// suggestName returns a random Adjective+Noun name that is not yet taken.
+// 30×30 = 900 base combos vs. hundreds of registered players, so a plain random
+// pick collides often — try many combos, then fall back to suffixing a number
+// (still checked for uniqueness).
+func (s *Server) suggestName(ctx context.Context) string {
+	for i := 0; i < 40; i++ {
+		n := nameAdj[mrand.IntN(len(nameAdj))] + nameNoun[mrand.IntN(len(nameNoun))]
+		if s.nameFree(ctx, n) {
+			return n
+		}
+	}
+	base := nameAdj[mrand.IntN(len(nameAdj))] + nameNoun[mrand.IntN(len(nameNoun))]
+	for i := 0; i < 200; i++ {
+		n := base + strconv.Itoa(2+mrand.IntN(9000))
+		if len(n) <= 30 && s.nameFree(ctx, n) {
+			return n
+		}
+	}
+	return base + strconv.FormatInt(time.Now().UnixMilli()%100000, 10)
+}
+
+// handleSuggestName gives the client a guaranteed-free name suggestion so the
+// dice button / prefill never proposes something that is already taken.
+func (s *Server) handleSuggestName(w http.ResponseWriter, r *http.Request) {
+	jsonResp(w, map[string]any{"name": s.suggestName(r.Context())})
+}
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
@@ -379,7 +427,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Check if name exists
 	if _, err := s.Q.GetPlayerByName(r.Context(), req.Name); err == nil {
-		jsonErr(w, "Name already taken", 409)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":     "Name already taken",
+			"suggested": s.suggestName(r.Context()),
+		})
 		return
 	}
 
@@ -1560,8 +1613,25 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheKey := "viewport:" + qz(west) + "," + qz(south) + "," + qz(east) + "," + qz(north) + "," + limit
 	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
-		return s.buildViewport(bboxQS, cacheKey)
+		return s.buildViewportWarm(bboxQS, cacheKey)
 	})
+}
+
+// buildViewportWarm calls buildViewport and, if upstream reported the tile not
+// fully warm (ready=false — some KG intersecting the bbox is still being
+// fetched from Zenodo, ~2s), retries a couple of times before answering.
+// Upstream warming is *triggered* by our first call, so retries converge; doing
+// this server-side means every client benefits (singleflight shares the wait)
+// instead of each client having to poll. Bounded to ~5s total so a pan never
+// hangs: if still not ready we return the partial set with ready:false and the
+// client keeps polling.
+func (s *Server) buildViewportWarm(bboxQS, cacheKey string) ([]byte, int) {
+	out, status := s.buildViewport(bboxQS, cacheKey)
+	for attempt := 0; attempt < 2 && status == 200 && bytes.Contains(out, []byte(`"ready":false`)); attempt++ {
+		time.Sleep(2 * time.Second)
+		out, status = s.buildViewport(bboxQS, cacheKey)
+	}
+	return out, status
 }
 
 // buildViewport fetches parcels+footprints for a bbox, merges them and caches
