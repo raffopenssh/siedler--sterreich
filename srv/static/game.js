@@ -862,15 +862,21 @@ function centroidOf(ring) {
 // hit-test that did `geometry.coordinates[0]` silently treated those as invisible.
 // Always go through these instead of indexing coordinates directly.
 
-// !! Upstream does NOT guarantee ring order: for many parcels the *first*
-// ring of a polygon part is a tiny sliver and the real outline sits at index
-// 2 or 3 (e.g. 84108-3394/1 rings = [0.03, 0.01, 0.00, 850.7] ha). So
-// `coordinates[0]` is NOT "the outer ring" — treating it as such made huge
-// alpine parcels render fine (the fill uses even-odd over all rings) but be
-// completely unclickable. Everything below therefore works on ALL rings with
-// the even-odd rule, exactly like the renderer.
+// Upstream now guarantees the RFC 7946 ring contract (fixed 2026-08-06,
+// cadastre feedback #13): coordinates[0] of every part is the exterior ring
+// wound CCW, every following ring is an interior hole wound CW, and disjoint
+// shells come back as MultiPolygon parts — identical across /export/geojson,
+// /spatial/parcels and /parcels/geometry/batch. Before that fix ring[0] was
+// often a tiny sliver (84108-3394/1 = [335, 95, 20, 8506967] m²), which made
+// huge alpine parcels render fine but be completely unclickable.
+//
+// We still evaluate ALL rings with the even-odd rule rather than trusting the
+// order: it is identical to the contract when the contract holds, it also
+// excludes holes properly (ring[0]-only never did), and it degrades gracefully
+// if a stale cache or a not-yet-reprocessed KG serves the old ring bag.
+// Part order is explicitly NOT part of the contract — never index into parts.
 
-/** @deprecated ring order is not meaningful upstream — use geomAllRings(). */
+/** @deprecated holes matter now — use geomAllRings() + even-odd. */
 function geomOuterRings(g) { return geomAllRings(g); }
 
 /** Every ring (outer + holes) — for filling with the even-odd rule. */

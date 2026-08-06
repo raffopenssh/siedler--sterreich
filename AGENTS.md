@@ -133,9 +133,31 @@ including one 16.5 km² parcel. Code doing `geometry.coordinates[0]` or
 like "the viewport loader is broken".
 
 Always go through the helpers in game.js instead of indexing coordinates:
-`geomOuterRings(g)`, `geomAllRings(g)` (fill with even-odd), `biggestRing(g)`,
-`isAreaGeom(g)`, `pipGeom(lon,lat,g)`, `pipRings(lon,lat,rings)`,
-`featureLonLat(f)`. Building footprints are always single Polygons.
+`geomAllRings(g)`, `biggestRing(g)`, `isAreaGeom(g)`, `pipGeom(lon,lat,g)`,
+`pipRings(lon,lat,rings)`, `featureLonLat(f)`. (`geomOuterRings` is a
+deprecated alias of `geomAllRings`.) Building footprints are always single
+Polygons.
+
+**Ring order / holes.** Upstream fixed its ring contract on 2026-08-06
+(feedback #13): `coordinates[0]` of every part is now the exterior ring (CCW),
+following rings are holes (CW), disjoint shells are MultiPolygon parts, and
+`/export/geojson`, `/spatial/parcels` and `/parcels/geometry/batch` agree byte
+for byte. Before that, ring[0] was often a tiny sliver (84108-3394/1 =
+`[335, 95, 20, 8506967]` m²), so hit-testing on `coordinates[0]` picked the
+sliver while the even-odd fill drew the parcel — parcels looked normal but were
+**unclickable**. We still hit-test **all rings with even-odd**: identical to the
+contract when it holds, it excludes holes correctly (ring[0]-only did not), and
+it survives a stale cache. **Part order is not part of the contract** — never
+index into parts, sort or scan.
+
+**`matched:false` ≠ "no parcel exists."** Upstream also fixed a tile-clipping
+bug that lost/invented parcel area (feedback #14; 84108-3391 was stored at 0.47
+of its 1.52 km²). The fix is ingest-side, so KGs still carry the old assembly
+until reprocessed. Treat `matched:false` as "no parcel in *their* geometry".
+After any upstream geometry fix, purge our cache:
+`DELETE FROM api_cache WHERE cache_key LIKE 'viewport:%' OR cache_key LIKE
+'%/export/geojson%' OR cache_key LIKE '%/spatial/%' OR cache_key LIKE
+'%geometry/batch%';` then `VACUUM;`
 
 ### Austrian border
 
