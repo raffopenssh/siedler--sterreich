@@ -862,13 +862,16 @@ function centroidOf(ring) {
 // hit-test that did `geometry.coordinates[0]` silently treated those as invisible.
 // Always go through these instead of indexing coordinates directly.
 
-/** Outer rings of a Polygon/MultiPolygon (holes skipped). [] for other types. */
-function geomOuterRings(g) {
-  if (!g) return [];
-  if (g.type === 'Polygon') return g.coordinates.length ? [g.coordinates[0]] : [];
-  if (g.type === 'MultiPolygon') return g.coordinates.map(p => p && p[0]).filter(Boolean);
-  return [];
-}
+// !! Upstream does NOT guarantee ring order: for many parcels the *first*
+// ring of a polygon part is a tiny sliver and the real outline sits at index
+// 2 or 3 (e.g. 84108-3394/1 rings = [0.03, 0.01, 0.00, 850.7] ha). So
+// `coordinates[0]` is NOT "the outer ring" — treating it as such made huge
+// alpine parcels render fine (the fill uses even-odd over all rings) but be
+// completely unclickable. Everything below therefore works on ALL rings with
+// the even-odd rule, exactly like the renderer.
+
+/** @deprecated ring order is not meaningful upstream — use geomAllRings(). */
+function geomOuterRings(g) { return geomAllRings(g); }
 
 /** Every ring (outer + holes) — for filling with the even-odd rule. */
 function geomAllRings(g) {
@@ -878,10 +881,24 @@ function geomAllRings(g) {
   return [];
 }
 
-/** Largest outer ring by vertex count — anchor for labels/sprites/centroids. */
+/** Signed area of a ring in squared degrees (sign = winding). */
+function ringArea2(r) {
+  let a = 0;
+  for (let i = 0, n = r.length; i < n; i++) {
+    const p = r[i], q = r[(i + 1) % n];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+/** Largest ring by area — anchor for labels/sprites/centroids. */
 function biggestRing(g) {
-  let best = null, bn = -1;
-  for (const r of geomOuterRings(g)) if (r.length > bn) { bn = r.length; best = r; }
+  let best = null, ba = -1;
+  for (const r of geomAllRings(g)) {
+    if (r.length < 3) continue;
+    const a = Math.abs(ringArea2(r));
+    if (a > ba) { ba = a; best = r; }
+  }
   return best;
 }
 
@@ -899,16 +916,16 @@ function featureLonLat(f) {
   return (c && typeof c[0] === 'number') ? [c[0], c[1]] : [null, null];
 }
 
-/** Point-in-area test across all parts (holes ignored — negligible in cadastre). */
+/** Point-in-area across every part, even-odd rule (matches the fill). */
 function pipGeom(lon, lat, g) {
-  for (const r of geomOuterRings(g)) if (pip(lon, lat, r)) return true;
-  return false;
+  return pipRings(lon, lat, geomAllRings(g));
 }
 
-/** Point-in-any-ring, for pre-extracted ring arrays. */
+/** Even-odd point-in-rings, for pre-extracted ring arrays. */
 function pipRings(lon, lat, rings) {
-  for (const r of rings) if (pip(lon, lat, r)) return true;
-  return false;
+  let inside = false;
+  for (const r of rings) if (pip(lon, lat, r)) inside = !inside;
+  return inside;
 }
 
 function geoBounds(geom) {
@@ -2305,7 +2322,7 @@ function drawLandusePolygons(ctx) {
     // read like flat gray buildings — render them as light gravel instead.
     if (code === '95') {
       if (f._yard === undefined) {
-        const r0 = (geom.type === 'MultiPolygon' ? geom.coordinates[0] : geom.coordinates)[0];
+        const r0 = biggestRing(geom) || [[0, 0]];
         let per = 0;
         const latm = 111320, lonm = latm * Math.cos(r0[0][1] * Math.PI / 180);
         for (let i = 1; i < r0.length; i++) {
