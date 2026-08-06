@@ -123,6 +123,33 @@ the current bbox** in ~100ms:
 
 ## Map Rendering
 
+### Multi-part geometry (MultiPolygon) — read this before touching a renderer
+
+Upstream returns **MultiPolygon** for any parcel with detached parts. This is
+common (alpine Gemeindegut / Almen split by a ridge or river) and those are the
+*biggest* parcels: around Nauders 32 of 48 km² on screen was MultiPolygon,
+including one 16.5 km² parcel. Code doing `geometry.coordinates[0]` or
+`type !== 'Polygon' → return` silently renders nothing — which looks exactly
+like "the viewport loader is broken".
+
+Always go through the helpers in game.js instead of indexing coordinates:
+`geomOuterRings(g)`, `geomAllRings(g)` (fill with even-odd), `biggestRing(g)`,
+`isAreaGeom(g)`, `pipGeom(lon,lat,g)`, `pipRings(lon,lat,rings)`,
+`featureLonLat(f)`. Building footprints are always single Polygons.
+
+### Austrian border
+
+`srv/static/austria.json` = simplified ADM0 outline (geoBoundaries gbOpen /
+BEV, CC-BY-SA, Douglas-Peucker 0.0002° ≈ 20 m, 12.4k verts, ~75KB gzip),
+loaded in the background into `G.atBorder` (array of lon/lat rings).
+Cadastre data stops at the state line, so foreign land would otherwise be
+indistinguishable from unloaded land. Used for:
+`drawForeignShading()` (dim + hatch outside, even-odd),
+`drawAustriaBorderLine()` (red-white-red, above content), the minimap outline,
+`updateAbroadBadge()` (`#abroad-badge`), and `tilesInAustria()` which drops
+`/api/viewport` tiles fully outside Austria. `insideAustria()` returns **true**
+while the outline is still loading — never gate data loading on it strictly.
+
 Pure canvas 2D — no map library. Coordinate system:
 - `toScreen(lon, lat)` → pixel coords
 - `toGeo(x, y)` → WGS84 coords
