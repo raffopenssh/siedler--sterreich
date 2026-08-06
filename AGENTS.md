@@ -141,7 +141,29 @@ Render order in `render()`:
 9. Selected parcel highlight (gold dashed outline)
 10. Scale bar
 
-Landuse codes follow Austrian BEV Nutzungssymbol system (40–97). See `LANDUSE_TERRAIN`, `ABBR_MAP`, `LANDUSE_POLY_COLORS` maps in game.js.
+### Landuse codes (BEV Nutzungssymbole)
+
+`NS_TABLE` in game.js is the **single source of truth**: code → `{abbr, name,
+terrain, price}`. `LANDUSE_TERRAIN`, `LANDUSE_NAMES` and `ABBR_MAP` are derived
+from it at load; `LANDUSE_POLY_COLORS` (polygon fills) is keyed by the same codes.
+
+Upstream corrected its German NS labels in Aug 2026 (BEV Schnittstellen-
+beschreibung "Katastralmappe SHP" V2.9, Tab. 8). **The codes never changed —
+only the text**, so never match on label strings. Only 26 codes exist
+(40,41,42,48,52–65,72,83,84,87,88,92,95,96); anything else reports
+"Unbekannt - Code NN". Canonical table: `GET /api/v1/landuse/codes`.
+
+Two corrections that broke us: **48** is `Äcker, Wiesen oder Weiden` (farmland,
+Austria's most common code, 3.76M parcels) — we rendered and priced it as road
+surface; **83** is `Gebäudenebenflächen` (a Baufläche) — we treated it as
+Fels/Sumpf. Roads are now **95** (`So(Str)`), rail **92**, parking **42**.
+
+NS entries are **symbol counts, not areas**. A 17.9 ha field can carry three
+stray building/road glyphs. `nsWeight(code)` down-weights traffic (0.25) and
+building (0.5) symbols when picking a parcel's dominant use in
+`parseLanduseSummary()` / `extractLuCode()` (weighted mode, not first entry).
+Upstream's `land_prices` applies the same idea server-side: prefer
+`buy_total_blended_eur` + `class_source:"area"` over the single-class total.
 
 ## Database Schema
 
@@ -193,7 +215,13 @@ SQLite with sqlc. Key tables:
 ### Pricing
 
 `calculatePrice(areaSqm, landuse, buildingCount, totalBuildingArea)` in server.go:
-- Base price/m² by landuse: Baufläche 0.5, Wiese 0.3, Wald 0.2, Verkehr 0.1, Gewässer 0.05
+- Base price/m² by NS code: table `nsBasePrice` in server.go, mirrored as the
+  `price` field of `NS_TABLE` in game.js (Gebäude 0.5, Garten 0.45,
+  Gebäudenebenfläche 0.45, Betriebsfläche 0.4, Freizeit 0.35, Weingarten 0.35,
+  Äcker/Wiesen/Weiden 0.3, Dauerkulturen 0.3, Parkplatz 0.25, Wald 0.2,
+  Friedhof 0.2, Verbuschung 0.15, Bahn 0.15, Abbau 0.15, Alm 0.12, Straße 0.1,
+  Forststraße 0.1, Krummholz 0.1, Verkehrsrand 0.1, Feuchtgebiet/Gewässerrand
+  0.08, Gewässer 0.05, vegetationsarm 0.05, Fels/Gletscher 0.03; unknown 0.15)
 - Density multiplier: built-up ratio >0.3 = 2×, 0.05–0.3 = 1–2×, no buildings = 0.5×
 - Clamped to 10–5000 coins. Mirrored in JS `calcPrice()` for client display.
 

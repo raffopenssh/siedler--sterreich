@@ -21,61 +21,75 @@ const TERRAIN = {
   garden:   ['#6b8e4a','#739650','#638644','#7b9e58','#5b7e3e'],
   wetland:  ['#3a7a5a','#428260','#327254','#4a8a68','#2a6a4e'],
   waste:    ['#5a5848','#625e50','#525040','#6a6658','#4a4838'],
+  glacier:  ['#cfe4f2','#dcecf8','#c2dced','#e6f2fa','#b8d4e8'],
   bio:      ['#2aaa4a','#32b252','#22a242','#3aba5a','#1a9a3a'],
 };
 
-const LANDUSE_TERRAIN = {
-  '40':TERRAIN.garden,'41':TERRAIN.road,'42':TERRAIN.building,'43':TERRAIN.building,
-  '44':TERRAIN.waste,'45':TERRAIN.garden,'46':TERRAIN.garden,
-  '48':TERRAIN.road,'49':TERRAIN.road,
-  '50':TERRAIN.farm,'51':TERRAIN.farm,'52':TERRAIN.meadow,'53':TERRAIN.meadow,'54':TERRAIN.meadow,
-  '55':TERRAIN.meadow,'56':TERRAIN.forest,'57':TERRAIN.forest,'58':TERRAIN.forest,
-  '60':TERRAIN.garden,'61':TERRAIN.garden,'62':TERRAIN.garden,'63':TERRAIN.garden,
-  '70':TERRAIN.water,'71':TERRAIN.water,'72':TERRAIN.water,'73':TERRAIN.water,
-  '80':TERRAIN.waste,'81':TERRAIN.waste,'83':TERRAIN.wetland,'84':TERRAIN.water,
-  '85':TERRAIN.waste,'90':TERRAIN.road,'91':TERRAIN.waste,'97':TERRAIN.waste,
+// ---- BEV Nutzungssymbole (NS) — single source of truth ----
+// Source: BEV Schnittstellenbeschreibung "Katastralmappe SHP" V2.9, Tabelle 8.
+// The upstream API corrected its German labels in Aug 2026; the CODES never
+// changed. Two corrections matter a lot for us:
+//   48 = "Äcker, Wiesen oder Weiden" (farmland — Austria's most common code,
+//        3.76M parcels) — we used to render and PRICE it as Verkehrsfläche.
+//   83 = "Gebäudenebenflächen" (a Baufläche) — we used to treat it as Fels/Sumpf.
+// Codes outside this table are not defined by BEV and do not occur in the data.
+// `price` = base coins/m² used by calcPrice() — MUST stay in sync with
+// nsPricePerSqm() in srv/server.go.
+const NS_TABLE = {
+  '40': {abbr:'LN(Dk)',  name:'Dauerkulturen',      terrain:TERRAIN.garden,   price:0.30},
+  '41': {abbr:'B(Geb)',  name:'Gebäude',            terrain:TERRAIN.building, price:0.50},
+  '42': {abbr:'So(Pp)',  name:'Parkplatz',          terrain:TERRAIN.road,     price:0.25},
+  '48': {abbr:'LN',      name:'Äcker/Wiesen/Weiden',terrain:TERRAIN.farm,     price:0.30},
+  '52': {abbr:'GA',      name:'Garten',             terrain:TERRAIN.garden,   price:0.45},
+  '53': {abbr:'WG',      name:'Weingarten',         terrain:TERRAIN.garden,   price:0.35},
+  '54': {abbr:'Alpe',    name:'Alm',                terrain:TERRAIN.meadow,   price:0.12},
+  '55': {abbr:'W(Kr)',   name:'Krummholz',          terrain:TERRAIN.forest,   price:0.10},
+  '56': {abbr:'W',       name:'Wald',               terrain:TERRAIN.forest,   price:0.20},
+  '57': {abbr:'LN(vb)',  name:'Verbuschte Fläche',  terrain:TERRAIN.meadow,   price:0.15},
+  '58': {abbr:'W(Fs)',   name:'Forststraße',        terrain:TERRAIN.road,     price:0.10},
+  '59': {abbr:'GW(f)',   name:'Fließgewässer',      terrain:TERRAIN.water,    price:0.05},
+  '60': {abbr:'GW(s)',   name:'Stehendes Gewässer', terrain:TERRAIN.water,    price:0.05},
+  '61': {abbr:'GW(Fg)',  name:'Feuchtgebiet',       terrain:TERRAIN.wetland,  price:0.08},
+  '62': {abbr:'So(vg)',  name:'Vegetationsarm',     terrain:TERRAIN.waste,    price:0.05},
+  '63': {abbr:'So(Bf)',  name:'Betriebsfläche',     terrain:TERRAIN.waste,    price:0.40},
+  '64': {abbr:'GW(Rf)',  name:'Gewässerrand',       terrain:TERRAIN.wetland,  price:0.08},
+  '65': {abbr:'So(Vr)',  name:'Verkehrsrand',       terrain:TERRAIN.grass,    price:0.10},
+  '72': {abbr:'So(Fh)',  name:'Friedhof',           terrain:TERRAIN.garden,   price:0.20},
+  '83': {abbr:'B(Nf)',   name:'Gebäudenebenfläche', terrain:TERRAIN.building, price:0.45},
+  '84': {abbr:'So(Ab)',  name:'Abbau/Halde/Deponie',terrain:TERRAIN.waste,    price:0.15},
+  '87': {abbr:'So(Fe)',  name:'Fels/Geröll',        terrain:TERRAIN.waste,    price:0.03},
+  '88': {abbr:'So(Gl)',  name:'Gletscher',          terrain:TERRAIN.glacier,  price:0.03},
+  '92': {abbr:'So(Bahn)',name:'Bahnanlage',         terrain:TERRAIN.road,     price:0.15},
+  '95': {abbr:'So(Str)', name:'Straße',             terrain:TERRAIN.road,     price:0.10},
+  '96': {abbr:'So(Fz)',  name:'Freizeitfläche',     terrain:TERRAIN.meadow,   price:0.35},
 };
 
-const LANDUSE_NAMES = {
-  '40':'Baugrün','41':'Baufläche','42':'Gebäude','43':'Keller','44':'Ruine','45':'Gewächshaus',
-  '48':'Verkehr','50':'Acker','51':'Acker','52':'Wiese','53':'Weide','54':'Grünland',
-  '55':'Alpe','56':'Wald','57':'Krummholz','58':'Wald','60':'Weingarten','62':'Garten',
-  '63':'Obstgarten','70':'Gewässer','71':'Bach','72':'See','73':'Fluss',
-  '80':'Ödland','83':'Sumpf','84':'Gletscher','85':'Fels',
-};
+// Derived lookups (kept as separate consts — used all over the renderer).
+const LANDUSE_TERRAIN = {};   // code → terrain palette
+const LANDUSE_NAMES = {};     // code → short German name
+const ABBR_MAP = {};          // landuse_summary abbr → {terrain, code, name}
+for (const [code, e] of Object.entries(NS_TABLE)) {
+  LANDUSE_TERRAIN[code] = e.terrain;
+  LANDUSE_NAMES[code] = e.name;
+  ABBR_MAP[e.abbr] = {terrain:e.terrain, code, name:e.name};
+}
+// Player-converted nature reserves are not a BEV code — synthetic entry.
+ABBR_MAP['Bio'] = {terrain:TERRAIN.bio, code:'', name:'Naturschutz'};
 
-// Map abbreviations from landuse_summary keys (e.g. "B(bf)") to terrain type + numeric code
-const ABBR_MAP = {
-  'B(bf)':  {terrain:TERRAIN.building, code:'41', name:'Baufläche'},
-  'B(Geb)': {terrain:TERRAIN.building, code:'42', name:'Gebäude'},
-  'B(Ga)':  {terrain:TERRAIN.garden,   code:'62', name:'Garten'},
-  'B(Ghs)': {terrain:TERRAIN.building, code:'45', name:'Gewächshaus'},
-  'B(Ke)':  {terrain:TERRAIN.building, code:'43', name:'Keller'},
-  'B(Ru)':  {terrain:TERRAIN.waste,    code:'44', name:'Ruine'},
-  'LN(W)':  {terrain:TERRAIN.meadow,   code:'52', name:'Wiese'},
-  'LN(A)':  {terrain:TERRAIN.farm,     code:'50', name:'Acker'},
-  'LN(Hu)': {terrain:TERRAIN.meadow,   code:'53', name:'Weide'},
-  'LN(EW)': {terrain:TERRAIN.meadow,   code:'54', name:'Grünland'},
-  'LN':     {terrain:TERRAIN.meadow,   code:'52', name:'Grünland'},
-  'W':      {terrain:TERRAIN.forest,   code:'56', name:'Wald'},
-  'Alpe':   {terrain:TERRAIN.meadow,   code:'55', name:'Alpe'},
-  'V(Str)': {terrain:TERRAIN.road,     code:'48', name:'Straße'},
-  'V(Weg)': {terrain:TERRAIN.road,     code:'48', name:'Weg'},
-  'V(Pl)':  {terrain:TERRAIN.road,     code:'48', name:'Platz'},
-  'V(Bahn)':{terrain:TERRAIN.road,     code:'48', name:'Bahn'},
-  'V(Brü)': {terrain:TERRAIN.road,     code:'48', name:'Brücke'},
-  'Ga':     {terrain:TERRAIN.garden,   code:'62', name:'Garten'},
-  'WG':     {terrain:TERRAIN.garden,   code:'60', name:'Weingarten'},
-  'Ob':     {terrain:TERRAIN.garden,   code:'63', name:'Obstgarten'},
-  'So':     {terrain:TERRAIN.waste,    code:'80', name:'Sonstige'},
-  'Q':      {terrain:TERRAIN.water,    code:'70', name:'Quelle'},
-  'Fl(St)': {terrain:TERRAIN.water,    code:'73', name:'Fluss'},
-  'Fl(B)':  {terrain:TERRAIN.water,    code:'71', name:'Bach'},
-  'See':    {terrain:TERRAIN.water,    code:'72', name:'See'},
-  'Fe':     {terrain:TERRAIN.waste,    code:'85', name:'Fels'},
-  'Moor':   {terrain:TERRAIN.wetland,  code:'83', name:'Moor'},
-  'Bio':    {terrain:TERRAIN.bio,      code:'52', name:'Naturschutz'},
-};
+// Codes whose surface is sealed/paved (roads, rail, parking, forest roads).
+const NS_TRAFFIC = new Set(['42','58','92','95']);
+// Codes that count as "a building stands here".
+const NS_BUILDING = new Set(['41']);
+// NS entries are SYMBOL counts, not areas — upstream's own land_prices fix (Aug
+// 2026) showed why that matters: a 17.9 ha field carrying three stray
+// building/road glyphs was classified as built-up Bauland. Road/rail/building
+// symbols are typically thin slivers, so down-weight them when picking a
+// parcel's dominant use for terrain colour and pricing.
+function nsWeight(code) {
+  if (NS_TRAFFIC.has(code)) return 0.25;
+  if (NS_BUILDING.has(code) || code === '83') return 0.5;
+  return 1;
+}
 
 // LiDAR dominant land cover → terrain palette (enhanced mode, real measured cover)
 const DOM_TERRAIN = {
@@ -102,34 +116,32 @@ function parseLanduseSummary(summary) {
     const abbr = dashIdx >= 0 ? key.slice(dashIdx + 3) : key;
     let info = ABBR_MAP[abbr];
     if (!info) {
-      // Fuzzy match: try prefix
-      for (const [k, v] of Object.entries(ABBR_MAP)) {
-        if (abbr.startsWith(k) || abbr.includes(k)) { info = v; break; }
-      }
-    }
-    if (!info) {
-      // Guess from the full description text
+      // Unknown abbr — derive from the German description text. Upstream now
+      // emits "Unbekannt - Code NN" for anything outside the BEV table.
       const t = key.toLowerCase();
-      if (t.includes('wald') || t.includes(' w ')) info = ABBR_MAP['W'];
-      else if (t.includes('wiese')) info = ABBR_MAP['LN(W)'];
-      else if (t.includes('acker')) info = ABBR_MAP['LN(A)'];
-      else if (t.includes('baufläche') || t.includes('gebäude')) info = ABBR_MAP['B(bf)'];
-      else if (t.includes('garten')) info = ABBR_MAP['Ga'];
-      else if (t.includes('verkehr') || t.includes('straß')) info = ABBR_MAP['V(Str)'];
-      else if (t.includes('gewässer') || t.includes('bach') || t.includes('see')) info = ABBR_MAP['Q'];
+      if (t.includes('wald') || t.includes('wälder') || t.includes('forst')) info = ABBR_MAP['W'];
+      else if (t.includes('acker') || t.includes('äcker') || t.includes('wiese') || t.includes('weide')) info = ABBR_MAP['LN'];
+      else if (t.includes('gebäudeneben')) info = ABBR_MAP['B(Nf)'];
+      else if (t.includes('gebäude')) info = ABBR_MAP['B(Geb)'];
+      else if (t.includes('weingarten') || t.includes('weingärten')) info = ABBR_MAP['WG'];
+      else if (t.includes('garten') || t.includes('gärten')) info = ABBR_MAP['GA'];
+      else if (t.includes('straß') || t.includes('verkehr') || t.includes('bahn')) info = ABBR_MAP['So(Str)'];
+      else if (t.includes('gewässer')) info = ABBR_MAP['GW(f)'];
+      else if (t.includes('feucht') || t.includes('sumpf') || t.includes('moor')) info = ABBR_MAP['GW(Fg)'];
       else if (t.includes('alpe') || t.includes('alm')) info = ABBR_MAP['Alpe'];
-      else if (t.includes('sumpf') || t.includes('moor')) info = ABBR_MAP['Moor'];
-      else if (t.includes('fels') || t.includes('geröll')) info = ABBR_MAP['Fe'];
+      else if (t.includes('fels') || t.includes('geröll')) info = ABBR_MAP['So(Fe)'];
+      else if (t.includes('gletscher')) info = ABBR_MAP['So(Gl)'];
       else info = {terrain:TERRAIN.grass, code:'', name:abbr};
     }
     entries.push({abbr, terrain:info.terrain, code:info.code, name:info.name, count});
-    if (info.code === '41' || info.code === '42' || info.code === '43' || info.code === '45') {
-      buildingCount += count;
-    }
+    if (NS_BUILDING.has(info.code)) buildingCount += count;
   }
-  // Dominant = highest count
-  let dominant = entries.length > 0 ? entries[0] : null;
-  for (const e of entries) { if (!dominant || e.count > dominant.count) dominant = e; }
+  // Dominant = highest area-weighted count (see nsWeight)
+  let dominant = null, bestW = -1;
+  for (const e of entries) {
+    const w = e.count * nsWeight(e.code);
+    if (w > bestW) { bestW = w; dominant = e; }
+  }
   return {dominant, buildingCount, entries};
 }
 
@@ -1801,7 +1813,7 @@ function correctedFracs(fracs, p) {
     }
     // hasBldg but unknown footprint area → keep srtm's roof fraction as-is
   }
-  const hasRoadLU = (parsed.entries || []).some(e => e.terrain === TERRAIN.road || e.code === '48' || e.code === '90');
+  const hasRoadLU = (parsed.entries || []).some(e => NS_TRAFFIC.has(e.code));
   if (!hasRoadLU) {
     let imperv = (out.road || 0) + (out.parking || 0) + (out.path || 0);
     if (imperv > 0.05) {
@@ -2173,32 +2185,34 @@ function drawGrassTexture(ctx, W, H) {
 }
 
 // ================= REAL LANDUSE POLYGONS =================
-// Map landuse_code to fill colors (Settlers-style terrain)
+// Map landuse_code (BEV NS, corrected Aug 2026) to fill colors (Settlers-style terrain)
 const LANDUSE_POLY_COLORS = {
-  '40': {fill:'#c8b040', stroke:'#a89830'},     // Baufläche begrünt — yellow
-  '41': {fill:'#d0b848', stroke:'#b09828'},     // Baufläche — yellow
-  '42': {fill:'#c0a838', stroke:'#a09028'},     // Gebäude — yellow
-  '43': {fill:'#b8a030', stroke:'#988820'},     // Keller — yellow
-  '48': {fill:'#404040', stroke:'#303030', a:0.8},  // Verkehr (roads) — dark grey tarmac
-  '52': {fill:'#5a9e3a', stroke:'#4a8e2a'},     // Wiese
-  '53': {fill:'#62a240', stroke:'#52923a'},     // Weide
-  '56': {fill:'#1e5a1e', stroke:'#145014'},     // Wald
-  '57': {fill:'#2a5a2a', stroke:'#1a4a1a'},     // Krummholz
-  '58': {fill:'#6a9a5a', stroke:'#5a8a4a'},     // Alpe
-  '59': {fill:'#7a7860', stroke:'#6a6850'},     // Ödland
-  '60': {fill:'#4a8a6a', stroke:'#3a7a5a'},     // Sumpf
-  '61': {fill:'#5aa83a', stroke:'#4a982a'},     // Grünland gemäht
-  '62': {fill:'#c8b858', stroke:'#a89838', a:0.65}, // Acker — golden/brown
-  '63': {fill:'#80aa40', stroke:'#709a30'},     // Weingarten
-  '64': {fill:'#6b8e4a', stroke:'#5b7e3a'},     // Gartenanlage
-  '65': {fill:'#7aaa4a', stroke:'#6a9a3a'},     // Obstgarten
-  '72': {fill:'#3090d0', stroke:'#2080c0', a:0.8}, // Quelle — bluer
-  '83': {fill:'#9a9888', stroke:'#8a8878'},     // Fels
-  '84': {fill:'#8a8878', stroke:'#7a7868'},     // Geröll
-  '90': {fill:'#484848', stroke:'#383838', a:0.8}, // Verkehrsfläche — dark grey
-  '91': {fill:'#505050', stroke:'#404040', a:0.7}, // Parkplatz — dark grey
-  '92': {fill:'#6a9a5a', stroke:'#5a8a4a'},     // Hochalm
-  '96': {fill:'#2888c8', stroke:'#1878b8', a:0.8}, // Gewässer — vivid blue
+  '40': {fill:'#8aa84a', stroke:'#7a9840'},          // Dauerkulturen/Erwerbsgärten
+  '41': {fill:'#d0b848', stroke:'#b09828'},          // Gebäude — yellow
+  '42': {fill:'#505050', stroke:'#404040', a:0.7},   // Parkplatz — dark grey
+  '48': {fill:'#7ba83c', stroke:'#6a9830'},          // Äcker/Wiesen/Weiden — farmland green
+  '52': {fill:'#6b8e4a', stroke:'#5b7e3a'},          // Gärten
+  '53': {fill:'#80aa40', stroke:'#709a30'},          // Weingärten
+  '54': {fill:'#6a9a5a', stroke:'#5a8a4a'},          // Alpen
+  '55': {fill:'#2a5a2a', stroke:'#1a4a1a'},          // Krummholz
+  '56': {fill:'#1e5a1e', stroke:'#145014'},          // Wälder
+  '57': {fill:'#5a8a4a', stroke:'#4a7a3a'},          // Verbuschte Flächen
+  '58': {fill:'#8a7a58', stroke:'#7a6a48', a:0.8},   // Forststraßen — gravel
+  '59': {fill:'#2888c8', stroke:'#1878b8', a:0.8},   // Fließende Gewässer
+  '60': {fill:'#3090d0', stroke:'#2080c0', a:0.8},   // Stehende Gewässer
+  '61': {fill:'#4a8a6a', stroke:'#3a7a5a'},          // Feuchtgebiete
+  '62': {fill:'#9a9888', stroke:'#8a8878'},          // Vegetationsarme Flächen
+  '63': {fill:'#a09070', stroke:'#907f60'},          // Betriebsflächen
+  '64': {fill:'#5a9a7a', stroke:'#4a8a6a'},          // Gewässerrandflächen
+  '65': {fill:'#7a9a5a', stroke:'#6a8a4a'},          // Verkehrsrandflächen
+  '72': {fill:'#6f8f6f', stroke:'#5f7f5f'},          // Friedhöfe
+  '83': {fill:'#c8b060', stroke:'#a89040'},          // Gebäudenebenflächen
+  '84': {fill:'#8a8878', stroke:'#7a7868'},          // Abbau/Halden/Deponien
+  '87': {fill:'#9a9888', stroke:'#8a8878'},          // Fels/Geröll
+  '88': {fill:'#cfe4f2', stroke:'#b8d4e8'},          // Gletscher
+  '92': {fill:'#5a5048', stroke:'#4a4038', a:0.85},  // Schienenverkehr
+  '95': {fill:'#484848', stroke:'#383838', a:0.8},   // Straßenverkehr — tarmac
+  '96': {fill:'#7aaa4a', stroke:'#6a9a3a'},          // Freizeitflächen
 };
 const LANDUSE_POLY_DEFAULT = {fill:'#5a8a40', stroke:'#4a7a30'};
 // Compact Verkehrsfläche (farmyard/courtyard, not a road): light gravel
@@ -2211,10 +2225,10 @@ function drawLandusePolygons(ctx) {
     if (!geom) continue;
     const code = f.properties.landuse_code || '';
     let colors = LANDUSE_POLY_COLORS[code] || LANDUSE_POLY_DEFAULT;
-    // Verkehrsfläche (48/90): distinguish real roads (long, thin) from paved
+    // Straßenverkehrsanlagen (95): distinguish real roads (long, thin) from paved
     // farmyards/courtyards (compact blobs). Compact ones drawn as dark tarmac
     // read like flat gray buildings — render them as light gravel instead.
-    if (code === '48' || code === '90') {
+    if (code === '95') {
       if (f._yard === undefined) {
         const r0 = (geom.type === 'MultiPolygon' ? geom.coordinates[0] : geom.coordinates)[0];
         let per = 0;
@@ -3538,17 +3552,27 @@ function drawBuilding(ctx, x, y, large, seed) {
 }
 
 function extractLuCode(lu, p) {
-  // Use landuse_codes if available (from bbox spatial endpoint)
-  if (p.landuse_codes) {
-    const first = p.landuse_codes.split(',')[0].trim();
-    if (first) return first;
-  }
-  if (p.dominant_landuse) return p.dominant_landuse;
-  // Parse from landuse_summary using our proper parser
+  // landuse_summary is the richest source and shares the weighting logic.
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
-    if (parsed.dominant) return parsed.dominant.code;
+    if (parsed.dominant && parsed.dominant.code) return parsed.dominant.code;
   }
+  // landuse_codes (bbox endpoint) lists one NS code per symbol on the parcel,
+  // in arbitrary order — take the weighted MODE, not the first entry, or a
+  // single stray road glyph decides the terrain and price of a whole field.
+  if (p.landuse_codes) {
+    const counts = {};
+    let best = '', bestW = 0;
+    for (const raw of String(p.landuse_codes).split(',')) {
+      const c = raw.trim();
+      if (!c) continue;
+      counts[c] = (counts[c] || 0) + 1;
+      const w = counts[c] * nsWeight(c);
+      if (w > bestW) { best = c; bestW = w; }
+    }
+    if (best) return best;
+  }
+  if (p.dominant_landuse) return String(p.dominant_landuse);
   // Fallback: try numeric from raw string
   const match = (lu || '').match(/(\d{2})/);
   if (match) return match[1];
@@ -3566,10 +3590,7 @@ function getParcelTerrain(p, claim) {
     const dt = lp.domTerrain || (lp.dom && !IMPERVIOUS_DOM.has(lp.dom) ? lp.dom : null);
     if (dt && DOM_TERRAIN[dt]) return DOM_TERRAIN[dt];
   }
-  if (p.landuse_summary) {
-    const parsed = parseLanduseSummary(p.landuse_summary);
-    if (parsed.dominant) return parsed.dominant.terrain;
-  }
+  // Cadastre fallback — same dominant code the popup and price use.
   const luCode = extractLuCode('', p);
   return LANDUSE_TERRAIN[luCode] || TERRAIN.grass;
 }
@@ -3579,7 +3600,10 @@ function getLanduseName(p) {
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
     if (parsed.entries.length > 0) {
-      return parsed.entries.map(e => e.name + (e.count > 1 ? ' (×'+e.count+')' : '')).join(', ');
+      return parsed.entries
+        .slice()
+        .sort((a, b) => b.count * nsWeight(b.code) - a.count * nsWeight(a.code))
+        .map(e => e.name + (e.count > 1 ? ' (×'+e.count+')' : '')).join(', ');
     }
   }
   const code = extractLuCode('', p);
@@ -3654,13 +3678,13 @@ function drawLanduseSprites(ctx, claimMap) {
     let spriteType = null;
 
     // Determine sprite type from landuse
-    if (luCode === '50' || luCode === '51') spriteType = 'crops';
-    else if (luCode === '52' || luCode === '53' || luCode === '54') spriteType = 'meadow';
-    else if (luCode === '60') spriteType = 'vineyard';
-    else if (luCode === '62') spriteType = 'garden';
-    else if (luCode === '63') continue; // orchards handled by tree sprites
+    if (luCode === '48') spriteType = 'crops';        // Äcker/Wiesen/Weiden
+    else if (luCode === '52') spriteType = 'garden';   // Gärten
+    else if (luCode === '53') spriteType = 'vineyard'; // Weingärten
+    else if (luCode === '54' || luCode === '96') spriteType = 'meadow'; // Alpen, Freizeit
+    else if (luCode === '40') continue;                // Dauerkulturen → tree sprites
     else if (terrain === TERRAIN.farm) spriteType = 'crops';
-    else if (terrain === TERRAIN.meadow && luCode !== '55') spriteType = 'meadow';
+    else if (terrain === TERRAIN.meadow) spriteType = 'meadow';
     else if (terrain === TERRAIN.water) spriteType = 'water';
     else if (terrain === TERRAIN.wetland) spriteType = 'reeds';
     else if (claim?.converted_to === 'biodiversity') spriteType = 'wildflower';
@@ -4006,9 +4030,9 @@ function drawForestSprites(ctx, claimMap) {
     // Terrain says forest/garden but lidar says (nearly) treeless → suppress sprites.
     if (veg && veg.wood < 0.05) return null;
     const luCode = extractLuCode('', f.properties);
-    if (luCode === '63') return 'orchard';   // Obstgarten
-    if (luCode === '57') return 'krummholz'; // Krummholz/Latschen
-    if (luCode === '58') return 'plantation'; // Aufforstung / plantation
+    if (luCode === '40') return 'orchard';   // Dauerkulturanlagen / Erwerbsgärten
+    if (luCode === '55') return 'krummholz'; // Krummholzflächen (Latschen)
+    if (luCode === '57') return 'krummholz'; // Verbuschte Flächen
     // Heuristic: large pure-forest parcel with no buildings → plantation likely
     if (t === TERRAIN.forest) {
       const area = f.properties.area_sqm || 0;
@@ -5673,7 +5697,9 @@ async function fetchBuildingInfo(fpId, lon, lat) {
   return G.bldgInfo[fpId];
 }
 
-const NS_NAMES = {'41':'Baufläche (befestigt)','42':'Gebäude','43':'Keller/Tiefgarage','44':'Ruine','45':'Gewächshaus'};
+// Footprint ns_code → label. Footprints carry BEV NS codes too; in practice
+// only 41 (Gebäude) and 83 (Gebäudenebenfläche) occur on building polygons.
+const NS_NAMES = {'41':'Gebäude','42':'Parkplatz','83':'Gebäudenebenfläche'};
 
 // ---- Collapsible popup sections (pixel-art headers) ----
 G.ppSec = { bldg: true, env: window.innerWidth >= 768 }; // remembered per session
@@ -5814,7 +5840,10 @@ async function openKGSummary(kg) {
       const fr = (e.count||0) / total;
       if (fr < 0.02) continue;
       const col = (LANDUSE_POLY_COLORS[e.code] && LANDUSE_POLY_COLORS[e.code].fill) || '#888';
-      const nm = (e.name||'').split(' - ')[0].split(' (')[0];
+      // Prefer our short German NS name; upstream labels like
+      // "Äcker, Wiesen oder Weiden - LN" are too long for the legend.
+      const nm = (NS_TABLE[String(e.code)] && NS_TABLE[String(e.code)].name)
+        || (e.name||'').split(' - ')[0].split(' (')[0];
       seg += '<i style="width:' + (fr*100).toFixed(1) + '%;background:' + col + '"></i>';
       if (leg.split('<em').length <= 4) leg += '<em><i style="background:' + col + '"></i>' + esc(nm) + ' ' + Math.round(fr*100) + '%</em>';
     }
@@ -5913,11 +5942,20 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     // Market value row (lazy loaded)
     const mv = G.landPrices[pid];
     if (mv) {
-      const eur = mv.buy_total_eur >= 1e6 ? (mv.buy_total_eur/1e6).toFixed(2) + ' Mio €' : Math.round(mv.buy_total_eur).toLocaleString('de-AT') + ' €';
+      // Upstream (Aug 2026) derives `class` from the AREA split of the parcel when
+      // available (class_source="area") and then also reports a blended total
+      // across the actual landuse mix — prefer it; the single-class total can be
+      // wildly off on mixed parcels (a field with one shed glyph priced as Bauland).
+      const total = mv.buy_total_blended_eur != null ? mv.buy_total_blended_eur : mv.buy_total_eur;
+      const eur = total >= 1e6 ? (total/1e6).toFixed(2) + ' Mio €' : Math.round(total).toLocaleString('de-AT') + ' €';
       const cls = {bauland_built:'Bauland (bebaut)', bauland_zoned:'Bauland', ackerland:'Ackerland', gruenland:'Grünland', wald:'Wald', other:'Sonstig'}[mv.class] || mv.class;
-      html += '<span>💶 Marktwert</span><b style="color:var(--gold)">' + eur + ' <span style="color:var(--text-dim)">(' + cls + ')</span></b>';
+      const share = (mv.class_source === 'area' && mv.class_share != null && mv.class_share < 0.95)
+        ? ' ' + Math.round(mv.class_share*100) + '%' : '';
+      const approx = mv.class_source === 'symbol' ? '≈ ' : '';
+      html += '<span>💶 Marktwert</span><b style="color:var(--gold)">' + approx + eur + ' <span style="color:var(--text-dim)">(' + cls + share + ')</span></b>';
       if (gamePrice > 0) {
-        html += '<span></span><b style="color:var(--text-dim);font-size:14px">Spielpreis: ' + gamePrice + '🪙 · ' + Math.round(mv.buy_eur_per_sqm) + ' €/m² echt</b>';
+        const perSqm = (mv.area_sqm > 0 ? total / mv.area_sqm : mv.buy_eur_per_sqm) || 0;
+        html += '<span></span><b style="color:var(--text-dim);font-size:14px">Spielpreis: ' + gamePrice + '🪙 · ' + Math.round(perSqm) + ' €/m² echt</b>';
       }
     }
     box.innerHTML = html;
@@ -6319,12 +6357,8 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
 }
 
 function calcPrice(area, lu, buildingCount, totalBuildingArea) {
-  let ppm = 0.15;
-  if (lu?.startsWith('4')) ppm = 0.5;
-  if (lu==='48') ppm = 0.1;
-  if (lu==='56') ppm = 0.2;
-  if (lu==='52') ppm = 0.3;
-  if (lu?.startsWith('7') || lu?.startsWith('8')) ppm = 0.05;
+  // Base price/m² from the BEV NS table — keep in sync with nsPricePerSqm() in server.go.
+  const ppm = (NS_TABLE[lu] && NS_TABLE[lu].price) || 0.15;
   // Density multiplier: built-up ratio drives price up/down
   let densityMult = 1.0;
   if (area > 0 && totalBuildingArea > 0) {

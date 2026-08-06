@@ -1922,22 +1922,44 @@ func (s *Server) broadcast(sessionID string, data map[string]any) {
 
 // ---- Game Logic Helpers ----
 
+// nsPricePerSqm returns the base price in coins/m² for a BEV Nutzungssymbol (NS)
+// code. Source: BEV Schnittstellenbeschreibung "Katastralmappe SHP" V2.9, Tab. 8.
+// The upstream cadastre API corrected its German NS labels in Aug 2026 (codes
+// unchanged); notably 48 is farmland (Äcker/Wiesen/Weiden — the most common code
+// in Austria), NOT Verkehrsfläche, and 83 is Gebäudenebenfläche, not Fels.
+// MUST stay in sync with NS_TABLE in srv/static/game.js.
+var nsBasePrice = map[string]float64{
+	"40": 0.30, // Dauerkulturanlagen oder Erwerbsgärten
+	"41": 0.50, // Gebäude
+	"42": 0.25, // Parkplätze
+	"48": 0.30, // Äcker, Wiesen oder Weiden
+	"52": 0.45, // Gärten
+	"53": 0.35, // Weingärten
+	"54": 0.12, // Alpen
+	"55": 0.10, // Krummholzflächen
+	"56": 0.20, // Wälder
+	"57": 0.15, // Verbuschte Flächen
+	"58": 0.10, // Forststraßen
+	"59": 0.05, // Fließende Gewässer
+	"60": 0.05, // Stehende Gewässer
+	"61": 0.08, // Feuchtgebiete
+	"62": 0.05, // Vegetationsarme Flächen
+	"63": 0.40, // Betriebsflächen
+	"64": 0.08, // Gewässerrandflächen
+	"65": 0.10, // Verkehrsrandflächen
+	"72": 0.20, // Friedhöfe
+	"83": 0.45, // Gebäudenebenflächen
+	"84": 0.15, // Abbauflächen, Halden, Deponien
+	"87": 0.03, // Fels- und Geröllflächen
+	"88": 0.03, // Gletscher
+	"92": 0.15, // Schienenverkehrsanlagen
+	"95": 0.10, // Straßenverkehrsanlagen
+	"96": 0.35, // Freizeitflächen
+}
+
 func calculatePrice(areaSqm float64, landuse string, buildingCount int, totalBuildingArea float64) int {
-	// Base price per sqm varies by landuse
-	// NOTE: specific codes must come before prefix matches
-	var pricePerSqm float64
-	switch {
-	case landuse == "48": // Verkehr (Straße)
-		pricePerSqm = 0.1
-	case strings.HasPrefix(landuse, "4"): // Baufläche
-		pricePerSqm = 0.5
-	case landuse == "56": // Wald
-		pricePerSqm = 0.2
-	case landuse == "52": // Grünland
-		pricePerSqm = 0.3
-	case strings.HasPrefix(landuse, "7") || strings.HasPrefix(landuse, "8"): // Gewässer, Ödland
-		pricePerSqm = 0.05
-	default:
+	pricePerSqm, ok := nsBasePrice[landuse]
+	if !ok {
 		pricePerSqm = 0.15
 	}
 
