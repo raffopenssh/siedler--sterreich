@@ -855,6 +855,62 @@ function centroidOf(ring) {
   return [sx/ring.length, sy/ring.length];
 }
 
+// ---- Multi-part geometry helpers ----
+// Upstream returns MultiPolygon for any parcel with detached parts — very common
+// for alpine Gemeindegut / Almen (a single Grundstück split by a ridge or river).
+// Around Nauders ~2/3 of the loaded AREA was MultiPolygon, and every renderer /
+// hit-test that did `geometry.coordinates[0]` silently treated those as invisible.
+// Always go through these instead of indexing coordinates directly.
+
+/** Outer rings of a Polygon/MultiPolygon (holes skipped). [] for other types. */
+function geomOuterRings(g) {
+  if (!g) return [];
+  if (g.type === 'Polygon') return g.coordinates.length ? [g.coordinates[0]] : [];
+  if (g.type === 'MultiPolygon') return g.coordinates.map(p => p && p[0]).filter(Boolean);
+  return [];
+}
+
+/** Every ring (outer + holes) — for filling with the even-odd rule. */
+function geomAllRings(g) {
+  if (!g) return [];
+  if (g.type === 'Polygon') return g.coordinates;
+  if (g.type === 'MultiPolygon') { const o = []; for (const p of g.coordinates) for (const r of p) o.push(r); return o; }
+  return [];
+}
+
+/** Largest outer ring by vertex count — anchor for labels/sprites/centroids. */
+function biggestRing(g) {
+  let best = null, bn = -1;
+  for (const r of geomOuterRings(g)) if (r.length > bn) { bn = r.length; best = r; }
+  return best;
+}
+
+/** Is this an area geometry we can fill? */
+function isAreaGeom(g) { return !!g && (g.type === 'Polygon' || g.type === 'MultiPolygon'); }
+
+/** Representative lon/lat for a parcel feature: explicit props, else the
+ *  centroid of the largest part, else the raw point coords. */
+function featureLonLat(f) {
+  const p = f.properties || {};
+  if (p.lon != null && p.lat != null) return [p.lon, p.lat];
+  const r = biggestRing(f.geometry);
+  if (r) return centroidOf(r);
+  const c = f.geometry && f.geometry.coordinates;
+  return (c && typeof c[0] === 'number') ? [c[0], c[1]] : [null, null];
+}
+
+/** Point-in-area test across all parts (holes ignored — negligible in cadastre). */
+function pipGeom(lon, lat, g) {
+  for (const r of geomOuterRings(g)) if (pip(lon, lat, r)) return true;
+  return false;
+}
+
+/** Point-in-any-ring, for pre-extracted ring arrays. */
+function pipRings(lon, lat, rings) {
+  for (const r of rings) if (pip(lon, lat, r)) return true;
+  return false;
+}
+
 function geoBounds(geom) {
   let w=Infinity,e=-Infinity,s=Infinity,n=-Infinity;
   const processCoord = c => { if(c[0]<w)w=c[0]; if(c[0]>e)e=c[0]; if(c[1]<s)s=c[1]; if(c[1]>n)n=c[1]; };
@@ -1253,7 +1309,8 @@ async function startGameWithLoading() {
   if (G.parcels.length === 0 && G.parcelPolys.length > 0) {
     for (const f of G.parcelPolys) {
       const p = f.properties;
-      const c = polyCentroid(f.geometry.coordinates[0]);
+      const c = featureLonLat(f);
+      if (c[0] == null) continue;
       G.parcels.push({type:'Feature', properties:{...p, lon:c[0], lat:c[1]}, geometry:{type:'Point', coordinates:c}});
     }
   }
@@ -1278,6 +1335,7 @@ async function startGameWithLoading() {
 
   // Pre-generate grass pattern
   createGrassPattern();
+  loadAustriaBorder(); // background: national outline for the border overlay
   connectSSE();
 
   setLoadStep('ls-ready', 'done');
@@ -1616,6 +1674,19 @@ async function fetchKGPolygonsBlocking() {
   }).catch(()=>{});
 }
 
+/** Drop tiles that lie entirely outside Austria — upstream has no cadastre data
+ *  there, so those requests are pure latency (and made panning near the border
+ *  feel stuck). Conservative: keeps a tile if ANY corner/centre is inside, and
+ *  keeps everything until the outline has loaded. */
+function tilesInAustria(tiles) {
+  if (!G.atBorder) return tiles;
+  const keep = tiles.filter(t => {
+    const pts = [[t.w,t.s],[t.e,t.s],[t.w,t.n],[t.e,t.n],[(t.w+t.e)/2,(t.s+t.n)/2]];
+    return pts.some(p => insideAustria(p[0], p[1]));
+  });
+  return keep;
+}
+
 async function fetchKGPolygons() {
   // Incremental viewport load on pan/zoom. Splits the (padded) current view into
   // ≤0.02° tiles — one request per tile, nearest-to-camera first — and each tile
@@ -1625,7 +1696,7 @@ async function fetchKGPolygons() {
   const b = viewBounds();
   const padX = (b.e - b.w) * 0.25, padY = (b.n - b.s) * 0.25;
   const box = { w: b.w - padX, s: b.s - padY, e: b.e + padX, n: b.n + padY };
-  const added = await runPool(tileBox(box, 0.02, 12), t => loadTileResilient(t), 4);
+  const added = await runPool(tilesInAustria(tileBox(box, 0.02, 12)), t => loadTileResilient(t), 4);
   if (added > 0) { render(); renderMini(); }
   // Enhanced data for any newly-visible enhanced KGs.
   loadEnhancedForKGs();
@@ -1721,11 +1792,11 @@ function lidarGridKey(lon, lat) { return Math.round(lon*2000) + ':' + Math.round
 
 /** Tall (lidar landmark) trees inside a parcel polygon. Returns {count, maxH}. */
 function tallTreesInParcel(f) {
-  if (!f || f.geometry?.type !== 'Polygon') return {count:0, maxH:0};
-  const ring = f.geometry.coordinates[0];
+  const rings = geomOuterRings(f && f.geometry);
+  if (!rings.length) return {count:0, maxH:0};
   let count = 0, maxH = 0;
   for (const t of allTallTrees()) {
-    if (pip(t.lon, t.lat, ring)) { count++; if (t.height_m > maxH) maxH = t.height_m; }
+    if (pipRings(t.lon, t.lat, rings)) { count++; if (t.height_m > maxH) maxH = t.height_m; }
   }
   return {count, maxH};
 }
@@ -1889,10 +1960,7 @@ function kgAtCamera() {
       if (d < nd && f.properties.kg_code) { nd = d; nearestKG = f.properties.kg_code; }
       continue;
     }
-    const rings = g.type === 'Polygon' ? [g.coordinates[0]] : g.coordinates.map(p => p[0]);
-    for (const ring of rings) {
-      if (pip(lon, lat, ring)) return f.properties.kg_code || null;
-    }
+    if (pipGeom(lon, lat, g)) return f.properties.kg_code || null;
   }
   // Only trust the nearest-parcel fallback when it's genuinely close (~120m).
   return nd < 1.2e-6 ? nearestKG : null;
@@ -1906,7 +1974,7 @@ function camOverEnhancedKG() {
 function updateEnhancedBadge() {
   const el = document.getElementById('enhanced-badge');
   if (!el) return;
-  el.style.display = camOverEnhancedKG() ? '' : 'none';
+  el.style.display = (camOverEnhancedKG() && insideAustria(G.cam.lon, G.cam.lat)) ? '' : 'none';
   // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
   el.textContent = G.devTree ? '✨ Enhanced Gelände 🌲' : '✨ Enhanced Gelände';
 }
@@ -2080,6 +2148,9 @@ function render() {
   ctx.fillRect(0, 0, W, H);
   drawGrassTexture(ctx, W, H);
 
+  // ---- Foreign territory (outside Austria — no cadastre data exists there) ----
+  drawForeignShading(ctx, W, H);
+
   // Build claim lookup
   const claimMap = {};
   for (const c of G.claimed) claimMap[c.parcel_id] = c;
@@ -2141,6 +2212,10 @@ function render() {
 
   // ---- Tapped building highlight ----
   if (G.selFp) drawFpHighlight(ctx, G.selFp);
+
+  // ---- Austrian national border (above map content) ----
+  drawAustriaBorderLine(ctx);
+  updateAbroadBadge();
 
   // Scale bar
   drawScaleBar(ctx, W, H);
@@ -2487,7 +2562,7 @@ function giantTreeName(t) {
  * it stands in → lidar parcel elevation; falls back to the KG terrain mean. */
 function giantTreeElevation(t) {
   for (const f of G.parcelPolys) {
-    if (f.geometry.type === 'Polygon' && pip(t.lon, t.lat, f.geometry.coordinates[0])) {
+    if (pipGeom(t.lon, t.lat, f.geometry)) {
       const lp = G.lidarParcels[f.properties.parcel_id];
       if (lp && lp.elev != null) return lp.elev;
       break;
@@ -3301,29 +3376,34 @@ function drawBuildingFootprints(ctx) {
 function drawParcelPoly(ctx, f, claimMap) {
   const p = f.properties;
   const geom = f.geometry;
-  if (!geom || geom.type !== 'Polygon') return;
+  if (!isAreaGeom(geom)) return;
 
-  const coords = geom.coordinates[0];
   const parcelId = p.parcel_id;
   const claim = claimMap[parcelId];
   const terrain = getParcelTerrain(p, claim);
 
-  // Project coordinates
-  const pts = coords.map(c => toScreen(c[0], c[1]));
+  // Project every ring (a MultiPolygon parcel has several detached parts —
+  // common for alpine Gemeindegut split by a ridge; drawing only ring 0 left
+  // huge parcels invisible).
+  const rings = geomAllRings(geom).map(r => r.map(c => toScreen(c[0], c[1])));
+  const pts = rings[0] || [];
 
   // Check if visible
   let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-  for (const pt of pts) {
+  for (const ring of rings) for (const pt of ring) {
     if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
     if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
   }
+  if (!rings.length) return;
   if (maxX < -50 || minX > gc.width+50 || maxY < -50 || minY > gc.height+50) return;
 
   ctx.beginPath();
-  for (let i=0; i<pts.length; i++) {
-    i===0 ? ctx.moveTo(pts[i][0], pts[i][1]) : ctx.lineTo(pts[i][0], pts[i][1]);
+  for (const ring of rings) {
+    for (let i=0; i<ring.length; i++) {
+      i===0 ? ctx.moveTo(ring[i][0], ring[i][1]) : ctx.lineTo(ring[i][0], ring[i][1]);
+    }
+    ctx.closePath();
   }
-  ctx.closePath();
 
   // Settlers-style fill with variation
   const hash = simpleHash(parcelId || '');
@@ -3660,14 +3740,15 @@ function drawLanduseSprites(ctx, claimMap) {
   for (const f of G.parcelPolys) {
     const p = f.properties;
     const geom = f.geometry;
-    if (!geom || geom.type !== 'Polygon') continue;
+    if (!isAreaGeom(geom)) continue;
     const claim = claimMap[p.parcel_id];
     const terrain = getParcelTerrain(p, claim);
     const luCode = extractLuCode('', p);
     const area = p.area_sqm || 0;
     if (area < 100) continue;
 
-    const coords = geom.coordinates[0];
+    const coords = geomOuterRings(geom);
+    if (!coords.length) continue;
     const b = geoBounds(geom);
     const [sx1,sy1] = toScreen(b.w, b.n);
     const [sx2,sy2] = toScreen(b.e, b.s);
@@ -3696,7 +3777,7 @@ function drawLanduseSprites(ctx, claimMap) {
       const u = ((hash + i * 3571) % 10000) / 10000;
       const lon = b.w + (b.e - b.w) * (0.1 + t * 0.8);
       const lat = b.s + (b.n - b.s) * (0.1 + u * 0.8);
-      if (!pip(lon, lat, coords)) continue;
+      if (!pipRings(lon, lat, coords)) continue;
       const [sx, sy] = toScreen(lon, lat);
       const v = (hash + i) % 5;
       switch (spriteType) {
@@ -4048,7 +4129,8 @@ function drawForestSprites(ctx, claimMap) {
 
   ctx.save();
   for (const { f, style } of treePolys) {
-    const coords = f.geometry.coordinates[0];
+    const coords = geomOuterRings(f.geometry);
+    if (!coords.length) continue;
     const b = geoBounds(f.geometry);
     const [sx1,sy1] = toScreen(b.w, b.n);
     const [sx2,sy2] = toScreen(b.e, b.s);
@@ -4097,10 +4179,12 @@ function drawForestSprites(ctx, claimMap) {
 
     // Draw bright green underglow for reforested parcels
     if (style === 'reforested') {
-      const pts = coords.map(c => toScreen(c[0], c[1]));
       ctx.beginPath();
-      pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
-      ctx.closePath();
+      for (const ring of coords) {
+        const pts = ring.map(c => toScreen(c[0], c[1]));
+        pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
+        ctx.closePath();
+      }
       // Vibrant green overlay with pulse
       const pulse = 0.12 + Math.sin(Date.now()/1200 + hash) * 0.04;
       ctx.fillStyle = `rgba(80,220,60,${pulse})`;
@@ -4118,7 +4202,7 @@ function drawForestSprites(ctx, claimMap) {
       const u = (hash + i * 3571) % 10000 / 10000;
       const lon = b.w + (b.e - b.w) * t;
       const lat = b.s + (b.n - b.s) * u;
-      if (!pip(lon, lat, coords)) continue;
+      if (!pipRings(lon, lat, coords)) continue;
       const [tx, ty] = toScreen(lon, lat);
       drawTree(ctx, tx, ty, variantFn(i), hash + i);
     }
@@ -4131,7 +4215,7 @@ function drawForestSprites(ctx, claimMap) {
         const u = (hash + (i+50) * 4337) % 10000 / 10000;
         const lon2 = b.w + (b.e - b.w) * t;
         const lat2 = b.s + (b.n - b.s) * u;
-        if (!pip(lon2, lat2, coords)) continue;
+        if (!pipRings(lon2, lat2, coords)) continue;
         const [sx, sy] = toScreen(lon2, lat2);
         drawSprout(ctx, sx, sy, hash + i);
       }
@@ -4869,18 +4953,22 @@ function drawEZHighlight(ctx) {
   const alpha = 0.12;
   for (const f of parcels) {
     if (f.properties.parcel_id === selId) continue; // skip the selected one (drawn separately)
-    if (f.geometry.type === 'Polygon') {
-      const pts = f.geometry.coordinates[0].map(c => toScreen(c[0], c[1]));
+    if (isAreaGeom(f.geometry)) {
+      const rings = geomAllRings(f.geometry).map(r => r.map(c => toScreen(c[0], c[1])));
+      const pts = rings[0] || [];
       // Quick bounds check
       let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-      for (const pt of pts) {
+      for (const ring of rings) for (const pt of ring) {
         if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
         if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
       }
+      if (!rings.length) continue;
       if (maxX < -50 || minX > gc.width+50 || maxY < -50 || minY > gc.height+50) continue;
       ctx.beginPath();
-      pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
-      ctx.closePath();
+      for (const ring of rings) {
+        ring.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
+        ctx.closePath();
+      }
       // Subtle whitish glow fill
       ctx.fillStyle = 'rgba(220,220,240,' + alpha + ')';
       ctx.fill();
@@ -4916,17 +5004,130 @@ function drawSelection(ctx, f) {
   ctx.shadowColor = '#ffd700';
   ctx.shadowBlur = 8;
 
-  if (f.geometry.type === 'Polygon') {
-    const pts = f.geometry.coordinates[0].map(c => toScreen(c[0], c[1]));
+  if (isAreaGeom(f.geometry)) {
     ctx.beginPath();
-    pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
-    ctx.closePath();
+    for (const ring of geomAllRings(f.geometry)) {
+      const pts = ring.map(c => toScreen(c[0], c[1]));
+      pts.forEach((pt,i) => i===0 ? ctx.moveTo(pt[0],pt[1]) : ctx.lineTo(pt[0],pt[1]));
+      ctx.closePath();
+    }
     ctx.stroke();
   } else {
     const [x,y] = toScreen(p.lon||f.geometry.coordinates[0], p.lat||f.geometry.coordinates[1]);
     const sz = Math.max(12, Math.sqrt(p.area_sqm||100) * mapScale() / 60000);
     ctx.strokeRect(x-sz/2-3, y-sz/2-3, sz+6, sz+6);
   }
+  ctx.restore();
+}
+
+// ================= AUSTRIA NATIONAL BORDER =================
+// Cadastre data stops at the state border, so a viewport straddling it looks
+// "broken" (large empty green area) unless we say WHY. We ship a simplified
+// ADM0 outline (srv/static/austria.json, geoBoundaries/BEV, ~12k vertices,
+// DP-simplified to 0.0002° ≈ 20 m) and dim + hatch everything outside it, plus
+// a red-white-red border line. Same outline is drawn on the minimap.
+
+G.atBorder = null;      // [ring, ...] lon/lat outer rings
+let _atBorderTried = false;
+
+async function loadAustriaBorder() {
+  if (_atBorderTried) return;
+  _atBorderTried = true;
+  try {
+    const r = await fetch('/static/austria.json?v=1');
+    const d = await r.json();
+    G.atBorder = d.rings || [];
+    render(); renderMini();
+  } catch(e) { console.error('austria border load failed', e); }
+}
+
+/** Is a lon/lat inside Austria? Null-safe: true while the outline is loading. */
+function insideAustria(lon, lat) {
+  if (!G.atBorder) return true;
+  return pipRings(lon, lat, G.atBorder);
+}
+
+/** Foreign-territory shading + national border line. Drawn right after the
+ *  grass backdrop so parcels/landuse sit on top of the shading, and the border
+ *  line again on top of everything (drawAustriaBorderLine). */
+function drawForeignShading(ctx, W, H) {
+  if (!G.atBorder) return;
+  const v = viewBounds();
+  // Skip entirely if the view is comfortably inside the country (cheap check:
+  // no ring segment intersects the padded viewport and the centre is inside).
+  if (!borderNearView(v) && insideAustria(G.cam.lon, G.cam.lat)) return;
+
+  ctx.save();
+  // Even-odd: whole canvas minus Austria = foreign land.
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  for (const ring of G.atBorder) {
+    let started = false;
+    for (const c of ring) {
+      const [x, y] = toScreen(c[0], c[1]);
+      started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+    }
+    ctx.closePath();
+  }
+  ctx.fillStyle = 'rgba(28,44,20,0.55)';
+  ctx.fill('evenodd');
+
+  // Diagonal hatch over the foreign side to read as "no data here".
+  ctx.clip('evenodd');
+  ctx.strokeStyle = 'rgba(0,0,0,0.16)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = -H; x < W + H; x += 14) { ctx.moveTo(x, 0); ctx.lineTo(x + H, H); }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Rough test: does any border vertex fall in (a padded) current view? */
+function borderNearView(v) {
+  const px = (v.e - v.w) * 0.5, py = (v.n - v.s) * 0.5;
+  const w = v.w - px, e = v.e + px, s = v.s - py, n = v.n + py;
+  for (const ring of G.atBorder) {
+    for (const c of ring) {
+      if (c[0] >= w && c[0] <= e && c[1] >= s && c[1] <= n) return true;
+    }
+  }
+  return false;
+}
+
+/** Show the "outside Austria" banner when the view centre is across the border.
+ *  Without it, the shaded/hatched foreign area reads as a loading failure. */
+function updateAbroadBadge() {
+  const el = document.getElementById('abroad-badge');
+  if (!el) return;
+  const abroad = !!G.atBorder && !insideAustria(G.cam.lon, G.cam.lat);
+  el.style.display = abroad ? '' : 'none';
+  // The two badges share the same slot — don't stack them.
+  const eb = document.getElementById('enhanced-badge');
+  if (eb && abroad) eb.style.display = 'none';
+}
+
+/** Red-white-red national border line, drawn above the map content. */
+function drawAustriaBorderLine(ctx) {
+  if (!G.atBorder) return;
+  const v = viewBounds();
+  if (!borderNearView(v)) return;
+  ctx.save();
+  for (const pass of [{ c: 'rgba(160,20,30,0.85)', w: 6 }, { c: 'rgba(255,255,255,0.9)', w: 2 }]) {
+    ctx.beginPath();
+    for (const ring of G.atBorder) {
+      let started = false;
+      for (const c of ring) {
+        const [x, y] = toScreen(c[0], c[1]);
+        started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+      }
+      ctx.closePath();
+    }
+    ctx.strokeStyle = pass.c;
+    ctx.lineWidth = pass.w;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+  // Label the foreign side once, near the screen edge closest to the border.
   ctx.restore();
 }
 
@@ -4983,6 +5184,32 @@ function renderMini() {
     const t = getParcelTerrain(p, cl);
     mctx.fillStyle = cl ? (G.pcolors[cl.player_id]||t[0]) : t[0];
     mctx.fillRect(mx-1, my-1, 3, 3);
+  }
+
+  // ---- Austrian border on the minimap ----
+  // Clipped to the minimap extent; makes it obvious when the play area butts
+  // against the state border (no cadastre data on the other side).
+  if (G.atBorder) {
+    mctx.save();
+    mctx.beginPath();
+    mctx.rect(0, 0, 180, 130);
+    mctx.clip();
+    const mspan = Math.max(lr, ar);
+    mctx.strokeStyle = 'rgba(255,120,120,0.85)';
+    mctx.lineWidth = 1.5;
+    for (const ring of G.atBorder) {
+      // Skip rings entirely outside the minimap window (cheap bbox test).
+      let started = false, any = false;
+      mctx.beginPath();
+      for (const c of ring) {
+        if (Math.abs(c[0] - minLon) > lr + mspan || Math.abs(c[1] - minLat) > ar + mspan) { started = false; continue; }
+        const mx = pad + (c[0] - minLon) * sc, my = pad + (maxLat - c[1]) * sc;
+        started ? mctx.lineTo(mx, my) : (mctx.moveTo(mx, my), started = true);
+        any = true;
+      }
+      if (any) mctx.stroke();
+    }
+    mctx.restore();
   }
 
   // Viewport rect
@@ -5506,7 +5733,7 @@ function onGameClick(e) {
 
   // Check polygon parcels
   for (const f of G.parcelPolys) {
-    if (f.geometry.type==='Polygon' && pip(lon, lat, f.geometry.coordinates[0])) {
+    if (pipGeom(lon, lat, f.geometry)) {
       showParcelPopup(f, fpHit); return;
     }
   }
@@ -5545,8 +5772,7 @@ function showParcelPopup(f, tappedFp) {
 
   // Keep camera stable on parcel tap (no zoom jumps — important on mobile).
   // Only nudge the view if the parcel is off-screen (e.g. re-opened programmatically).
-  const pLon = p.lon || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[0] : f.geometry.coordinates[0]);
-  const pLat = p.lat || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[1] : f.geometry.coordinates[1]);
+  const [pLon, pLat] = featureLonLat(f);
   if (gc) {
     const [sx, sy] = toScreen(pLon, pLat);
     const m = 40; // margin
@@ -5902,8 +6128,7 @@ function renderEnhancedPopupRows(pid, gamePrice) {
   }
 
   // Natura 2000: is parcel inside a loaded site polygon?
-  const pLon = G.sel?.properties?.lon || (G.sel?.geometry?.type === 'Polygon' ? centroidOf(G.sel.geometry.coordinates[0])[0] : null);
-  const pLat = G.sel?.properties?.lat || (G.sel?.geometry?.type === 'Polygon' ? centroidOf(G.sel.geometry.coordinates[0])[1] : null);
+  const [pLon, pLat] = G.sel ? featureLonLat(G.sel) : [null, null];
   if (pLon != null) {
     for (const code in G.n2kSites) {
       const st = G.n2kSites[code];
@@ -5995,8 +6220,7 @@ function fitBBox(minLon, minLat, maxLon, maxLat, maxZoom) {
 
 function similarQueryFor(f) {
   const p = f.properties;
-  const pLon = p.lon || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[0] : f.geometry.coordinates[0]);
-  const pLat = p.lat || (f.geometry.type === 'Polygon' ? centroidOf(f.geometry.coordinates[0])[1] : f.geometry.coordinates[1]);
+  const [pLon, pLat] = featureLonLat(f);
   return { pid: p.parcel_id, pLon, pLat, params: new URLSearchParams({
     parcel_id: p.parcel_id, lon: pLon, lat: pLat,
     area: p.area_sqm || 0,
@@ -6303,14 +6527,10 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
   let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
   for (const pf of ezParcels) {
     const p = pf.properties;
-    if (pf.geometry.type === 'Polygon') {
-      // Get bounds from polygon coordinates
-      for (const coord of pf.geometry.coordinates[0]) {
-        minLon = Math.min(minLon, coord[0]);
-        maxLon = Math.max(maxLon, coord[0]);
-        minLat = Math.min(minLat, coord[1]);
-        maxLat = Math.max(maxLat, coord[1]);
-      }
+    if (isAreaGeom(pf.geometry)) {
+      const b = geoBounds(pf.geometry);
+      minLon = Math.min(minLon, b.w); maxLon = Math.max(maxLon, b.e);
+      minLat = Math.min(minLat, b.s); maxLat = Math.max(maxLat, b.n);
     } else {
       // Point geometry
       const lon = p.lon || pf.geometry.coordinates[0];

@@ -719,6 +719,17 @@ input[type=text]:focus { border-color:var(--gold); }
   box-shadow:2px 2px 0 #000;
 }
 
+/* "You are outside Austria" banner — cadastre data simply doesn't exist there,
+   so without this the shaded/hatched area reads as a loading bug. */
+.abroad-badge {
+  position:absolute; top:58px; left:50%; transform:translateX(-50%);
+  background:rgba(60,16,16,0.9); border:2px solid #c04040;
+  color:#ffd0d0; font:8px var(--font-pixel);
+  padding:6px 12px; border-radius:3px; z-index:51;
+  pointer-events:none; white-space:nowrap;
+  box-shadow:2px 2px 0 #000;
+}
+
 /* Viewport geometry loading indicator (shown while /api/viewport tiles are in flight) */
 .map-loading {
   position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
@@ -776,6 +787,7 @@ input[type=text]:focus { border-color:var(--gold); }
 #btn-n2k.off { opacity:0.45; }
 @media (max-width:768px) {
   .enhanced-badge { top:52px; font-size:7px; padding:5px 8px; }
+  .abroad-badge { top:52px; font-size:7px; padding:5px 8px; white-space:normal; max-width:80vw; text-align:center; }
   .pp-enhanced { font-size:16px; }
   /* Bottom sheet (z200) + parcel popup cover the bottom edge on mobile —
      park the clear-chip under the enhanced badge instead. */
