@@ -11,7 +11,9 @@ const I18N_EXACT = {
   'Neues Spiel': 'New Game',
   '🍀 Auf Glück': '🍀 Feeling lucky',
   '⚔️ Mitspielen': '⚔️ Join game',
-  'Alpha · keine Cookies · kein Tracking': 'Alpha · no cookies · no tracking',
+  'Beta · keine Cookies · kein Tracking': 'Beta · no cookies · no tracking',
+  '⚒ BETA · PROTOTYP': '⚒ BETA · PROTOTYPE',
+  'In Entwicklung – Spielstände, Preise und Regeln können sich noch ändern.': 'In development – saves, prices and rules may still change.',
   'Impressum': 'Imprint',
   'Datenschutz': 'Privacy',
 
