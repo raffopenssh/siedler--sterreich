@@ -36,6 +36,8 @@ type ChatMessage struct {
 	PlayerID  string    `json:"player_id"`
 	Message   string    `json:"message"`
 	CreatedAt time.Time `json:"created_at"`
+	Hidden    int64     `json:"hidden"`
+	Flag      string    `json:"flag"`
 }
 
 type GameSession struct {
@@ -49,6 +51,7 @@ type GameSession struct {
 	CreatedBy        string    `json:"created_by"`
 	CreatedAt        time.Time `json:"created_at"`
 	Status           string    `json:"status"`
+	ChatMode         string    `json:"chat_mode"`
 }
 
 type Migration struct {
@@ -86,17 +89,48 @@ type ParcelOffer struct {
 }
 
 type Player struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	RejoinToken       string    `json:"-"`
-	MunicipalityCode  *string   `json:"municipality_code"`
-	MunicipalityName  *string   `json:"municipality_name"`
-	Coins             int64     `json:"coins"`
-	BiodiversityScore float64   `json:"biodiversity_score"`
-	Level             int64     `json:"level"`
-	Xp                int64     `json:"xp"`
-	CreatedAt         time.Time `json:"created_at"`
-	LastSeen          time.Time `json:"last_seen"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	RejoinToken       string     `json:"-"`
+	MunicipalityCode  *string    `json:"municipality_code"`
+	MunicipalityName  *string    `json:"municipality_name"`
+	Coins             int64      `json:"coins"`
+	BiodiversityScore float64    `json:"biodiversity_score"`
+	Level             int64      `json:"level"`
+	Xp                int64      `json:"xp"`
+	CreatedAt         time.Time  `json:"created_at"`
+	LastSeen          time.Time  `json:"last_seen"`
+	ChatStrikes       int64      `json:"-"`
+	ChatMutedUntil    *time.Time `json:"-"`
+	ChatBanned        int64      `json:"-"`
+	ChatRulesAccepted int64      `json:"chat_rules_accepted"`
+}
+
+type PlayerBlock struct {
+	PlayerID  string    `json:"player_id"`
+	BlockedID string    `json:"blocked_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Report struct {
+	ID               int64     `json:"id"`
+	SessionID        string    `json:"session_id"`
+	MessageID        *int64    `json:"message_id"`
+	ReportedPlayerID string    `json:"reported_player_id"`
+	ReporterID       string    `json:"reporter_id"`
+	Reason           string    `json:"reason"`
+	Note             string    `json:"note"`
+	Action           string    `json:"action"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type SafetyEvent struct {
+	ID        int64     `json:"id"`
+	Kind      string    `json:"kind"`
+	PlayerID  *string   `json:"player_id"`
+	SessionID *string   `json:"session_id"`
+	Detail    string    `json:"detail"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type SessionPlayer struct {

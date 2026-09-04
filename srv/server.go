@@ -139,6 +139,7 @@ func (s *Server) cacheJanitor() {
 
 func (s *Server) Serve(addr string) error {
 	go s.cacheJanitor()
+	go s.safetyJanitor()
 
 	mux := http.NewServeMux()
 
@@ -185,6 +186,13 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/session/{id}/biodiversity", s.handleGetBiodiversity)
 	mux.HandleFunc("GET /api/session/{id}/chat", s.handleGetChat)
 	mux.HandleFunc("POST /api/session/{id}/chat", s.handlePostChat)
+	mux.HandleFunc("POST /api/session/{id}/chat-mode", s.handleSetChatMode)
+	mux.HandleFunc("GET /api/chat/rules", s.handleChatRules)
+	mux.HandleFunc("POST /api/chat/accept-rules", s.handleAcceptChatRules)
+	mux.HandleFunc("POST /api/report", s.handleReport)
+	mux.HandleFunc("POST /api/block", s.handleBlock)
+	mux.HandleFunc("GET /api/player/{id}/blocks", s.handleListBlocks)
+	mux.HandleFunc("GET /admin/safety/{action}", s.handleAdminSafety)
 	mux.HandleFunc("GET /api/session/{id}/events", s.handleSSE)
 
 	// Game actions
@@ -459,6 +467,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	req.Name = strings.TrimSpace(req.Name)
 	if len(req.Name) < 2 || len(req.Name) > 30 {
 		jsonErr(w, "Name must be 2-30 characters", 400)
+		return
+	}
+	if !filterName(req.Name) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":     "Dieser Name ist nicht erlaubt",
+			"suggested": s.suggestName(r.Context()),
+		})
 		return
 	}
 
@@ -1350,6 +1367,22 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "error", 500)
 		return
 	}
+	// Hide messages from players the viewer has blocked.
+	if pid := r.URL.Query().Get("player_id"); pid != "" {
+		if blocks, err := s.Q.ListBlocks(r.Context(), pid); err == nil && len(blocks) > 0 {
+			bl := map[string]bool{}
+			for _, b := range blocks {
+				bl[b.BlockedID] = true
+			}
+			out := msgs[:0]
+			for _, m := range msgs {
+				if !bl[m.PlayerID] {
+					out = append(out, m)
+				}
+			}
+			msgs = out
+		}
+	}
 	jsonResp(w, msgs)
 }
 
@@ -1357,24 +1390,93 @@ func (s *Server) handlePostChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PlayerID string `json:"player_id"`
 		Message  string `json:"message"`
+		Quick    int    `json:"quick"` // index into quickPhrases (+1), 0 = free text
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
 		return
 	}
-
-	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+	player, ok := s.authPlayer(r, req.PlayerID)
+	if !ok {
 		jsonErr(w, "unauthorized", 401)
 		return
 	}
+	ctx := r.Context()
+	sessionID := r.PathValue("id")
+	sess, err := s.Q.GetSession(ctx, sessionID)
+	if err != nil {
+		jsonErr(w, "session not found", 404)
+		return
+	}
+	if player.ChatBanned != 0 {
+		jsonErr(w, "Dein Chat ist dauerhaft gesperrt.", 403)
+		return
+	}
+	if until, muted := mutedUntil(player); muted {
+		jsonErr(w, "Dein Chat ist noch "+fmtRemaining(until)+" gesperrt.", 403)
+		return
+	}
+	if player.ChatRulesAccepted == 0 {
+		jsonErr(w, "rules_required", 428)
+		return
+	}
+	switch sess.ChatMode {
+	case "off":
+		jsonErr(w, "Der Chat ist in diesem Spiel deaktiviert.", 403)
+		return
+	case "quick":
+		if req.Quick < 1 || req.Quick > len(quickPhrases) {
+			jsonErr(w, "In diesem Spiel sind nur Schnellnachrichten erlaubt.", 403)
+			return
+		}
+	}
+	if req.Quick >= 1 && req.Quick <= len(quickPhrases) {
+		req.Message = quickPhrases[req.Quick-1]
+	}
 	req.Message = strings.TrimSpace(req.Message)
-	if req.Message == "" || len(req.Message) > 500 {
-		jsonErr(w, "Nachricht muss 1-500 Zeichen lang sein", 400)
+	if req.Message == "" || len(req.Message) > chatMaxLen {
+		jsonErr(w, fmt.Sprintf("Nachricht muss 1-%d Zeichen lang sein", chatMaxLen), 400)
 		return
 	}
 
-	msg, err := s.Q.CreateChatMessage(r.Context(), dbgen.CreateChatMessageParams{
-		SessionID: r.PathValue("id"),
+	if ok, dup, strike := chatLim.allow(player.ID, req.Message); !ok {
+		if dup {
+			jsonErr(w, "Diese Nachricht hast du gerade schon gesendet.", 429)
+			return
+		}
+		if strike {
+			s.applyStrikes(ctx, player.ID, 1, "flood")
+		}
+		jsonErr(w, "Langsam! Bitte warte ein paar Sekunden.", 429)
+		return
+	}
+
+	if req.Quick == 0 {
+		fr := filterChat(req.Message)
+		switch {
+		case fr.Severity >= 2:
+			strikes := int64(1)
+			if fr.Severity == 3 {
+				strikes = 3
+			}
+			s.Q.LogSafetyEvent(ctx, dbgen.LogSafetyEventParams{Kind: "filter_" + fr.Category, PlayerID: &player.ID, SessionID: &sessionID, Detail: req.Message})
+			cons := s.applyStrikes(ctx, player.ID, strikes, "filter:"+fr.Category)
+			if fr.Severity == 3 || fr.Category == "grooming" {
+				s.notifySafety("filter_"+fr.Category, sessionID, player, "Blockierte Nachricht: "+req.Message)
+			}
+			msg := fr.Message
+			if cons != "" {
+				msg += " " + cons
+			}
+			jsonErr(w, msg, 422)
+			return
+		case fr.Severity == 1:
+			req.Message = fr.Masked
+		}
+	}
+
+	msg, err := s.Q.CreateChatMessage(ctx, dbgen.CreateChatMessageParams{
+		SessionID: sessionID,
 		PlayerID:  req.PlayerID,
 		Message:   req.Message,
 	})
@@ -1383,15 +1485,230 @@ func (s *Server) handlePostChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	player, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
-	s.broadcast(r.PathValue("id"), map[string]any{
-		"type":    "chat",
-		"message": msg.Message,
-		"player":  player.Name,
-		"time":    msg.CreatedAt,
+	s.broadcast(sessionID, map[string]any{
+		"type":      "chat",
+		"id":        msg.ID,
+		"message":   msg.Message,
+		"player":    player.Name,
+		"player_id": player.ID,
+		"time":      msg.CreatedAt,
 	})
 
 	jsonResp(w, msg)
+}
+
+// handleSetChatMode lets the session creator switch chat between
+// free / quick (preset phrases only) / off — e.g. for classrooms.
+func (s *Server) handleSetChatMode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerID string `json:"player_id"`
+		Mode     string `json:"mode"`
+	}
+	if err := readJSON(r, &req); err != nil || !validChatModes[req.Mode] {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	sess, err := s.Q.GetSession(r.Context(), r.PathValue("id"))
+	if err != nil {
+		jsonErr(w, "session not found", 404)
+		return
+	}
+	if sess.CreatedBy != req.PlayerID {
+		jsonErr(w, "Nur der Spielersteller kann den Chat-Modus ändern.", 403)
+		return
+	}
+	if err := s.Q.SetSessionChatMode(r.Context(), dbgen.SetSessionChatModeParams{ChatMode: req.Mode, ID: sess.ID}); err != nil {
+		jsonErr(w, "error", 500)
+		return
+	}
+	s.broadcast(sess.ID, map[string]any{"type": "chat_mode", "mode": req.Mode})
+	jsonResp(w, map[string]any{"ok": true, "mode": req.Mode})
+}
+
+func (s *Server) handleChatRules(w http.ResponseWriter, r *http.Request) {
+	jsonResp(w, map[string]any{
+		"quick_phrases": quickPhrases,
+		"rules": []string{
+			"Sei freundlich – keine Beleidigungen, kein Hass.",
+			"Teile nichts Persönliches: kein Alter, keine Adresse, keine Schule, keine Telefonnummer, kein echter Name.",
+			"Keine Links, keine Social-Media-Namen, keine Treffen außerhalb des Spiels.",
+			"Wenn dir etwas komisch vorkommt: Nachricht melden (⚑) oder Spieler blockieren (🚫) – und einer erwachsenen Vertrauensperson erzählen.",
+			"Der Chat wird automatisch gefiltert. Verstöße führen zu Sperren.",
+		},
+	})
+}
+
+func (s *Server) handleAcceptChatRules(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerID string `json:"player_id"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	s.Q.AcceptChatRules(r.Context(), req.PlayerID)
+	jsonResp(w, map[string]any{"ok": true})
+}
+
+var reportReasons = map[string]string{
+	"harassment": "Beleidigung / Belästigung",
+	"hate":       "Hassrede",
+	"sexual":     "Sexuelle Inhalte",
+	"grooming":   "Fragt nach Alter / Fotos / Treffen / Kontakt",
+	"personal":   "Teilt persönliche Daten",
+	"spam":       "Spam / Werbung",
+	"other":      "Sonstiges",
+}
+
+// handleReport implements notice-and-action (DSA Art. 16) without human
+// staff: the message is hidden for everyone immediately, the reporter
+// auto-blocks the target, independent reports escalate to mutes, and the
+// operator gets a mail with context and signed action links.
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerID  string `json:"player_id"`
+		SessionID string `json:"session_id"`
+		MessageID int64  `json:"message_id"`
+		TargetID  string `json:"target_id"`
+		Reason    string `json:"reason"`
+		Note      string `json:"note"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+	reporter, ok := s.authPlayer(r, req.PlayerID)
+	if !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	if _, ok := reportReasons[req.Reason]; !ok {
+		jsonErr(w, "invalid reason", 400)
+		return
+	}
+	ctx := r.Context()
+	if n, _ := s.Q.CountReportsByReporterRecent(ctx, reporter.ID); n >= 10 {
+		jsonErr(w, "Zu viele Meldungen – bitte später erneut versuchen.", 429)
+		return
+	}
+	var msg dbgen.ChatMessage
+	var msgID *int64
+	if req.MessageID > 0 {
+		m, err := s.Q.GetChatMessage(ctx, req.MessageID)
+		if err != nil || m.SessionID != req.SessionID {
+			jsonErr(w, "message not found", 404)
+			return
+		}
+		msg = m
+		msgID = &m.ID
+		req.TargetID = m.PlayerID
+	}
+	if req.TargetID == "" || req.TargetID == reporter.ID {
+		jsonErr(w, "invalid target", 400)
+		return
+	}
+	target, err := s.Q.GetPlayerByID(ctx, req.TargetID)
+	if err != nil {
+		jsonErr(w, "player not found", 404)
+		return
+	}
+	if len(req.Note) > 300 {
+		req.Note = req.Note[:300]
+	}
+	dup, _ := s.Q.ReporterAlreadyReported(ctx, dbgen.ReporterAlreadyReportedParams{ReporterID: reporter.ID, ReportedPlayerID: target.ID, SessionID: req.SessionID})
+
+	actions := []string{}
+	// 1. hide the message for everyone, immediately
+	if msgID != nil && msg.Hidden == 0 {
+		s.Q.HideChatMessage(ctx, dbgen.HideChatMessageParams{Flag: "reported:" + req.Reason, ID: *msgID})
+		s.broadcast(req.SessionID, map[string]any{"type": "chat_hidden", "id": *msgID})
+		actions = append(actions, "hidden")
+	}
+	// 2. the reporter never sees the target again
+	s.Q.AddBlock(ctx, dbgen.AddBlockParams{PlayerID: reporter.ID, BlockedID: target.ID})
+	actions = append(actions, "blocked")
+
+	// 3. escalation — one report from one person is not proof; several
+	//    independent reporters in 24h are. Severe categories act faster.
+	if dup == 0 {
+		severe := req.Reason == "grooming" || req.Reason == "sexual"
+		strikes := int64(1)
+		if severe {
+			strikes = 2
+		}
+		if c := s.applyStrikes(ctx, target.ID, strikes, "report:"+req.Reason); c != "" {
+			actions = append(actions, "strike→"+c)
+		} else {
+			actions = append(actions, "strike")
+		}
+		reporters, _ := s.Q.CountDistinctReportersForPlayer(ctx, target.ID)
+		reporters++ // include this one (row not inserted yet)
+		switch {
+		case severe && reporters >= 2, reporters >= 3:
+			s.muteFor(ctx, target.ID, 24*time.Hour, fmt.Sprintf("%d independent reports (%s)", reporters, req.Reason))
+			s.Q.HidePlayerChatInSession(ctx, dbgen.HidePlayerChatInSessionParams{Flag: "mass_report", SessionID: req.SessionID, PlayerID: target.ID})
+			s.broadcast(req.SessionID, map[string]any{"type": "chat_refresh"})
+			actions = append(actions, "mute24h")
+		case severe:
+			s.muteFor(ctx, target.ID, time.Hour, "severe report ("+req.Reason+")")
+			actions = append(actions, "mute1h")
+		}
+	}
+	rep, _ := s.Q.CreateReport(ctx, dbgen.CreateReportParams{
+		SessionID: req.SessionID, MessageID: msgID, ReportedPlayerID: target.ID,
+		ReporterID: reporter.ID, Reason: req.Reason, Note: req.Note, Action: strings.Join(actions, ","),
+	})
+	detail := fmt.Sprintf("Meldung #%d – Grund: %s (%s)\nMelder: %s\nNotiz: %s\nAutomatische Maßnahmen: %s",
+		rep.ID, reportReasons[req.Reason], req.Reason, reporter.Name, req.Note, strings.Join(actions, ", "))
+	if msgID != nil {
+		detail += "\nGemeldete Nachricht: " + msg.Message
+	}
+	s.notifySafety("report_"+req.Reason, req.SessionID, target, detail)
+
+	jsonResp(w, map[string]any{"ok": true, "actions": actions})
+}
+
+func (s *Server) handleBlock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerID string `json:"player_id"`
+		TargetID string `json:"target_id"`
+		Unblock  bool   `json:"unblock"`
+	}
+	if err := readJSON(r, &req); err != nil || req.TargetID == "" || req.TargetID == req.PlayerID {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	if req.Unblock {
+		s.Q.RemoveBlock(r.Context(), dbgen.RemoveBlockParams{PlayerID: req.PlayerID, BlockedID: req.TargetID})
+	} else {
+		s.Q.AddBlock(r.Context(), dbgen.AddBlockParams{PlayerID: req.PlayerID, BlockedID: req.TargetID})
+	}
+	jsonResp(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleListBlocks(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authPlayer(r, r.PathValue("id")); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	rows, err := s.Q.ListBlocks(r.Context(), r.PathValue("id"))
+	if err != nil {
+		jsonErr(w, "error", 500)
+		return
+	}
+	jsonResp(w, rows)
 }
 
 // ---- Player ----

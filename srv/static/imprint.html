@@ -25,6 +25,20 @@
   <p><strong>Contact:</strong><br>
   E-mail: <a href="#" class="obf-email" data-label="Show e-mail ▸"></a></p>
 
+  <h2 id="report">Reporting content &amp; point of contact (DSA)</h2>
+  <p>Siedler Österreich is a small non-commercial service without a moderation
+  team. Protection is therefore automated: chat messages are filtered before
+  publication (insults, hate, sexual content, contact details, grooming
+  patterns), reported messages are hidden <strong>immediately</strong>, and
+  players receiving several independent reports are muted automatically.
+  Every report notifies the operator.</p>
+  <p><strong>Single point of contact</strong> under Art. 11 and 12 DSA for
+  authorities and users – for notices of illegal content, child-safety
+  concerns and complaints against automated measures (Art. 20 DSA):<br>
+  E-mail: <a href="#" class="obf-email2" data-label="Show e-mail ▸"></a><br>
+  Languages: German, English. In-game reporting: ⚑ icon next to every chat
+  message.</p>
+
   <h2>Purpose</h2>
   <p>Siedler Österreich is a non-commercial browser game in alpha stage. It
   serves the playful exploration of public Austrian cadastre data, raises
@@ -77,6 +91,15 @@
 <script>
 (function(){
   var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  var k2=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,110,114,107,111,118,102,107,122,100,117,125,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email2').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k2.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
   document.querySelectorAll('.obf-email').forEach(function(a){
     a.textContent=a.dataset.label||'Show e-mail ▸';
     a.addEventListener('click',function(ev){

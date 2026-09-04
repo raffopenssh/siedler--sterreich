@@ -344,12 +344,46 @@ const I18N_EXACT = {
 
 };
 
+// ---------- chat safety ----------
+Object.assign(I18N_EXACT, {
+  'Chat: frei': 'Chat: free text', 'Chat: Schnellnachrichten': 'Chat: quick phrases', 'Chat: aus': 'Chat: off',
+  'Chat-Modus (nur Spielersteller)': 'Chat mode (game creator only)', 'Schnellnachrichten': 'Quick phrases',
+  'Chat-Regeln & Sicherheit': 'Chat rules & safety', 'Der Chat ist in diesem Spiel deaktiviert.': 'Chat is disabled in this game.',
+  '🛡️ Chat-Regeln': '🛡️ Chat rules', 'Verstanden ✓': 'Got it ✓', 'Später': 'Later', '⚑ Melden': '⚑ Report', 'Melden': 'Report', 'Abbrechen': 'Cancel',
+  'Optional: Was ist passiert?': 'Optional: what happened?', 'Chat-Modus geändert': 'Chat mode changed', 'blockiert': 'blocked', 'Spieler: ': 'Player: ',
+  'Spieler blockieren? Du siehst dann keine Nachrichten mehr von dieser Person.': 'Block this player? You will no longer see their messages.',
+  '⚑ Danke für deine Meldung. Der Spieler wurde für dich blockiert.': '⚑ Thanks for reporting. The player has been blocked for you.',
+  'Die Nachricht wird sofort ausgeblendet und der Spieler für dich blockiert. Bei mehreren Meldungen wird der Spieler automatisch stummgeschaltet.': 'The message is hidden immediately and the player is blocked for you. Several reports mute the player automatically.',
+  'Sei freundlich – keine Beleidigungen, kein Hass.': 'Be kind – no insults, no hate.',
+  'Teile nichts Persönliches: kein Alter, keine Adresse, keine Schule, keine Telefonnummer, kein echter Name.': 'Share nothing personal: no age, address, school, phone number or real name.',
+  'Keine Links, keine Social-Media-Namen, keine Treffen außerhalb des Spiels.': 'No links, no social-media handles, no meeting up outside the game.',
+  'Wenn dir etwas komisch vorkommt: Nachricht melden (⚑) oder Spieler blockieren (🚫) – und einer erwachsenen Vertrauensperson erzählen.': 'If something feels wrong: report the message (⚑) or block the player (🚫) – and tell a trusted adult.',
+  'Der Chat wird automatisch gefiltert. Verstöße führen zu Sperren.': 'Chat is filtered automatically. Violations lead to mutes.',
+  'Beleidigung / Belästigung': 'Insult / harassment', 'Hassrede': 'Hate speech', 'Sexuelle Inhalte': 'Sexual content',
+  'Fragt nach Alter, Fotos, Treffen oder Kontakt': 'Asks for age, photos, meeting or contact', 'Teilt persönliche Daten': 'Shares personal data', 'Spam / Werbung': 'Spam / advertising', 'Sonstiges': 'Other',
+  'Hallo! 👋': 'Hello! 👋', 'Gut gespielt! 👏': 'Well played! 👏', 'Danke!': 'Thanks!', 'Ja': 'Yes', 'Nein': 'No', 'Schau mal hier! 📍': 'Look here! 📍',
+  'Ich brauche Hilfe': 'I need help', 'Wollen wir tauschen?': 'Want to trade?', 'Bis später!': 'See you later!', 'Glückwunsch! 🎉': 'Congrats! 🎉',
+  'Schöne Parzelle!': 'Nice parcel!', 'Lass uns Natur schützen 🌿': "Let's protect nature 🌿", 'Gute Idee!': 'Good idea!', 'Moment...': 'One moment...',
+  'Dein Chat ist dauerhaft gesperrt.': 'Your chat is permanently disabled.', 'In diesem Spiel sind nur Schnellnachrichten erlaubt.': 'Only quick phrases are allowed in this game.',
+  'Nur der Spielersteller kann den Chat-Modus ändern.': 'Only the game creator can change the chat mode.', 'Langsam! Bitte warte ein paar Sekunden.': 'Slow down! Please wait a few seconds.',
+  'Diese Nachricht hast du gerade schon gesendet.': 'You just sent that message.', '🔒 Bitte keine Telefonnummern im Chat teilen – zu deiner Sicherheit.': '🔒 Please don\'t share phone numbers in chat – for your safety.',
+  '🔒 Bitte keine E-Mail-Adressen im Chat teilen.': '🔒 Please don\'t share e-mail addresses in chat.', '🔒 Links sind im Chat nicht erlaubt.': '🔒 Links are not allowed in chat.',
+  '🔒 Bitte keine Kontaktdaten oder Social-Media-Namen austauschen – der Chat bleibt hier im Spiel.': '🔒 Please don\'t exchange contact details or social-media handles – chat stays in the game.',
+  '⛔ Diese Nachricht wurde blockiert. Fragen nach Alter, Wohnort, Fotos oder Treffen sind hier nicht erlaubt.': '⛔ Message blocked. Asking for age, location, photos or meeting up is not allowed here.',
+  '⛔ Sexuelle Inhalte sind hier nicht erlaubt.': '⛔ Sexual content is not allowed here.', '⛔ Beleidigungen und Hassrede sind nicht erlaubt.': '⛔ Insults and hate speech are not allowed.',
+  '🔒 Bitte verrate im Chat nichts Persönliches über dich (Alter, Wohnort, Schule, echter Name).': '🔒 Please don\'t reveal personal details about yourself in chat (age, location, school, real name).',
+  'ab 14 Jahren': 'ages 14+', 'Beta · keine Cookies · kein Tracking · Chat automatisch gefiltert · ': 'Beta · no cookies · no tracking · chat auto-filtered · ', ' (jünger nur mit Einwilligung der Eltern)': ' (younger only with parental consent)',
+});
+
 const I18N_RX = [
   // ---------- registration / joining ----------
   [/^🎉 Willkommen, (.+)!$/, '🎉 Welcome, $1!'],
   [/^Fehler beim Beitreten: (.+)$/, 'Error joining: $1'],
   [/^Fehler beim Zufallsstart: (.+)$/, 'Random start failed: $1'],
   [/^Lade (.+)\.\.\.$/, 'Loading $1...'],
+  [/^(.*) Dein Chat ist für (.+) gesperrt\.$/, function(_,a,b){return trx(a)+' Your chat is muted for '+b.replace('Min.','min').replace('Std.','h').replace('Tagen','days')+'.';}],
+  [/^Dein Chat ist noch (.+) gesperrt\.$/, function(_,b){return 'Your chat is still muted for '+b.replace('Min.','min').replace('Std.','h').replace('Tagen','days')+'.';}],
+  [/^Dein Chat wurde dauerhaft gesperrt\.$/, 'Your chat has been permanently disabled.'],
 
   // ---------- loading progress ----------
   [/^(\d+) Parzellen gefunden$/, '$1 parcels found'],

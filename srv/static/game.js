@@ -2039,9 +2039,10 @@ async function loadBio() {
   document.getElementById('bio-label').textContent = pct.toFixed(1)+'% / 30%';
 }
 async function loadChat() {
-  const msgs = await GET('/api/session/'+G.session.id+'/chat?limit=50') || [];
+  const msgs = await GET('/api/session/'+G.session.id+'/chat?limit=50&player_id='+encodeURIComponent(G.player.id)) || [];
   G.chatMsgs = msgs.reverse ? msgs.reverse() : msgs;
   renderChat();
+  loadChatSafety();
 }
 
 function updateStats() {
@@ -2079,9 +2080,99 @@ function renderQuests() {
 }
 function renderChat() {
   const el = document.getElementById('chat-log');
-  el.innerHTML = G.chatMsgs.map(m => `<div class="chat-msg"><span class="cn">${esc(m.player_name||'?')}:</span> ${esc(m.message)}</div>`).join('');
+  const blocked = G.blocked || new Set();
+  el.innerHTML = G.chatMsgs.filter(m => !m.player_id || !blocked.has(m.player_id)).map(m => {
+    if (m.hidden) return `<div class="chat-msg hidden-msg">🚫 Nachricht entfernt</div>`;
+    const mine = m.player_id && G.player && m.player_id === G.player.id;
+    const act = (!mine && m.player_id) ? `<span class="cm-act">
+        <button title="Melden" onclick="openReport(${m.id||0},'${m.player_id}','${esc(m.player_name||'')}')">⚑</button>
+        <button title="Blockieren" onclick="blockPlayer('${m.player_id}','${esc(m.player_name||'')}')">🚫</button></span>` : '';
+    return `<div class="chat-msg" data-id="${m.id||0}" onclick="this.classList.toggle('touch')"><span class="cn">${esc(m.player_name||'?')}:</span> ${esc(m.message)}${act}</div>`;
+  }).join('');
   el.scrollTop = el.scrollHeight;
 }
+
+// ---- Chat safety (rules gate, quick phrases, report, block, session mode) ----
+async function loadChatSafety() {
+  if (!G.chatRules) G.chatRules = await GET('/api/chat/rules') || {rules:[], quick_phrases:[]};
+  if (G.player && !G.blocked) {
+    const bl = await GET('/api/player/'+G.player.id+'/blocks') || [];
+    G.blocked = new Set(Array.isArray(bl) ? bl.map(b=>b.blocked_id) : []);
+  }
+  applyChatMode(G.session && G.session.chat_mode || 'free');
+  const sel = document.getElementById('chat-mode');
+  if (G.session && G.session.created_by === G.player.id) {
+    sel.style.display = '';
+    sel.value = G.session.chat_mode || 'free';
+    sel.onchange = async () => {
+      const r = await POST('/api/session/'+G.session.id+'/chat-mode', {player_id:G.player.id, mode:sel.value});
+      if (r.error) { toast(r.error,'err'); sel.value = G.session.chat_mode||'free'; return; }
+      toast(tr('Chat-Modus geändert'),'ok');
+    };
+  } else sel.style.display = 'none';
+  const q = document.getElementById('chat-quick');
+  q.innerHTML = (G.chatRules.quick_phrases||[]).map((ph,i) => `<button onclick="sendQuick(${i+1})">${esc(ph)}</button>`).join('');
+  renderChat();
+}
+function applyChatMode(mode) {
+  if (G.session) G.session.chat_mode = mode;
+  const row = document.getElementById('chat-input-row'), q = document.getElementById('chat-quick'), off = document.getElementById('chat-off-note');
+  row.style.display = mode === 'free' ? '' : 'none';
+  off.style.display = mode === 'off' ? '' : 'none';
+  q.style.display = mode === 'quick' ? '' : (G.quickOpen ? '' : 'none');
+  document.getElementById('btn-chat-quick').style.display = mode === 'free' ? '' : 'none';
+}
+document.getElementById('btn-chat-quick').onclick = () => {
+  G.quickOpen = !G.quickOpen;
+  document.getElementById('chat-quick').style.display = G.quickOpen ? '' : 'none';
+};
+document.getElementById('btn-chat-safety').onclick = () => showChatRules(false);
+function showChatRules(gate) {
+  const m = document.getElementById('chat-rules-modal');
+  document.getElementById('chat-rules-list').innerHTML = ((G.chatRules||{}).rules||[]).map(r=>`<li>${esc(r)}</li>`).join('');
+  document.getElementById('btn-rules-accept').style.display = (gate || !(G.player||{}).chat_rules_accepted) ? '' : 'none';
+  m.style.display = '';
+}
+document.getElementById('btn-rules-close').onclick = () => document.getElementById('chat-rules-modal').style.display = 'none';
+document.getElementById('btn-rules-accept').onclick = async () => {
+  await POST('/api/chat/accept-rules', {player_id:G.player.id});
+  G.player.chat_rules_accepted = 1;
+  document.getElementById('chat-rules-modal').style.display = 'none';
+  if (G.pendingChat) { const p = G.pendingChat; G.pendingChat = null; postChat(p); }
+};
+async function postChat(body) {
+  body.player_id = G.player.id;
+  const r = await POST('/api/session/'+G.session.id+'/chat', body);
+  if (r && r.error === 'rules_required') { G.pendingChat = body; showChatRules(true); return; }
+  if (r && r.error) { toast(r.error, 'err'); if (body.message && !body.quick) document.getElementById('input-chat').value = body.message; }
+}
+window.sendQuick = i => postChat({quick:i});
+window.blockPlayer = async (pid, name) => {
+  if (!confirm(tr('Spieler blockieren? Du siehst dann keine Nachrichten mehr von dieser Person.'))) return;
+  await POST('/api/block', {player_id:G.player.id, target_id:pid});
+  (G.blocked = G.blocked || new Set()).add(pid);
+  renderChat(); toast('🚫 '+name+' '+tr('blockiert'),'ok');
+};
+const REPORT_REASONS = [['harassment','Beleidigung / Belästigung'],['hate','Hassrede'],['sexual','Sexuelle Inhalte'],['grooming','Fragt nach Alter, Fotos, Treffen oder Kontakt'],['personal','Teilt persönliche Daten'],['spam','Spam / Werbung'],['other','Sonstiges']];
+window.openReport = (msgId, pid, name) => {
+  G.reportCtx = {message_id:msgId, target_id:pid};
+  document.getElementById('report-target').textContent = tr('Spieler: ')+name;
+  document.getElementById('report-reasons').innerHTML = REPORT_REASONS.map(([k,l]) => `<label><input type="radio" name="rr" value="${k}"> ${l}</label>`).join('');
+  document.getElementById('report-note').value = '';
+  document.getElementById('btn-report-send').disabled = true;
+  document.querySelectorAll('#report-reasons input').forEach(i => i.onchange = () => document.getElementById('btn-report-send').disabled = false);
+  document.getElementById('report-modal').style.display = '';
+};
+document.getElementById('btn-report-cancel').onclick = () => document.getElementById('report-modal').style.display = 'none';
+document.getElementById('btn-report-send').onclick = async () => {
+  const reason = (document.querySelector('#report-reasons input:checked')||{}).value; if (!reason) return;
+  const r = await POST('/api/report', Object.assign({player_id:G.player.id, session_id:G.session.id, reason, note:document.getElementById('report-note').value}, G.reportCtx));
+  document.getElementById('report-modal').style.display = 'none';
+  if (r.error) { toast(r.error,'err'); return; }
+  (G.blocked = G.blocked || new Set()).add(G.reportCtx.target_id);
+  G.chatMsgs.forEach(m => { if (m.id === G.reportCtx.message_id) m.hidden = 1; });
+  renderChat(); toast(tr('⚑ Danke für deine Meldung. Der Spieler wurde für dich blockiert.'),'ok');
+};
 
 window.tryCompleteQuest = async function(id) {
   const res = await POST('/api/complete-challenge', {player_id:G.player.id, challenge_id:id});
@@ -2097,7 +2188,7 @@ async function sendChat() {
   const inp = document.getElementById('input-chat');
   const msg = inp.value.trim(); if (!msg||!G.session) return;
   inp.value = '';
-  await POST('/api/session/'+G.session.id+'/chat', {player_id:G.player.id, message:msg});
+  postChat({message:msg});
 }
 
 // ---- SSE ----
@@ -2111,7 +2202,10 @@ function connectSSE() {
 }
 function handleEvent(d) {
   switch(d.type) {
-    case 'chat': G.chatMsgs.push({player_name:d.player,message:d.message}); renderChat(); break;
+    case 'chat': G.chatMsgs.push({id:d.id,player_id:d.player_id,player_name:d.player,message:d.message}); renderChat(); break;
+    case 'chat_hidden': G.chatMsgs.forEach(m => { if (m.id === d.id) m.hidden = 1; }); renderChat(); break;
+    case 'chat_refresh': loadChat(); break;
+    case 'chat_mode': applyChatMode(d.mode); { const sel=document.getElementById('chat-mode'); if (sel) sel.value=d.mode; } toast(tr('Chat-Modus geändert'),''); break;
     case 'player_joined': toast('⚔️ '+d.player.name+' beigetreten!','ok'); loadPlayers(); break;
     case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,''); loadClaimed().then(()=>render()); break;
     case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;

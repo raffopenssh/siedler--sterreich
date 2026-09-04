@@ -18,3 +18,10 @@ sql:
           # (session player lists, SSE broadcasts, etc).
           - column: "players.rejoin_token"
             go_struct_tag: 'json:"-"'
+          # Moderation state is not for other players' eyes.
+          - column: "players.chat_strikes"
+            go_struct_tag: 'json:"-"'
+          - column: "players.chat_muted_until"
+            go_struct_tag: 'json:"-"'
+          - column: "players.chat_banned"
+            go_struct_tag: 'json:"-"'

@@ -10,6 +10,45 @@ import (
 	"time"
 )
 
+const acceptChatRules = `-- name: AcceptChatRules :exec
+UPDATE players SET chat_rules_accepted = 1 WHERE id = ?
+`
+
+func (q *Queries) AcceptChatRules(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, acceptChatRules, id)
+	return err
+}
+
+const addBlock = `-- name: AddBlock :exec
+INSERT OR IGNORE INTO player_blocks (player_id, blocked_id) VALUES (?, ?)
+`
+
+type AddBlockParams struct {
+	PlayerID  string `json:"player_id"`
+	BlockedID string `json:"blocked_id"`
+}
+
+func (q *Queries) AddBlock(ctx context.Context, arg AddBlockParams) error {
+	_, err := q.db.ExecContext(ctx, addBlock, arg.PlayerID, arg.BlockedID)
+	return err
+}
+
+const addChatStrike = `-- name: AddChatStrike :one
+UPDATE players SET chat_strikes = chat_strikes + ? WHERE id = ? RETURNING chat_strikes
+`
+
+type AddChatStrikeParams struct {
+	ChatStrikes int64  `json:"-"`
+	ID          string `json:"id"`
+}
+
+func (q *Queries) AddChatStrike(ctx context.Context, arg AddChatStrikeParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, addChatStrike, arg.ChatStrikes, arg.ID)
+	var chat_strikes int64
+	err := row.Scan(&chat_strikes)
+	return chat_strikes, err
+}
+
 const cancelPendingOffersForParcel = `-- name: CancelPendingOffersForParcel :exec
 UPDATE parcel_offers SET status = 'cancelled', resolved_at = CURRENT_TIMESTAMP
 WHERE parcel_id = ? AND session_id = ? AND status = 'pending'
@@ -97,6 +136,29 @@ func (q *Queries) ConvertParcel(ctx context.Context, arg ConvertParcelParams) er
 	return err
 }
 
+const countDistinctReportersForPlayer = `-- name: CountDistinctReportersForPlayer :one
+SELECT COUNT(DISTINCT reporter_id) FROM reports
+WHERE reported_player_id = ? AND created_at > datetime('now', '-1 day')
+`
+
+func (q *Queries) CountDistinctReportersForPlayer(ctx context.Context, reportedPlayerID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countDistinctReportersForPlayer, reportedPlayerID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countReportsByReporterRecent = `-- name: CountReportsByReporterRecent :one
+SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND created_at > datetime('now', '-1 hour')
+`
+
+func (q *Queries) CountReportsByReporterRecent(ctx context.Context, reporterID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countReportsByReporterRecent, reporterID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createChallenge = `-- name: CreateChallenge :exec
 INSERT INTO challenges (session_id, player_id, challenge_type, title, description, target_parcel_id, reward_coins, reward_xp)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -128,7 +190,7 @@ func (q *Queries) CreateChallenge(ctx context.Context, arg CreateChallengeParams
 }
 
 const createChatMessage = `-- name: CreateChatMessage :one
-INSERT INTO chat_messages (session_id, player_id, message) VALUES (?, ?, ?) RETURNING id, session_id, player_id, message, created_at
+INSERT INTO chat_messages (session_id, player_id, message) VALUES (?, ?, ?) RETURNING id, session_id, player_id, message, created_at, hidden, flag
 `
 
 type CreateChatMessageParams struct {
@@ -146,6 +208,8 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 		&i.PlayerID,
 		&i.Message,
 		&i.CreatedAt,
+		&i.Hidden,
+		&i.Flag,
 	)
 	return i, err
 }
@@ -189,6 +253,46 @@ type CreatePlayerParams struct {
 func (q *Queries) CreatePlayer(ctx context.Context, arg CreatePlayerParams) error {
 	_, err := q.db.ExecContext(ctx, createPlayer, arg.ID, arg.Name, arg.RejoinToken)
 	return err
+}
+
+const createReport = `-- name: CreateReport :one
+INSERT INTO reports (session_id, message_id, reported_player_id, reporter_id, reason, note, action)
+VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, session_id, message_id, reported_player_id, reporter_id, reason, note, "action", created_at
+`
+
+type CreateReportParams struct {
+	SessionID        string `json:"session_id"`
+	MessageID        *int64 `json:"message_id"`
+	ReportedPlayerID string `json:"reported_player_id"`
+	ReporterID       string `json:"reporter_id"`
+	Reason           string `json:"reason"`
+	Note             string `json:"note"`
+	Action           string `json:"action"`
+}
+
+func (q *Queries) CreateReport(ctx context.Context, arg CreateReportParams) (Report, error) {
+	row := q.db.QueryRowContext(ctx, createReport,
+		arg.SessionID,
+		arg.MessageID,
+		arg.ReportedPlayerID,
+		arg.ReporterID,
+		arg.Reason,
+		arg.Note,
+		arg.Action,
+	)
+	var i Report
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.MessageID,
+		&i.ReportedPlayerID,
+		&i.ReporterID,
+		&i.Reason,
+		&i.Note,
+		&i.Action,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const createSession = `-- name: CreateSession :exec
@@ -271,6 +375,74 @@ func (q *Queries) GetCachedData(ctx context.Context, cacheKey string) (string, e
 	var data string
 	err := row.Scan(&data)
 	return data, err
+}
+
+const getChatContext = `-- name: GetChatContext :many
+SELECT cm.id, cm.player_id, cm.message, cm.hidden, cm.flag, cm.created_at, p.name as player_name
+FROM chat_messages cm JOIN players p ON p.id = cm.player_id
+WHERE cm.session_id = ? ORDER BY cm.created_at DESC LIMIT 25
+`
+
+type GetChatContextRow struct {
+	ID         int64     `json:"id"`
+	PlayerID   string    `json:"player_id"`
+	Message    string    `json:"message"`
+	Hidden     int64     `json:"hidden"`
+	Flag       string    `json:"flag"`
+	CreatedAt  time.Time `json:"created_at"`
+	PlayerName string    `json:"player_name"`
+}
+
+func (q *Queries) GetChatContext(ctx context.Context, sessionID string) ([]GetChatContextRow, error) {
+	rows, err := q.db.QueryContext(ctx, getChatContext, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetChatContextRow{}
+	for rows.Next() {
+		var i GetChatContextRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PlayerID,
+			&i.Message,
+			&i.Hidden,
+			&i.Flag,
+			&i.CreatedAt,
+			&i.PlayerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChatMessage = `-- name: GetChatMessage :one
+
+SELECT id, session_id, player_id, message, created_at, hidden, flag FROM chat_messages WHERE id = ?
+`
+
+// ---- Safety / moderation ----
+func (q *Queries) GetChatMessage(ctx context.Context, id int64) (ChatMessage, error) {
+	row := q.db.QueryRowContext(ctx, getChatMessage, id)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.PlayerID,
+		&i.Message,
+		&i.CreatedAt,
+		&i.Hidden,
+		&i.Flag,
+	)
+	return i, err
 }
 
 const getOfferByID = `-- name: GetOfferByID :one
@@ -520,7 +692,7 @@ func (q *Queries) GetPendingOffersForSeller(ctx context.Context, arg GetPendingO
 }
 
 const getPlayerByID = `-- name: GetPlayerByID :one
-SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen FROM players WHERE id = ?
+SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted FROM players WHERE id = ?
 `
 
 func (q *Queries) GetPlayerByID(ctx context.Context, id string) (Player, error) {
@@ -538,12 +710,16 @@ func (q *Queries) GetPlayerByID(ctx context.Context, id string) (Player, error) 
 		&i.Xp,
 		&i.CreatedAt,
 		&i.LastSeen,
+		&i.ChatStrikes,
+		&i.ChatMutedUntil,
+		&i.ChatBanned,
+		&i.ChatRulesAccepted,
 	)
 	return i, err
 }
 
 const getPlayerByName = `-- name: GetPlayerByName :one
-SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen FROM players WHERE name = ?
+SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted FROM players WHERE name = ?
 `
 
 func (q *Queries) GetPlayerByName(ctx context.Context, name string) (Player, error) {
@@ -561,12 +737,16 @@ func (q *Queries) GetPlayerByName(ctx context.Context, name string) (Player, err
 		&i.Xp,
 		&i.CreatedAt,
 		&i.LastSeen,
+		&i.ChatStrikes,
+		&i.ChatMutedUntil,
+		&i.ChatBanned,
+		&i.ChatRulesAccepted,
 	)
 	return i, err
 }
 
 const getPlayerByToken = `-- name: GetPlayerByToken :one
-SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen FROM players WHERE rejoin_token = ?
+SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted FROM players WHERE rejoin_token = ?
 `
 
 func (q *Queries) GetPlayerByToken(ctx context.Context, rejoinToken string) (Player, error) {
@@ -584,6 +764,10 @@ func (q *Queries) GetPlayerByToken(ctx context.Context, rejoinToken string) (Pla
 		&i.Xp,
 		&i.CreatedAt,
 		&i.LastSeen,
+		&i.ChatStrikes,
+		&i.ChatMutedUntil,
+		&i.ChatBanned,
+		&i.ChatRulesAccepted,
 	)
 	return i, err
 }
@@ -679,7 +863,7 @@ func (q *Queries) GetPlayerParcels(ctx context.Context, arg GetPlayerParcelsPara
 }
 
 const getPlayerSessions = `-- name: GetPlayerSessions :many
-SELECT gs.id, gs.name, gs.invite_code, gs.municipality_code, gs.municipality_name, gs.center_lon, gs.center_lat, gs.created_by, gs.created_at, gs.status FROM game_sessions gs
+SELECT gs.id, gs.name, gs.invite_code, gs.municipality_code, gs.municipality_name, gs.center_lon, gs.center_lat, gs.created_by, gs.created_at, gs.status, gs.chat_mode FROM game_sessions gs
 JOIN session_players sp ON sp.session_id = gs.id
 WHERE sp.player_id = ? AND gs.status = 'active'
 `
@@ -704,6 +888,7 @@ func (q *Queries) GetPlayerSessions(ctx context.Context, playerID string) ([]Gam
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.Status,
+			&i.ChatMode,
 		); err != nil {
 			return nil, err
 		}
@@ -719,9 +904,9 @@ func (q *Queries) GetPlayerSessions(ctx context.Context, playerID string) ([]Gam
 }
 
 const getRecentChat = `-- name: GetRecentChat :many
-SELECT cm.id, cm.session_id, cm.player_id, cm.message, cm.created_at, p.name as player_name FROM chat_messages cm
+SELECT cm.id, cm.session_id, cm.player_id, cm.message, cm.created_at, cm.hidden, cm.flag, p.name as player_name FROM chat_messages cm
 JOIN players p ON p.id = cm.player_id
-WHERE cm.session_id = ?
+WHERE cm.session_id = ? AND cm.hidden = 0
 ORDER BY cm.created_at DESC LIMIT ?
 `
 
@@ -736,6 +921,8 @@ type GetRecentChatRow struct {
 	PlayerID   string    `json:"player_id"`
 	Message    string    `json:"message"`
 	CreatedAt  time.Time `json:"created_at"`
+	Hidden     int64     `json:"hidden"`
+	Flag       string    `json:"flag"`
 	PlayerName string    `json:"player_name"`
 }
 
@@ -754,6 +941,8 @@ func (q *Queries) GetRecentChat(ctx context.Context, arg GetRecentChatParams) ([
 			&i.PlayerID,
 			&i.Message,
 			&i.CreatedAt,
+			&i.Hidden,
+			&i.Flag,
 			&i.PlayerName,
 		); err != nil {
 			return nil, err
@@ -770,7 +959,7 @@ func (q *Queries) GetRecentChat(ctx context.Context, arg GetRecentChatParams) ([
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, name, invite_code, municipality_code, municipality_name, center_lon, center_lat, created_by, created_at, status FROM game_sessions WHERE id = ?
+SELECT id, name, invite_code, municipality_code, municipality_name, center_lon, center_lat, created_by, created_at, status, chat_mode FROM game_sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (GameSession, error) {
@@ -787,6 +976,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GameSession, error
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Status,
+		&i.ChatMode,
 	)
 	return i, err
 }
@@ -811,7 +1001,7 @@ func (q *Queries) GetSessionBiodiversityPercent(ctx context.Context, sessionID s
 }
 
 const getSessionByInvite = `-- name: GetSessionByInvite :one
-SELECT id, name, invite_code, municipality_code, municipality_name, center_lon, center_lat, created_by, created_at, status FROM game_sessions WHERE invite_code = ?
+SELECT id, name, invite_code, municipality_code, municipality_name, center_lon, center_lat, created_by, created_at, status, chat_mode FROM game_sessions WHERE invite_code = ?
 `
 
 func (q *Queries) GetSessionByInvite(ctx context.Context, inviteCode string) (GameSession, error) {
@@ -828,6 +1018,7 @@ func (q *Queries) GetSessionByInvite(ctx context.Context, inviteCode string) (Ga
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Status,
+		&i.ChatMode,
 	)
 	return i, err
 }
@@ -933,7 +1124,7 @@ func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]Pa
 }
 
 const getSessionPlayers = `-- name: GetSessionPlayers :many
-SELECT p.id, p.name, p.rejoin_token, p.municipality_code, p.municipality_name, p.coins, p.biodiversity_score, p.level, p.xp, p.created_at, p.last_seen FROM players p
+SELECT p.id, p.name, p.rejoin_token, p.municipality_code, p.municipality_name, p.coins, p.biodiversity_score, p.level, p.xp, p.created_at, p.last_seen, p.chat_strikes, p.chat_muted_until, p.chat_banned, p.chat_rules_accepted FROM players p
 JOIN session_players sp ON sp.player_id = p.id
 WHERE sp.session_id = ?
 `
@@ -959,6 +1150,10 @@ func (q *Queries) GetSessionPlayers(ctx context.Context, sessionID string) ([]Pl
 			&i.Xp,
 			&i.CreatedAt,
 			&i.LastSeen,
+			&i.ChatStrikes,
+			&i.ChatMutedUntil,
+			&i.ChatBanned,
+			&i.ChatRulesAccepted,
 		); err != nil {
 			return nil, err
 		}
@@ -1013,6 +1208,35 @@ func (q *Queries) GetSessionTreasures(ctx context.Context, sessionID string) ([]
 	return items, nil
 }
 
+const hideChatMessage = `-- name: HideChatMessage :exec
+UPDATE chat_messages SET hidden = 1, flag = ? WHERE id = ?
+`
+
+type HideChatMessageParams struct {
+	Flag string `json:"flag"`
+	ID   int64  `json:"id"`
+}
+
+func (q *Queries) HideChatMessage(ctx context.Context, arg HideChatMessageParams) error {
+	_, err := q.db.ExecContext(ctx, hideChatMessage, arg.Flag, arg.ID)
+	return err
+}
+
+const hidePlayerChatInSession = `-- name: HidePlayerChatInSession :exec
+UPDATE chat_messages SET hidden = 1, flag = ? WHERE session_id = ? AND player_id = ? AND hidden = 0
+`
+
+type HidePlayerChatInSessionParams struct {
+	Flag      string `json:"flag"`
+	SessionID string `json:"session_id"`
+	PlayerID  string `json:"player_id"`
+}
+
+func (q *Queries) HidePlayerChatInSession(ctx context.Context, arg HidePlayerChatInSessionParams) error {
+	_, err := q.db.ExecContext(ctx, hidePlayerChatInSession, arg.Flag, arg.SessionID, arg.PlayerID)
+	return err
+}
+
 const joinSession = `-- name: JoinSession :exec
 INSERT OR IGNORE INTO session_players (session_id, player_id) VALUES (?, ?)
 `
@@ -1025,6 +1249,128 @@ type JoinSessionParams struct {
 func (q *Queries) JoinSession(ctx context.Context, arg JoinSessionParams) error {
 	_, err := q.db.ExecContext(ctx, joinSession, arg.SessionID, arg.PlayerID)
 	return err
+}
+
+const listBlocks = `-- name: ListBlocks :many
+SELECT pb.blocked_id, p.name FROM player_blocks pb JOIN players p ON p.id = pb.blocked_id WHERE pb.player_id = ?
+`
+
+type ListBlocksRow struct {
+	BlockedID string `json:"blocked_id"`
+	Name      string `json:"name"`
+}
+
+func (q *Queries) ListBlocks(ctx context.Context, playerID string) ([]ListBlocksRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBlocks, playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBlocksRow{}
+	for rows.Next() {
+		var i ListBlocksRow
+		if err := rows.Scan(&i.BlockedID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const logSafetyEvent = `-- name: LogSafetyEvent :exec
+INSERT INTO safety_events (kind, player_id, session_id, detail) VALUES (?, ?, ?, ?)
+`
+
+type LogSafetyEventParams struct {
+	Kind      string  `json:"kind"`
+	PlayerID  *string `json:"player_id"`
+	SessionID *string `json:"session_id"`
+	Detail    string  `json:"detail"`
+}
+
+func (q *Queries) LogSafetyEvent(ctx context.Context, arg LogSafetyEventParams) error {
+	_, err := q.db.ExecContext(ctx, logSafetyEvent,
+		arg.Kind,
+		arg.PlayerID,
+		arg.SessionID,
+		arg.Detail,
+	)
+	return err
+}
+
+const purgeOldChat = `-- name: PurgeOldChat :execrows
+DELETE FROM chat_messages WHERE created_at < datetime('now', '-30 days')
+AND id NOT IN (SELECT message_id FROM reports WHERE message_id IS NOT NULL)
+`
+
+func (q *Queries) PurgeOldChat(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, purgeOldChat)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const purgeOldReports = `-- name: PurgeOldReports :execrows
+DELETE FROM reports WHERE created_at < datetime('now', '-180 days')
+`
+
+func (q *Queries) PurgeOldReports(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, purgeOldReports)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const purgeOldSafetyEvents = `-- name: PurgeOldSafetyEvents :execrows
+DELETE FROM safety_events WHERE created_at < datetime('now', '-180 days')
+`
+
+func (q *Queries) PurgeOldSafetyEvents(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, purgeOldSafetyEvents)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const removeBlock = `-- name: RemoveBlock :exec
+DELETE FROM player_blocks WHERE player_id = ? AND blocked_id = ?
+`
+
+type RemoveBlockParams struct {
+	PlayerID  string `json:"player_id"`
+	BlockedID string `json:"blocked_id"`
+}
+
+func (q *Queries) RemoveBlock(ctx context.Context, arg RemoveBlockParams) error {
+	_, err := q.db.ExecContext(ctx, removeBlock, arg.PlayerID, arg.BlockedID)
+	return err
+}
+
+const reporterAlreadyReported = `-- name: ReporterAlreadyReported :one
+SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND reported_player_id = ? AND session_id = ?
+AND created_at > datetime('now', '-1 hour')
+`
+
+type ReporterAlreadyReportedParams struct {
+	ReporterID       string `json:"reporter_id"`
+	ReportedPlayerID string `json:"reported_player_id"`
+	SessionID        string `json:"session_id"`
+}
+
+func (q *Queries) ReporterAlreadyReported(ctx context.Context, arg ReporterAlreadyReportedParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, reporterAlreadyReported, arg.ReporterID, arg.ReportedPlayerID, arg.SessionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const setCachedData = `-- name: SetCachedData :exec
@@ -1040,6 +1386,57 @@ type SetCachedDataParams struct {
 
 func (q *Queries) SetCachedData(ctx context.Context, arg SetCachedDataParams) error {
 	_, err := q.db.ExecContext(ctx, setCachedData, arg.CacheKey, arg.Data, arg.ExpiresAt)
+	return err
+}
+
+const setChatBan = `-- name: SetChatBan :exec
+UPDATE players SET chat_banned = 1 WHERE id = ?
+`
+
+func (q *Queries) SetChatBan(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, setChatBan, id)
+	return err
+}
+
+const setChatMute = `-- name: SetChatMute :exec
+UPDATE players SET chat_muted_until = ? WHERE id = ?
+`
+
+type SetChatMuteParams struct {
+	ChatMutedUntil *time.Time `json:"-"`
+	ID             string     `json:"id"`
+}
+
+func (q *Queries) SetChatMute(ctx context.Context, arg SetChatMuteParams) error {
+	_, err := q.db.ExecContext(ctx, setChatMute, arg.ChatMutedUntil, arg.ID)
+	return err
+}
+
+const setReportAction = `-- name: SetReportAction :exec
+UPDATE reports SET action = ? WHERE id = ?
+`
+
+type SetReportActionParams struct {
+	Action string `json:"action"`
+	ID     int64  `json:"id"`
+}
+
+func (q *Queries) SetReportAction(ctx context.Context, arg SetReportActionParams) error {
+	_, err := q.db.ExecContext(ctx, setReportAction, arg.Action, arg.ID)
+	return err
+}
+
+const setSessionChatMode = `-- name: SetSessionChatMode :exec
+UPDATE game_sessions SET chat_mode = ? WHERE id = ?
+`
+
+type SetSessionChatModeParams struct {
+	ChatMode string `json:"chat_mode"`
+	ID       string `json:"id"`
+}
+
+func (q *Queries) SetSessionChatMode(ctx context.Context, arg SetSessionChatModeParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionChatMode, arg.ChatMode, arg.ID)
 	return err
 }
 

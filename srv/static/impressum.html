@@ -25,6 +25,25 @@
   <p><strong>Kontakt:</strong><br>
   E-Mail: <a href="#" class="obf-email"></a></p>
 
+  <h2 id="melden">Melden von Inhalten &amp; Kontaktstelle (DSA)</h2>
+  <p>Siedler Österreich ist ein kleiner, nicht-kommerzieller Dienst ohne
+  Moderationsteam. Damit trotzdem schnell reagiert wird, ist der Schutz
+  automatisiert: Chat-Nachrichten werden vor der Veröffentlichung gefiltert
+  (Beleidigungen, Hass, sexuelle Inhalte, Kontaktdaten, Grooming-Muster),
+  gemeldete Nachrichten werden <strong>sofort</strong> ausgeblendet, und
+  Spieler mit mehreren unabhängigen Meldungen werden automatisch
+  stummgeschaltet. Jede Meldung erzeugt eine Benachrichtigung an den
+  Betreiber.</p>
+  <p><strong>Zentrale Kontaktstelle</strong> gemäß Art. 11 und 12 DSA
+  (Digital Services Act) für Behörden und Nutzer:innen – für Meldungen
+  rechtswidriger Inhalte, Jugendschutz-Anliegen und Beschwerden gegen
+  automatische Maßnahmen (Art. 20 DSA):<br>
+  E-Mail: <a href="#" class="obf-email2"></a><br>
+  Sprachen: Deutsch, Englisch. Meldungen im Spiel: Symbol ⚑ neben jeder
+  Chat-Nachricht.</p>
+  <p>Wir bearbeiten Meldungen nach bestem Wissen und Gewissen; es besteht
+  keine Verpflichtung zur proaktiven Überwachung (Art. 8 DSA).</p>
+
   <h2>Grundlegende Richtung</h2>
   <p>Siedler Österreich ist ein nicht-kommerzielles Browserspiel in der
   Alpha-Phase. Es dient der spielerischen Erkundung öffentlicher
@@ -79,6 +98,15 @@
 (function(){
   // Contact address is char-shifted and only assembled on user interaction.
   var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  var k2=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,110,114,107,111,118,102,107,122,100,117,125,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email2').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k2.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
   document.querySelectorAll('.obf-email').forEach(function(a){
     a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
     a.addEventListener('click',function(ev){

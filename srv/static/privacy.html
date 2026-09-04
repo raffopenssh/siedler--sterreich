@@ -68,12 +68,40 @@
   stored. The feature is only active after your explicit consent in the
   browser and can be revoked at any time.</p>
 
-  <h2>7. Retention</h2>
-  <p>Game states and chat messages are stored for game operation and may be
-  deleted or reset at any time without notice during the alpha phase.
-  Cached map data is discarded automatically after expiry.</p>
+  <h2 id="minors">7. Protection of minors and chat safety</h2>
+  <p>The game is intended for players <strong>aged 14 and over</strong>
+  (§ 4(4) Austrian DSG / Art. 8 GDPR). Younger children may only play with a
+  parent's or guardian's consent. We collect no age or identity data – so we
+  treat <em>every</em> player as potentially a minor:</p>
+  <ul>
+    <li>Chat is limited to the game session; no private messages, no
+    profiles, no images.</li>
+    <li>Every message is checked automatically <strong>before</strong> it is
+    sent. Blocked: insults, hate speech, sexual content, phone numbers,
+    e-mail addresses, links, social-media handles, questions about
+    age/location/photos/meeting up, and self-disclosure (age, school,
+    address). Mild profanity is masked.</li>
+    <li>Chat rules must be accepted before the first message.</li>
+    <li>Any message can be <strong>reported</strong> with ⚑. Reported
+    messages are hidden for everyone immediately and the reported player is
+    blocked for you. 🚫 blocks a player at any time.</li>
+    <li>Violations earn strikes and escalating chat mutes (10&nbsp;min →
+    24&nbsp;h → permanent); several independent reports mute immediately.</li>
+    <li>The game creator can restrict chat to <strong>quick phrases</strong>
+    or switch it <strong>off</strong> – e.g. for classroom use.</li>
+    <li>These decisions are automated (Art. 22 GDPR, Art. 17 DSA). You may
+    object informally – see the <a href="/imprint#report">imprint</a>. Reports
+    and mutes are e-mailed to the operator.</li>
+  </ul>
 
-  <h2>8. Your rights</h2>
+  <h2>8. Retention</h2>
+  <p>Game states are stored for game operation and may be deleted or reset at
+  any time without notice during the beta phase. <strong>Chat messages are
+  deleted automatically after 30 days</strong>; reported messages, reports
+  and moderation logs are kept for 180 days for accountability. Cached map
+  data is discarded automatically after expiry.</p>
+
+  <h2>9. Your rights</h2>
   <p>Since no personal data is processed, stored game data can generally not
   be attributed to your person. Notwithstanding this, under the GDPR you
   have the right of access (Art. 15), rectification (Art. 16), erasure
@@ -93,6 +121,15 @@
 <script>
 (function(){
   var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  var k2=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,110,114,107,111,118,102,107,122,100,117,125,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email2').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k2.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
   document.querySelectorAll('.obf-email').forEach(function(a){
     a.textContent=a.dataset.label||'Show e-mail ▸';
     a.addEventListener('click',function(ev){

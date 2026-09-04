@@ -89,7 +89,7 @@ INSERT INTO chat_messages (session_id, player_id, message) VALUES (?, ?, ?) RETU
 -- name: GetRecentChat :many
 SELECT cm.*, p.name as player_name FROM chat_messages cm
 JOIN players p ON p.id = cm.player_id
-WHERE cm.session_id = ?
+WHERE cm.session_id = ? AND cm.hidden = 0
 ORDER BY cm.created_at DESC LIMIT ?;
 
 -- name: GetCachedData :one
@@ -153,3 +153,74 @@ JOIN players bp ON bp.id = po.buyer_id
 JOIN players sp ON sp.id = po.seller_id
 WHERE po.session_id = ? AND po.status = 'pending'
 ORDER BY po.created_at DESC;
+
+-- ---- Safety / moderation ----
+
+-- name: GetChatMessage :one
+SELECT * FROM chat_messages WHERE id = ?;
+
+-- name: HideChatMessage :exec
+UPDATE chat_messages SET hidden = 1, flag = ? WHERE id = ?;
+
+-- name: HidePlayerChatInSession :exec
+UPDATE chat_messages SET hidden = 1, flag = ? WHERE session_id = ? AND player_id = ? AND hidden = 0;
+
+-- name: GetChatContext :many
+SELECT cm.id, cm.player_id, cm.message, cm.hidden, cm.flag, cm.created_at, p.name as player_name
+FROM chat_messages cm JOIN players p ON p.id = cm.player_id
+WHERE cm.session_id = ? ORDER BY cm.created_at DESC LIMIT 25;
+
+-- name: AddChatStrike :one
+UPDATE players SET chat_strikes = chat_strikes + ? WHERE id = ? RETURNING chat_strikes;
+
+-- name: SetChatMute :exec
+UPDATE players SET chat_muted_until = ? WHERE id = ?;
+
+-- name: SetChatBan :exec
+UPDATE players SET chat_banned = 1 WHERE id = ?;
+
+-- name: AcceptChatRules :exec
+UPDATE players SET chat_rules_accepted = 1 WHERE id = ?;
+
+-- name: SetSessionChatMode :exec
+UPDATE game_sessions SET chat_mode = ? WHERE id = ?;
+
+-- name: CreateReport :one
+INSERT INTO reports (session_id, message_id, reported_player_id, reporter_id, reason, note, action)
+VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: SetReportAction :exec
+UPDATE reports SET action = ? WHERE id = ?;
+
+-- name: CountDistinctReportersForPlayer :one
+SELECT COUNT(DISTINCT reporter_id) FROM reports
+WHERE reported_player_id = ? AND created_at > datetime('now', '-1 day');
+
+-- name: CountReportsByReporterRecent :one
+SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND created_at > datetime('now', '-1 hour');
+
+-- name: ReporterAlreadyReported :one
+SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND reported_player_id = ? AND session_id = ?
+AND created_at > datetime('now', '-1 hour');
+
+-- name: AddBlock :exec
+INSERT OR IGNORE INTO player_blocks (player_id, blocked_id) VALUES (?, ?);
+
+-- name: RemoveBlock :exec
+DELETE FROM player_blocks WHERE player_id = ? AND blocked_id = ?;
+
+-- name: ListBlocks :many
+SELECT pb.blocked_id, p.name FROM player_blocks pb JOIN players p ON p.id = pb.blocked_id WHERE pb.player_id = ?;
+
+-- name: LogSafetyEvent :exec
+INSERT INTO safety_events (kind, player_id, session_id, detail) VALUES (?, ?, ?, ?);
+
+-- name: PurgeOldChat :execrows
+DELETE FROM chat_messages WHERE created_at < datetime('now', '-30 days')
+AND id NOT IN (SELECT message_id FROM reports WHERE message_id IS NOT NULL);
+
+-- name: PurgeOldReports :execrows
+DELETE FROM reports WHERE created_at < datetime('now', '-180 days');
+
+-- name: PurgeOldSafetyEvents :execrows
+DELETE FROM safety_events WHERE created_at < datetime('now', '-180 days');

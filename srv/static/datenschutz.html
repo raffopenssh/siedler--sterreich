@@ -72,13 +72,49 @@
   und nicht gespeichert. Die Funktion ist nur nach deiner ausdrücklichen
   Zustimmung im Browser aktiv und kann jederzeit widerrufen werden.</p>
 
-  <h2>7. Speicherdauer</h2>
-  <p>Spielstände und Chat-Nachrichten werden für den Spielbetrieb gespeichert
-  und können im Rahmen der Alpha-Phase jederzeit ohne Vorankündigung gelöscht
-  oder zurückgesetzt werden. Zwischengespeicherte Kartendaten (Cache) werden
-  automatisch nach Ablauf verworfen.</p>
+  <h2 id="jugendschutz">7. Jugendschutz und Chat-Sicherheit</h2>
+  <p>Das Spiel richtet sich an Personen <strong>ab 14 Jahren</strong>
+  (§ 4 Abs. 4 DSG / Art. 8 DSGVO). Jüngere dürfen nur mit Einwilligung eines
+  Erziehungsberechtigten spielen. Wir erheben kein Alter und keine
+  Identitätsdaten – deshalb behandeln wir <em>alle</em> Spieler:innen so, als
+  könnten sie minderjährig sein:</p>
+  <ul>
+    <li>Der Chat ist auf die jeweilige Spielsitzung beschränkt; es gibt keine
+    privaten Nachrichten, keine Profile, keine Bilder.</li>
+    <li>Jede Nachricht wird <strong>vor</strong> dem Absenden automatisch
+    geprüft. Blockiert werden u.&nbsp;a. Beleidigungen, Hassrede, sexuelle
+    Inhalte, Telefonnummern, E-Mail-Adressen, Links, Social-Media-Namen,
+    Fragen nach Alter/Wohnort/Fotos/Treffen sowie Angaben zur eigenen Person
+    (Alter, Schule, Adresse). Milde Kraftausdrücke werden maskiert.</li>
+    <li>Beim ersten Chat müssen die Chat-Regeln bestätigt werden.</li>
+    <li>Jede Nachricht kann mit ⚑ <strong>gemeldet</strong> werden. Gemeldete
+    Nachrichten werden sofort für alle ausgeblendet, der gemeldete Spieler
+    wird für dich blockiert. Mit 🚫 kannst du Spieler jederzeit blockieren.</li>
+    <li>Verstöße führen automatisch zu Strafpunkten und gestaffelten
+    Chat-Sperren (10&nbsp;Min. → 24&nbsp;Std. → dauerhaft); mehrere
+    unabhängige Meldungen führen zur sofortigen Stummschaltung.</li>
+    <li>Wer ein Spiel erstellt, kann den Chat auf
+    <strong>Schnellnachrichten</strong> (vorgegebene Sätze) beschränken oder
+    ganz <strong>abschalten</strong> – z.&nbsp;B. für den Schulunterricht.</li>
+    <li>Diese Entscheidungen werden automatisiert getroffen (Art. 22 DSGVO,
+    Art. 17 DSA). Du kannst dagegen formlos Einspruch erheben – Kontakt siehe
+    <a href="/impressum#melden">Impressum</a>. Meldungen und Sperren werden
+    dem Betreiber per E-Mail mitgeteilt.</li>
+  </ul>
+  <p>Hilfe bei Problemen im Netz: <strong>Rat auf Draht 147</strong>
+  (kostenlos, anonym, rund um die Uhr) ·
+  <a href="https://www.saferinternet.at" rel="noopener">saferinternet.at</a> ·
+  Meldung illegaler Inhalte: <a href="https://www.stopline.at" rel="noopener">stopline.at</a>.</p>
 
-  <h2>8. Deine Rechte</h2>
+  <h2>8. Speicherdauer</h2>
+  <p>Spielstände werden für den Spielbetrieb gespeichert und können im Rahmen
+  der Beta-Phase jederzeit ohne Vorankündigung gelöscht oder zurückgesetzt
+  werden. <strong>Chat-Nachrichten werden nach 30 Tagen automatisch
+  gelöscht</strong>; gemeldete Nachrichten, Meldungen und Moderations-
+  protokolle werden zur Nachvollziehbarkeit 180 Tage aufbewahrt. Zwischen-
+  gespeicherte Kartendaten (Cache) werden automatisch nach Ablauf verworfen.</p>
+
+  <h2>9. Deine Rechte</h2>
   <p>Da keine personenbezogenen Daten verarbeitet werden, ist eine Zuordnung
   gespeicherter Spieldaten zu deiner Person in der Regel nicht möglich.
   Unbeschadet dessen hast du nach der DSGVO das Recht auf Auskunft (Art. 15),
@@ -100,6 +136,15 @@
 (function(){
   // Contact address is char-shifted and only assembled on user interaction.
   var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  var k2=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,110,114,107,111,118,102,107,122,100,117,125,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email2').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k2.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
   document.querySelectorAll('.obf-email').forEach(function(a){
     a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
     a.addEventListener('click',function(ev){
