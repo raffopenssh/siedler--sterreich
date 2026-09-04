@@ -3175,7 +3175,11 @@ function drawTopLandmarks(ctx) {
       // bounded on weaker devices, only the tallest few (per the device's
       // animation budget) get the animated aura/sweep/sway; the rest render
       // static. When only a handful are on screen, animate them all.
-      const trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
+      let trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
+      // Zoomed far out, hundreds of giants become a solid canopy that hides
+      // everything else (treasures, similar-parcel markers). Keep the tallest
+      // ones only; the full set returns as the player zooms in.
+      if (zoom < 15.5) trees = trees.slice(0, zoom < 13.5 ? 12 : zoom < 14.5 ? 30 : 80);
       const budget = giantAnimBudget();
       const dt = Date.now() - G.tallRevealAt;
       for (let i = 0; i < trees.length; i++) {
@@ -3202,6 +3206,16 @@ function drawTopLandmarks(ctx) {
   }
   if (G.devTree && G.geo.watching && G.geo.lon) {
     drawGeoDistanceAtTree(ctx, G.devTree);
+  } else if (G.geo.watching && G.geo.lon && G.tallUnlocked && zoom >= 15) {
+    // Kundschafter: with GPS on, the nearest visible giant tree shows walking
+    // distance + compass bearing from the player's real position.
+    const pool = G.tallRevealed ? allTallTrees() : hintTallTrees(12);
+    let best = null, bd = Infinity;
+    for (const t of pool) {
+      const d = Math.hypot((t.lon - G.geo.lon) * 0.66, t.lat - G.geo.lat);
+      if (d < bd) { bd = d; best = t; }
+    }
+    if (best && bd < 0.02) drawGeoDistanceAtTree(ctx, best);
   }
 
   if (zoom < 14) return;
@@ -6207,7 +6221,7 @@ async function openKGSummary(kg) {
   if (d.avg_area_sqm != null) rows.push(['Ø Parzelle', Math.round(d.avg_area_sqm) + ' m²']);
   if (d.elev_min != null && d.elev_max != null) {
     const tl = {level:'eben', nearly_level:'fast eben', 'nearly level':'fast eben', gentle:'sanft', undulating:'wellig', moderate:'mäßig', hilly:'hügelig', steep:'steil', mountainous:'gebirgig', rugged:'schroff', 'slightly rugged':'leicht schroff'};
-    rows.push(['⛰️ Seehöhe', Math.round(d.elev_min) + '–' + Math.round(d.elev_max) + ' m' + (d.terrain_class ? ' · ' + (tl[d.terrain_class]||d.terrain_class) : '')]);
+    rows.push(['⛰️ Seehöhe', Math.round(d.elev_min) + '–' + Math.round(d.elev_max) + ' m' + (d.terrain_class ? ' · ' + (tl[d.terrain_class]||tl[String(d.terrain_class).replace(/_/g,' ')]||d.terrain_class) : '')]);
   }
   if (d.tallest_tree_m) rows.push(['🌲 Höchster Baum', d.tallest_tree_m + ' m' + (d.giant_trees ? ' (' + d.giant_trees + ' Riesen)' : '')]);
   if (d.n2k_parcels > 0) rows.push(['🛡️ Natura 2000', d.n2k_parcels.toLocaleString('de-AT') + ' Parzellen' + (d.n2k_sites && d.n2k_sites.length ? '<br><i class="kg-dim">' + d.n2k_sites.map(esc).join(', ') + '</i>' : '')]);
@@ -6263,7 +6277,7 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     if (lp.slope != null) {
       const arrows = {N:'↑',NE:'↗',E:'→',SE:'↘',S:'↓',SW:'↙',W:'←',NW:'↖'};
       const tlabels = {level:'eben', nearly_level:'fast eben', 'nearly level':'fast eben', gentle:'sanft', undulating:'wellig', moderate:'mäßig', hilly:'hügelig', steep:'steil', rugged:'schroff', 'slightly rugged':'leicht schroff', mountainous:'gebirgig'};
-      rows.push(['⛰️ Hang', lp.slope.toFixed(1) + '° ' + (arrows[lp.aspect]||'') + (lp.tclass ? ' · ' + (tlabels[lp.tclass]||lp.tclass) : '')]);
+      rows.push(['⛰️ Hang', lp.slope.toFixed(1) + '° ' + (arrows[lp.aspect]||'') + (lp.tclass ? ' · ' + (tlabels[lp.tclass]||tlabels[String(lp.tclass).replace(/_/g,' ')]||lp.tclass) : '')]);
     }
     // Land-cover composition: 1m-resolution srtm fracs, corrected against
     // cadastre building/landuse data (roof + road bleed). Falls back to the
@@ -7130,6 +7144,72 @@ window.DEV = {
     if (!on && this._now) { Date.now = this._now; this._now = null; }
     render();
   },
+  /** Show the loading screen frozen at a given progress (for screenshots).
+   *  DEV.loading(62, 'Dürnstein (12105)') ; DEV.loading(false) returns to game. */
+  loading(pct, muni) {
+    if (pct === false) { show('game'); stopTipRotation(); resizeGame(); render(); return; }
+    show('loading');
+    if (muni) document.getElementById('loading-muni').textContent = '📍 ' + muni;
+    document.getElementById('loading-sub').textContent = '';
+    const steps = ['ls-session','ls-parcels','ls-kg','ls-treasures','ls-ready'];
+    const doneN = Math.floor(pct / 100 * steps.length);
+    steps.forEach((id, i) => setLoadStep(id, i < doneN ? 'done' : i === doneN ? 'active' : ''));
+    setLoadProgress(pct);
+    startTipRotation();
+  },
+  /** Fake a GPS fix (shows the blue marker + enables tree distance/bearing). */
+  gps(lon, lat, acc = 12) {
+    G.geo.watching = true; G.geo.follow = false;
+    G.geo.lon = lon; G.geo.lat = lat; G.geo.acc = acc;
+    const b = document.getElementById('btn-gps'); if (b) { b.style.display = ''; b.classList.add('active'); }
+    render();
+  },
+  /** Run the similar-parcels search for the selected (or given) parcel and wait. */
+  async similar(parcelId, radius = 5000) {
+    if (parcelId) await this.parcel(parcelId);
+    G.similarRadius = radius;
+    await findSimilarParcels();
+    await this.idle();
+    render();
+    return G.similar ? G.similar.data.results.length : 0;
+  },
+  /** Treasures still on the map (unclaimed), nearest to camera first. */
+  treasures() {
+    return G.treasures.filter(t => !t.found_by).map(t => {
+      const d = Math.hypot((t.lon - G.cam.lon) * 0.68, t.lat - G.cam.lat) * 111000;
+      return { id: t.id, type: t.treasure_type, value: t.value, lon: t.lon, lat: t.lat, d: Math.round(d), species: t.species_name || null };
+    }).sort((a, b) => a.d - b.d);
+  },
+  /** Fly to a treasure (nearest by default) and optionally claim it. */
+  async treasure(id, claim = false, zoom = 17.5) {
+    const list = this.treasures();
+    const t = id ? G.treasures.find(x => x.id === id) : (list[0] && G.treasures.find(x => x.id === list[0].id));
+    if (!t) return null;
+    await this.goto(t.lon, t.lat, zoom);
+    if (claim) { await claimTreasure(t); await new Promise(r => setTimeout(r, 800)); render(); }
+    return t;
+  },
+  /** Open the popup for the n-th nearest building footprint (building info rows). */
+  async building(n = 0) {
+    const [cx, cy] = [gc.width / 2, gc.height / 2];
+    const fps = G.buildingFootprints.map(fp => { const [x, y] = toScreen(...featureLonLat(fp)); return { fp, d: Math.hypot(x - cx, y - cy) }; })
+      .sort((a, b) => a.d - b.d);
+    const o = fps[n]; if (!o) return null;
+    const [lon, lat] = featureLonLat(o.fp);
+    const f = G.parcelPolys.find(p => isAreaGeom(p.geometry) && pipGeom(lon, lat, p.geometry));
+    if (!f) return null;
+    showParcelPopup(f, o.fp);
+    await new Promise(r => setTimeout(r, 1200));
+    render();
+    return o.fp.properties;
+  },
+  /** Mobile bottom sheet: expand/collapse the sidebar. */
+  sheet(open) {
+    const el = document.getElementById('sidebar'); if (!el) return;
+    el.classList.toggle('expanded', !!open);
+  },
+  /** Toggle the N2K overlay. */
+  n2k(on) { G.n2kVisible = !!on; const b = document.getElementById('btn-n2k'); if (b) b.classList.toggle('off', !on); render(); },
   /** Compact state snapshot. */
   state() {
     return {
