@@ -55,3 +55,9 @@ This template uses sqlite (`db.sqlite3`). SQL queries are managed with sqlc.
 - `srv`: HTTP server logic (handlers)
 - `srv/templates`: Go HTML templates
 - `db`: SQLite open + migrations (001-base.sql)
+
+## License
+
+Beta / open source. Code is MIT-licensed — see [LICENSE](LICENSE). Bundled and
+runtime data (BEV cadastre, LiDAR, Red List, fonts, Austrian outline) carry
+their own open licences, listed at the end of the LICENSE file.
