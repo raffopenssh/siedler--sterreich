@@ -52,5 +52,27 @@ Planned: 03m Karte, 04m Parzellen-Popup, 07m Schatz, 14m GPS.
 - https://cadastre-process-api.exe.xyz/api/v1/docs (API docs)
 - https://www.data.gv.at/ (ALS DGM/DOM Austria)
 
-## Known open issues to re-shoot after upstream fixes
-- Danube grey (glitch #8, cadastre feedback #16 / lidar #10) → re-shoot 03, 06, 12, 14 once water renders blue.
+## Batch re-shoot without polluting agent context (CDP)
+
+`tools/cdp.py` + `tools/run_desktop.py` / `tools/run_mobile.py` drive the
+headless browser tab straight over the DevTools protocol (`pip install
+websocket-client`). Find the port with `ss -ltnp | grep headless-shell`, then
+`python3 tools/run_desktop.py <port>` → `/tmp/shots2/desktop/*.png` (3840×2160)
+and `python3 tools/run_mobile.py <port>` → `/tmp/shots2/mobile/*.png`
+(1170×2532). Screenshots are written to disk only — nothing enters the chat.
+`Page.captureScreenshot` needs an explicit `clip.scale=dpr`, and the script
+sets `Emulation.setDeviceMetricsOverride` itself.
+
+Lessons from the 2026-09-04 run:
+- 05: `#pp-ez-link` is a class, not an id — use `DEV.ez('12105', 430)` directly
+  (call it twice: once before and once after `goto`, the first call may race
+  the EZ index).
+- 07: pick `DEV.treasures().filter(t=>t.type=='n2k_species')` and zoom 16.2,
+  otherwise the frame is featureless meadow.
+- 12: use the fixed parcel `12105-.45/2`; `parcelsNear()` is screen-radius
+  limited and returns nothing on a phone viewport.
+- Deck: `python-pptx`, 16:9, desktop image fills the slide, mobile shot 86%
+  height right-aligned on a dark rounded frame.
+
+## Resolved
+- Danube grey (glitch #8) — water renders blue since 2026-09; 03/06/12/14 re-shot.
