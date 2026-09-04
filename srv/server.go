@@ -2092,6 +2092,22 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 	return out, 200
 }
 
+// waterParcelsComplete reads meta.water_parcels.complete from an
+// /osm/geometry?cat=water_parcels response (true when the block is absent).
+func waterParcelsComplete(body []byte) bool {
+	var d struct {
+		Meta struct {
+			WaterParcels *struct {
+				Complete *bool `json:"complete"`
+			} `json:"water_parcels"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil || d.Meta.WaterParcels == nil || d.Meta.WaterParcels.Complete == nil {
+		return true
+	}
+	return *d.Meta.WaterParcels.Complete
+}
+
 func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 	// Strip our prefix and forward to cadastre API
 	path := strings.TrimPrefix(r.URL.Path, "/api/cadastre")
@@ -2132,6 +2148,11 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 		// Cache only successful responses (previously error bodies could get
 		// pinned in cache and replayed as 200s for an hour).
 		if resp.StatusCode == 200 {
+			// osm/geometry?cat=water_parcels reports complete=false while a KG's
+			// parcel geometry is still cold upstream — never pin that for 24h.
+			if strings.Contains(path, "/osm/geometry") && strings.Contains(query, "water_parcels") && !waterParcelsComplete(body) {
+				return body, 200
+			}
 			// KG geometry exports are static → 24h; everything else 1h
 			ttl := 1 * time.Hour
 			if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/osm/geometry") || strings.Contains(path, "/natura2000/") {

@@ -183,6 +183,9 @@ const G = {
   topTrees: {},             // kg_code → [{height_m, lon, lat}] (flag-filtered server-side)
   topObjects: {},           // kg_code → [{type, height_m, lon, lat}]
   osmLines: {},             // kg_code → [{cat, fclass, major, name, pts:Float64Array}]
+  waterParcels: {},         // parcel_id → {fraction, sqm, fclass[]} from osm/geometry?cat=water_parcels
+  waterAreas: {},           // kg_code → [{geometry, fclass}] fillable OSM river/lake polygons
+  waterKGs: new Set(),      // KGs whose water layers were requested
   n2kSites: {},             // sitecode → {name, habitats, label, geom (GeoJSON), loaded}
   n2kVisible: true,         // layer toggle
   landPrices: {},           // parcel_id → price estimate object (lazy)
@@ -1578,6 +1581,7 @@ async function loadViewportGeometry(b, opts) {
     addedP++;
     if (props.kg_code) {
       G.kgsLoaded.add(props.kg_code);
+      loadWaterForKG(props.kg_code);
       // Non-enhanced KGs still get their landuse polygon backdrop streamed in
       // (viewport endpoint carries parcels+footprints only). Enhanced KGs skip it.
       if (!G.enhancedKGs.has(props.kg_code)) loadLanduseBackground(props.kg_code);
@@ -1747,12 +1751,58 @@ setInterval(loadEnhancedRegistry, 10*60*1000);
 
 /** Kick off background enhanced-data fetches for loaded KGs that are lidar-processed. Never blocks. */
 function loadEnhancedForKGs() {
+  for (const kg of G.kgsLoaded) loadWaterForKG(kg);
   for (const kg of G.kgsLoaded) {
     if (G.enhancedLoaded.has(kg)) continue;
     if (!G.enhancedKGs.has(kg)) continue;
     G.enhancedLoaded.add(kg);
     fetchEnhancedKG(kg); // fire & forget
   }
+}
+
+/**
+ * OSM water for a KG (cadastre feedback #16). BEV NS symbols are counts, not
+ * areas, so riverbed parcels (Danube at Dürnstein: 70 ha, water_fraction 0.885)
+ * often carry no GW code at all and were painted as land. Upstream now serves
+ *  - cat=water_parcels: OSM water ∩ parcel polygons with water_fraction per parcel
+ *    (drives terrain fill, landuse name and price via extractLuCode)
+ *  - cat=water_area: closed, fillable river/lake (Multi)Polygons (backdrop)
+ * Runs for every loaded KG, enhanced or not.
+ */
+function loadWaterForKG(kg) {
+  if (!kg || G.waterKGs.has(kg)) return;
+  G.waterKGs.add(kg);
+  const fetchParcels = (attempt) => GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=water_parcels&min_fraction=0.05').then(d => {
+    let n = 0;
+    for (const f of (d.features || [])) {
+      const pr = f.properties || {};
+      if (!pr.parcel_id || pr.water_fraction == null) continue;
+      G.waterParcels[pr.parcel_id] = { fraction: pr.water_fraction, sqm: pr.water_sqm || 0, fclass: pr.fclass || [], name: pr.name || '' };
+      n++;
+    }
+    if (n) { G.lidarGen++; render(); }
+    // complete=false → a KG's parcel geometry was still cold upstream; retry.
+    if (d.meta?.water_parcels && d.meta.water_parcels.complete === false && attempt < 3) {
+      setTimeout(() => fetchParcels(attempt + 1), 4000 * (attempt + 1));
+    }
+  }).catch(e => console.error('water_parcels failed:', kg, e));
+  fetchParcels(0);
+
+  GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=water_area').then(d => {
+    const areas = [];
+    for (const f of (d.features || [])) {
+      if (!f.geometry || !isAreaGeom(f.geometry)) continue;
+      areas.push({ geometry: f.geometry, fclass: f.properties?.fclass || 'water' });
+    }
+    G.waterAreas[kg] = areas;
+    if (areas.length) render();
+  }).catch(e => console.error('water_area failed:', kg, e));
+}
+
+/** Water share of a parcel from OSM (0..1), or null if unknown. */
+function waterFraction(pid) {
+  const w = G.waterParcels[pid];
+  return w ? w.fraction : null;
 }
 
 async function fetchEnhancedKG(kg) {
@@ -1780,7 +1830,7 @@ async function fetchEnhancedKG(kg) {
     updateEnhancedBadge();
   }).catch(e => console.error('lidar kg failed:', kg, e));
 
-  // 2. OSM roads/water/rail lines
+  // 2. OSM roads/rail lines (water areas/parcels come via loadWaterForKG)
   GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=road,water,rail').then(d => {
     const feats = d.features || d.data?.features || [];
     const lines = [];
@@ -2282,6 +2332,9 @@ function render() {
   // ---- Natura 2000 protected-area overlay (enhanced mode) ----
   if (G.n2kVisible) drawN2KOverlay(ctx);
 
+  // ---- OSM water areas (rivers/lakes as closed polygons, feedback #16) ----
+  drawWaterAreas(ctx);
+
   // ---- OSM water lines (enhanced mode) ----
   drawOSMLines(ctx, 'water');
 
@@ -2581,6 +2634,39 @@ function drawOSMLines(ctx, cat) {
 }
 
 /** Natura 2000 protected-area overlay: green hatched polygons + dashed border. */
+/** Fillable OSM river/lake polygons (cat=water_area) — below parcels so land
+ *  parcels still cover it, water-dominant parcels are painted TERRAIN.water anyway. */
+function drawWaterAreas(ctx) {
+  const W = gc.width, H = gc.height;
+  const b = viewBounds();
+  ctx.save();
+  ctx.fillStyle = TERRAIN.water[1];
+  ctx.strokeStyle = 'rgba(20,70,120,0.5)';
+  ctx.lineWidth = 1;
+  for (const kg in G.waterAreas) {
+    for (const wa of G.waterAreas[kg]) {
+      const rings = geomAllRings(wa.geometry);
+      ctx.beginPath();
+      let vis = false;
+      for (const ring of rings) {
+        let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+        for (let i = 0; i < ring.length; i++) {
+          const sp = toScreen(ring[i][0], ring[i][1]);
+          if (sp[0]<minX) minX=sp[0]; if (sp[0]>maxX) maxX=sp[0];
+          if (sp[1]<minY) minY=sp[1]; if (sp[1]>maxY) maxY=sp[1];
+          i === 0 ? ctx.moveTo(sp[0], sp[1]) : ctx.lineTo(sp[0], sp[1]);
+        }
+        ctx.closePath();
+        if (!(maxX < 0 || minX > W || maxY < 0 || minY > H)) vis = true;
+      }
+      if (!vis) continue;
+      ctx.fill('evenodd');
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function drawN2KOverlay(ctx, labelsOnly) {
   const W = gc.width, H = gc.height;
   const placed = []; // sites with a visible part (labels pass)
@@ -3822,6 +3908,15 @@ function drawBuilding(ctx, x, y, large, seed) {
 }
 
 function extractLuCode(lu, p) {
+  // OSM water share beats NS symbol counts: a riverbed parcel can carry zero
+  // GW glyphs (Danube 12105-1551/1: Alpe/GA/OG/Öd, water_fraction 0.885).
+  if (p && p.parcel_id) {
+    const wf = waterFraction(p.parcel_id);
+    if (wf != null && wf >= 0.5) {
+      const fc = G.waterParcels[p.parcel_id].fclass || [];
+      return fc.some(c => /riverbank|river|stream|canal|drain/.test(c)) ? '59' : '60';
+    }
+  }
   // landuse_summary is the richest source and shares the weighting logic.
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
@@ -3852,6 +3947,9 @@ function extractLuCode(lu, p) {
 /** Get terrain colors from landuse_summary, returns the dominant terrain color array */
 function getParcelTerrain(p, claim) {
   if (claim?.converted_to) return TERRAIN.bio;
+  // OSM water ∩ parcel (feedback #16): water-dominant parcels are water, full stop.
+  const wf = waterFraction(p.parcel_id);
+  if (wf != null && wf >= 0.5) return TERRAIN.water;
   // Enhanced mode: real measured dominant land cover from lidar beats cadastre landuse
   const lp = G.lidarParcels[p.parcel_id];
   // Use the corrected dominant land cover (impervious road/roof skipped server-side,
@@ -3867,6 +3965,12 @@ function getParcelTerrain(p, claim) {
 
 /** Get human-readable landuse name from summary */
 function getLanduseName(p) {
+  const wf = waterFraction(p.parcel_id);
+  if (wf != null && wf >= 0.5) {
+    const w = G.waterParcels[p.parcel_id];
+    const base = LANDUSE_NAMES[extractLuCode('', p)] || 'Gewässer';
+    return '💧 ' + base + (w.name ? ' – ' + w.name : '') + ' (' + Math.round(wf*100) + '% Wasser lt. OSM)';
+  }
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
     if (parsed.entries.length > 0) {
