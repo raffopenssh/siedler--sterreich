@@ -2311,6 +2311,22 @@ function toGeo(x, y) {
   return [(x-gc.width/2)/s + G.cam.lon, G.cam.lat - (y-gc.height/2)/(s*1.35)];
 }
 
+
+/** Lambert hillshade factor for a parcel from lidar slope/aspect: −1 (shadow) .. +1 (lit).
+ *  Fixed sun from NW (azimuth 315°), elevation 45° — the classic cartographic light. */
+const ASPECT_DEG = { N:0, NE:45, E:90, SE:135, S:180, SW:225, W:270, NW:315 };
+function hillshade(lp) {
+  if (!lp || lp.slope == null) return 0;
+  const az = ASPECT_DEG[lp.aspect];
+  if (az == null) return 0;
+  const sl = lp.slope * Math.PI / 180, a = az * Math.PI / 180;
+  const sunAz = 315 * Math.PI / 180, sunEl = 45 * Math.PI / 180;
+  // cos of angle between surface normal and sun vector
+  const cosI = Math.cos(sunEl) * Math.sin(sl) * Math.cos(a - sunAz) + Math.sin(sunEl) * Math.cos(sl);
+  const flat = Math.sin(sunEl);
+  return Math.max(-1, Math.min(1, (cosI - flat) / flat));
+}
+
 function render() {
   if (!gctx) return;
   const ctx = gctx;
@@ -3699,20 +3715,24 @@ function drawParcelPoly(ctx, f, claimMap) {
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // Enhanced mode: subtle per-parcel elevation tint (lidar) — cheap terrain shading
+  // Enhanced mode: Lambert hillshade from lidar slope + aspect (fixed NW sun),
+  // falling back to the elevation-rank tint when the parcel has no slope data.
   if (G.cam.zoom >= 14 && !isWater) {
     const lp = G.lidarParcels[parcelId];
     if (lp && lp.elev != null) {
-      const kt = G.lidarKGTerrain[lp.kg];
-      if (kt && kt.emax > kt.emin) {
-        const n = Math.max(0, Math.min(1, (lp.elev - kt.emin) / (kt.emax - kt.emin)));
-        // low = slightly darker (valley shadow), high = slightly lighter (sunlit)
-        if (n < 0.45) {
-          ctx.fillStyle = 'rgba(10,20,40,' + ((0.45-n) * 0.28).toFixed(3) + ')';
-          ctx.fill();
-        } else if (n > 0.55) {
-          ctx.fillStyle = 'rgba(255,250,220,' + ((n-0.55) * 0.22).toFixed(3) + ')';
-          ctx.fill();
+      const hs = hillshade(lp);
+      if (hs < -0.03) {
+        ctx.fillStyle = 'rgba(15,20,45,' + Math.min(0.42, -hs * 0.5).toFixed(3) + ')';
+        ctx.fill();
+      } else if (hs > 0.03) {
+        ctx.fillStyle = 'rgba(255,245,210,' + Math.min(0.30, hs * 0.38).toFixed(3) + ')';
+        ctx.fill();
+      } else {
+        const kt = G.lidarKGTerrain[lp.kg];
+        if (kt && kt.emax > kt.emin) {
+          const n = Math.max(0, Math.min(1, (lp.elev - kt.emin) / (kt.emax - kt.emin)));
+          if (n < 0.45) { ctx.fillStyle = 'rgba(10,20,40,' + ((0.45-n) * 0.20).toFixed(3) + ')'; ctx.fill(); }
+          else if (n > 0.55) { ctx.fillStyle = 'rgba(255,250,220,' + ((n-0.55) * 0.16).toFixed(3) + ')'; ctx.fill(); }
         }
       }
       // Slope hatching for rugged terrain at high zoom
