@@ -821,12 +821,14 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		"player":    player.Name,
 	})
 
+	quests := s.autoCompleteChallenges(r.Context(), req.SessionID, req.PlayerID)
 	updatedPlayer, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
 	jsonResp(w, map[string]any{
 		"success":       true,
 		"price":         price,
 		"player":        updatedPlayer,
 		"tall_bonus_xp": tallBonus,
+		"quests":        quests,
 	})
 }
 
@@ -937,9 +939,11 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 		"player":  player.Name,
 	})
 
+	quests := s.autoCompleteChallenges(r.Context(), req.SessionID, req.PlayerID)
 	updatedPlayer, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
 	jsonResp(w, map[string]any{
 		"success":       true,
+		"quests":        quests,
 		"claimed_count": claimed,
 		"total_price":   discountedPrice,
 		"discount":      totalPrice - discountedPrice,
@@ -994,6 +998,7 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 		ID: req.PlayerID,
 	})
 
+	quests := s.autoCompleteChallenges(r.Context(), req.SessionID, req.PlayerID)
 	player, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
 	s.broadcast(req.SessionID, map[string]any{
 		"type":       "parcel_converted",
@@ -1002,7 +1007,7 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 		"player":     player.Name,
 	})
 
-	jsonResp(w, map[string]any{"success": true, "xp_reward": xpReward, "player": player})
+	jsonResp(w, map[string]any{"success": true, "xp_reward": xpReward, "player": player, "quests": quests})
 }
 
 func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
@@ -1290,9 +1295,9 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 
 	// Get treasure value and award
 	var value int64
-	var ttype, speciesName, speciesGerman, speciesCat string
+	var ttype, speciesName, speciesGerman, speciesCat, tSession string
 	s.DB.QueryRowContext(r.Context(),
-		"SELECT value, treasure_type, species_name, species_german, species_category FROM treasures WHERE id = ?", req.TreasureID).Scan(&value, &ttype, &speciesName, &speciesGerman, &speciesCat)
+		"SELECT value, treasure_type, species_name, species_german, species_category, session_id FROM treasures WHERE id = ?", req.TreasureID).Scan(&value, &ttype, &speciesName, &speciesGerman, &speciesCat, &tSession)
 
 	if ttype == "xp" {
 		s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{Xp: value, ID: req.PlayerID})
@@ -1301,8 +1306,9 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 		s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{Coins: value, ID: req.PlayerID})
 	}
 
+	quests := s.autoCompleteChallenges(r.Context(), tSession, req.PlayerID)
 	player, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
-	resp := map[string]any{"success": true, "type": ttype, "value": value, "player": player}
+	resp := map[string]any{"success": true, "type": ttype, "value": value, "player": player, "quests": quests}
 	if speciesName != "" {
 		resp["species_name"] = speciesName
 		resp["species_german"] = speciesGerman
@@ -1328,12 +1334,16 @@ func (s *Server) handleCompleteChallenge(w http.ResponseWriter, r *http.Request)
 
 	// Get challenge
 	var coins, xp int64
-	var sessionID string
+	var sessionID, title string
 	err := s.DB.QueryRowContext(r.Context(),
-		"SELECT reward_coins, reward_xp, session_id FROM challenges WHERE id = ? AND player_id = ? AND completed = 0",
-		req.ChallengeID, req.PlayerID).Scan(&coins, &xp, &sessionID)
+		"SELECT reward_coins, reward_xp, session_id, title FROM challenges WHERE id = ? AND player_id = ? AND completed = 0",
+		req.ChallengeID, req.PlayerID).Scan(&coins, &xp, &sessionID, &title)
 	if err != nil {
 		jsonErr(w, "Challenge not found or already completed", 404)
+		return
+	}
+	if c, cv, t := s.questProgress(r.Context(), sessionID, req.PlayerID); !questSatisfied(title, c, cv, t) {
+		jsonErr(w, "Aufgabe noch nicht erfüllt", 400)
 		return
 	}
 
@@ -3700,4 +3710,73 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")
 	w.Write(enc)
+}
+
+// ---- Challenge auto-completion ----
+
+// questProgress returns the player's counters relevant to the built-in quests.
+func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) (claims, converted, treasures int64) {
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=?", sessionID, playerID).Scan(&claims)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND converted_to IS NOT NULL AND converted_to<>''", sessionID, playerID).Scan(&converted)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=?", sessionID, playerID).Scan(&treasures)
+	return
+}
+
+// questSatisfied maps the built-in quest titles (see generateChallenges) to their condition.
+func questSatisfied(title string, claims, converted, treasures int64) bool {
+	switch title {
+	case "Erkunde deine Gemeinde":
+		return claims >= 1
+	case "Landvermesser":
+		return claims >= 5
+	case "Naturschützer":
+		return converted >= 1
+	case "Waldmeister":
+		return converted >= 3
+	case "Schatzsucher":
+		return treasures >= 1
+	}
+	return false
+}
+
+// autoCompleteChallenges completes every open quest whose condition the player
+// now satisfies, awards the rewards and broadcasts. Called after claim/convert/
+// treasure actions so the sidebar quest list keeps up without a manual click.
+func (s *Server) autoCompleteChallenges(ctx context.Context, sessionID, playerID string) []map[string]any {
+	claims, converted, treasures := s.questProgress(ctx, sessionID, playerID)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id, title, reward_coins, reward_xp FROM challenges WHERE session_id=? AND player_id=? AND completed=0", sessionID, playerID)
+	if err != nil {
+		return nil
+	}
+	type ch struct {
+		id        int64
+		title     string
+		coins, xp int64
+	}
+	var open []ch
+	for rows.Next() {
+		var c ch
+		if rows.Scan(&c.id, &c.title, &c.coins, &c.xp) == nil {
+			open = append(open, c)
+		}
+	}
+	rows.Close()
+	var done []map[string]any
+	var name string
+	for _, c := range open {
+		if !questSatisfied(c.title, claims, converted, treasures) {
+			continue
+		}
+		s.Q.CompleteChallenge(ctx, c.id)
+		s.Q.UpdatePlayerCoins(ctx, dbgen.UpdatePlayerCoinsParams{Coins: c.coins, ID: playerID})
+		s.Q.UpdatePlayerXP(ctx, dbgen.UpdatePlayerXPParams{Xp: c.xp, ID: playerID})
+		if name == "" {
+			if p, err := s.Q.GetPlayerByID(ctx, playerID); err == nil {
+				name = p.Name
+			}
+		}
+		s.broadcast(sessionID, map[string]any{"type": "challenge_completed", "player": name, "title": c.title})
+		done = append(done, map[string]any{"id": c.id, "title": c.title, "coins": c.coins, "xp": c.xp})
+	}
+	return done
 }

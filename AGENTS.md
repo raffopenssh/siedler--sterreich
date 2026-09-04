@@ -382,3 +382,25 @@ Gameplay: giant trees (`G.topTrees`) are hidden until the player collects their 
 Loading: only the 2 nearest KGs block the loading screen (`fetchKGPolygonsBlocking` ranks by camera distance); remaining KGs stream in background. `/export/geojson`, OSM and N2K proxy responses cache 24h (others 1h).
 
 Frontend (`loadEnhancedForKGs`, all background, never blocks loading): `G.enhancedKGs`, `G.lidarParcels` (elevation tint ≥z15, slope hatching ≥z16.5), `G.lidarBuildingIdx` (real building heights/roof types, matched by centroid grid + `G.lidarGen` invalidation), `G.topTrees`/`G.topObjects` (landmark sprites), `G.osmLines` (roads/water/rail; majors-only <z15), `G.n2kSites` (hatched overlay, toggle `#btn-n2k`), `G.landPrices` (lazy per-parcel market value in popup). GPS: `#btn-gps`, `G.geo`, follow-mode disabled on manual pan. Popup enhanced rows: `renderEnhancedPopupRows` (`#pp-enhanced`, mobile "Mehr ▸" expander).
+
+## Screenshots / QA scripting (`window.DEV`)
+
+game.js exposes a `DEV` helper for browser automation (no UI). Rejoin a
+session directly with
+`/?lang=de&dev=1&pid=<id>&pname=<name>&rejoin=<token>&sid=<session>` (`dev=1`
+skips the loading-screen dwell; `#v=lon,lat,zoom` sets the initial camera),
+then in `browser eval`:
+
+```js
+await DEV.goto(15.5205, 48.3955, 17.5)   // camera + load tiles + wait idle
+await DEV.parcel('12105-68/3')           // select + popup (optionally center)
+DEV.ez('12105', 430); DEV.kg('12105'); DEV.tree(0)   // EZ / KG stats / tree histogram
+DEV.trees('locked'|'hint'|'revealed')    // giant-tree gameplay state
+DEV.ezCandidates(4, 20); DEV.parcelsNear(p => p.building_count > 0)
+DEV.chrome(false); DEV.sidebar(false); DEV.freeze()  // clean hero shots
+DEV.closeAll(); DEV.state()
+```
+
+Use `emulate_custom` with DPR 2 (desktop 1920×1080) or `emulate_device`
+(phone) for hi-res captures. Keep a glitch log while shooting — see
+`docs/glitches.md`.

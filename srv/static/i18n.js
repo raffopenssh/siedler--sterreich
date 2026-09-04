@@ -350,7 +350,7 @@ Object.assign(I18N_EXACT, {
   'Chat-Modus (nur Spielersteller)': 'Chat mode (game creator only)', 'Schnellnachrichten': 'Quick phrases',
   'Chat-Regeln & Sicherheit': 'Chat rules & safety', 'Der Chat ist in diesem Spiel deaktiviert.': 'Chat is disabled in this game.',
   '🛡️ Chat-Regeln': '🛡️ Chat rules', 'Verstanden ✓': 'Got it ✓', 'Später': 'Later', '⚑ Melden': '⚑ Report', 'Melden': 'Report', 'Abbrechen': 'Cancel',
-  'Optional: Was ist passiert?': 'Optional: what happened?', 'Chat-Modus geändert': 'Chat mode changed', 'blockiert': 'blocked', 'Spieler: ': 'Player: ',
+  'Optional: Was ist passiert?': 'Optional: what happened?', 'Chat-Modus geändert': 'Chat mode changed', 'Aufgabe erledigt': 'Quest complete', 'Wird automatisch erledigt': 'Completes automatically', 'Aufgabe noch nicht erfüllt': 'Quest not yet fulfilled', 'blockiert': 'blocked', 'Spieler: ': 'Player: ',
   'Spieler blockieren? Du siehst dann keine Nachrichten mehr von dieser Person.': 'Block this player? You will no longer see their messages.',
   '⚑ Danke für deine Meldung. Der Spieler wurde für dich blockiert.': '⚑ Thanks for reporting. The player has been blocked for you.',
   'Die Nachricht wird sofort ausgeblendet und der Spieler für dich blockiert. Bei mehreren Meldungen wird der Spieler automatisch stummgeschaltet.': 'The message is hidden immediately and the player is blocked for you. Several reports mute the player automatically.',

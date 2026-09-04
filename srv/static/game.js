@@ -1367,8 +1367,8 @@ async function startGameWithLoading() {
 
   // Brief minimum so the loading screen doesn't flash (was 4s — now get in fast)
   const elapsed = Date.now() - (G.loadStart || 0);
-  const minWait = Math.max(300, 1500 - elapsed);
-  await new Promise(r => setTimeout(r, minWait));
+  const minWait = getUrlParam('dev') ? 0 : Math.max(300, 1500 - elapsed);
+  if (minWait) await new Promise(r => setTimeout(r, minWait));
   stopTipRotation();
   stopLoadingCountdown();
   show('game');
@@ -2029,6 +2029,7 @@ function buildEZIndex() {
   }
 }
 async function loadTreasures() { G.treasures = await GET('/api/session/'+G.session.id+'/treasures') || []; }
+async function updateStatsFromServer() { try { const p = await GET('/api/player/'+G.player.id); if (p && !p.error) { G.player = Object.assign(G.player, p); updateStats(); } } catch(e) {} }
 async function loadChallenges() { G.challenges = await GET('/api/session/'+G.session.id+'/challenges?player_id='+G.player.id) || []; renderQuests(); }
 async function loadPlayers() { G.players = await GET('/api/session/'+G.session.id+'/players') || []; renderPlayerList(); }
 async function loadBio() {
@@ -2072,7 +2073,7 @@ function renderPlayerList() {
 function renderQuests() {
   document.getElementById('quest-list').innerHTML = (G.challenges||[]).map(c => {
     const icon = {explore:'🗺️',restore:'🌿',treasure:'💎'}[c.challenge_type]||'📜';
-    return `<div class="quest-item" onclick="tryCompleteQuest(${c.id})">
+    return `<div class="quest-item" title="${tr('Wird automatisch erledigt')}">
       <div class="qt">${icon} ${esc(c.title)}</div>
       <div class="qd">${esc(c.description||'')}</div>
       <div class="qr">+${c.reward_coins}🪙 +${c.reward_xp}⚡</div></div>`;
@@ -2211,7 +2212,10 @@ function handleEvent(d) {
     case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
-    case 'challenge_completed': toast('🏆 '+d.player+' Aufgabe!','ok'); break;
+    case 'challenge_completed':
+      if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); loadChallenges(); updateStatsFromServer(); }
+      else toast('🏆 '+d.player+': '+tr(d.title||'Aufgabe'),'');
+      break;
     case 'treasures_updated': loadTreasures().then(()=>{ render(); toast('🛡️ Seltene Arten in Natura-2000-Gebieten entdeckt!','ok'); }); break;
     case 'offer_made':
       if (d.seller_id === G.player.id) toast('📨 '+d.buyer+' bietet '+d.offer_price+'🪙 für deine Parzelle!','ok');
@@ -2317,6 +2321,7 @@ function render() {
 
   // ---- Treasures ----
   for (const t of G.treasures) drawTreasure(ctx, t);
+  if (G.n2kVisible) drawN2KOverlay(ctx, true);
 
   // ---- GPS position marker ----
   if (G.geo.watching) drawGeoMarker(ctx);
@@ -2576,8 +2581,9 @@ function drawOSMLines(ctx, cat) {
 }
 
 /** Natura 2000 protected-area overlay: green hatched polygons + dashed border. */
-function drawN2KOverlay(ctx) {
+function drawN2KOverlay(ctx, labelsOnly) {
   const W = gc.width, H = gc.height;
+  const placed = []; // sites with a visible part (labels pass)
   for (const code in G.n2kSites) {
     const site = G.n2kSites[code];
     if (!site.geom) continue;
@@ -2594,6 +2600,11 @@ function drawN2KOverlay(ctx) {
         if (sp[1]<minY) minY=sp[1]; if (sp[1]>maxY) maxY=sp[1];
       }
       if (maxX < -30 || minX > W+30 || maxY < -30 || minY > H+30) continue;
+      if (labelsOnly) {
+        const a = (maxX-minX)*(maxY-minY);
+        if (a > largest) { largest = a; labelPt = [(Math.max(minX,0)+Math.min(maxX,W))/2, (Math.max(minY,0)+Math.min(maxY,H))/2]; }
+        continue;
+      }
       ctx.beginPath();
       for (let i = 0; i < pts.length; i++) i===0 ? ctx.moveTo(pts[i][0], pts[i][1]) : ctx.lineTo(pts[i][0], pts[i][1]);
       ctx.closePath();
@@ -2626,23 +2637,29 @@ function drawN2KOverlay(ctx) {
       const a = (maxX-minX)*(maxY-minY);
       if (a > largest) { largest = a; labelPt = [(Math.max(minX,0)+Math.min(maxX,W))/2, (Math.max(minY,0)+Math.min(maxY,H))/2]; }
     }
-    // Label at zoom >= 15
-    if (labelPt && G.cam.zoom >= 15) {
-      const hab = site.habitats || [];
-      const habEmoji = hab.map(h => ({forest:'🌲',meadow:'🦋',floodplain:'💧',water:'💧',bog:'🌿',rock:'⛰️',alpine:'⛰️'}[h]||'🌿')).join('');
-      ctx.font = '10px "Press Start 2P", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(0,40,10,0.75)';
-      const label = '🛡️ ' + site.name.slice(0, 40) + (site.name.length > 40 ? '…' : '');
-      ctx.fillText(label, labelPt[0]+1, labelPt[1]+1);
-      ctx.fillStyle = '#7dffa0';
-      ctx.fillText(label, labelPt[0], labelPt[1]);
-      if (habEmoji) {
-        ctx.font = '14px sans-serif';
-        ctx.fillText(habEmoji, labelPt[0], labelPt[1] + 18);
-      }
-      ctx.textAlign = 'left';
-    }
+    // Labels pass: collect the sites on screen; drawn once as a HUD chip below.
+    if (labelsOnly && labelPt && G.cam.zoom >= 15) placed.push(site);
+  }
+  // One combined Natura-2000 chip (sites nest: Wachau ⊃ Wachau-Jauerling ⊃ …),
+  // anchored under the search bar instead of floating in the middle of the map
+  // where it looked like a garbled watermark and collided with treasures.
+  if (labelsOnly && placed.length) {
+    const names = placed.map(st => st.name.slice(0, 32) + (st.name.length > 32 ? '…' : ''));
+    const label = '🛡️ Natura 2000 · ' + names.join(' · ');
+    ctx.save();
+    ctx.globalAlpha = 1; ctx.setLineDash([]);
+    ctx.font = '9px "Press Start 2P", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width;
+    const pw = Math.min(tw + 24, W - 20), ph = 24;
+    const px = W / 2, py = (document.getElementById('enhanced-badge')?.style.display === 'none' ? 72 : 102); // below search bar / enhanced badge
+    ctx.fillStyle = 'rgba(10,40,20,0.82)';
+    ctx.strokeStyle = 'rgba(125,255,160,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.roundRect(px - pw/2, py - ph/2, pw, ph, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#c8ffd8';
+    ctx.fillText(label, px, py + 1, pw - 16);
+    ctx.restore();
   }
 }
 
@@ -4549,25 +4566,40 @@ function drawTreasure(ctx, t) {
 
 function drawChestTreasure(ctx, x, y, t) {
   const frame = Math.floor(Date.now() / 400) % 3;
+  const s = treasureScale();
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  // Soft glow so the chest reads against dark forest
+  const glow = 0.25 + Math.sin(Date.now() / 700) * 0.1;
+  ctx.fillStyle = 'rgba(255,215,90,' + glow.toFixed(2) + ')';
+  ctx.beginPath(); ctx.arc(0, 1, 11, 0, Math.PI*2); ctx.fill();
   // Chest body
   ctx.fillStyle = '#6b4020';
-  ctx.fillRect(x-7, y-3, 14, 9);
+  ctx.fillRect(-7, -3, 14, 9);
   ctx.fillStyle = '#8b5530';
-  ctx.fillRect(x-6, y-2, 12, 7);
+  ctx.fillRect(-6, -2, 12, 7);
   // Lid
   ctx.fillStyle = '#7b4828';
-  ctx.fillRect(x-7, y-6, 14, 4);
+  ctx.fillRect(-7, -6, 14, 4);
   // Gold trim
   ctx.fillStyle = '#d4a843';
-  ctx.fillRect(x-7, y-3, 14, 1);
-  ctx.fillRect(x-1, y-6, 2, 9);
+  ctx.fillRect(-7, -3, 14, 1);
+  ctx.fillRect(-1, -6, 2, 9);
   // Sparkles
   ctx.fillStyle = '#fff';
-  const sx = [x-10, x+8, x-6, x+10][frame];
-  const sy = [y-10, y-8, y-12, y-6][frame];
+  const sx = [-10, 8, -6, 10][frame];
+  const sy = [-10, -8, -12, -6][frame];
   ctx.fillRect(sx, sy, 2, 2);
   ctx.fillRect(sx-1, sy+1, 1, 1);
   ctx.fillRect(sx+2, sy+1, 1, 1);
+  ctx.restore();
+}
+
+// Treasure sprites grow with zoom so they stay findable/tappable at street level.
+function treasureScale() {
+  const z = G.cam.zoom;
+  return z > 18 ? 2.2 : z > 17 ? 1.8 : z > 16 ? 1.4 : 1.0;
 }
 
 // Map species names to sprite drawing groups
@@ -4597,7 +4629,7 @@ const SPECIES_SPRITE_MAP = {
 function drawSpeciesTreasure(ctx, x, y, t) {
   const sprite = SPECIES_SPRITE_MAP[t.species_name] || 'butterfly_white';
   const time = Date.now();
-  const s = G.cam.zoom > 16 ? 1.4 : 1.0;
+  const s = treasureScale();
   const bob = Math.sin(time / 600 + x * 0.01) * 2;
 
   ctx.save();
@@ -5019,15 +5051,19 @@ function drawSpeciesTreasure(ctx, x, y, t) {
 
   // Species label at higher zoom
   if (G.cam.zoom >= 17 && t.species_german) {
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.font = `${8*s}px "VT323", monospace`;
+    ctx.font = `${Math.round(10*s)}px "VT323", monospace`;
     ctx.textAlign = 'center';
-    ctx.fillText(t.species_german, x, by + 14*s);
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)'; ctx.lineWidth = 3;
+    ctx.strokeText(t.species_german, x, by + 16*s);
+    ctx.fillStyle = '#fff4d0';
+    ctx.fillText(t.species_german, x, by + 16*s);
     // Red list category badge
-    const catColors = {'EN':'#d04040','VU':'#e0a020','NT':'#60a0d0','LC':'#60b060'};
-    const cc = catColors[t.species_category] || '#888';
+    const catColors = {'EN':'#ff6a5a','VU':'#ffc040','NT':'#80c0f0','LC':'#90e090'};
+    const cc = catColors[t.species_category] || '#ccc';
+    ctx.strokeText(t.species_category, x, by + 25*s);
     ctx.fillStyle = cc;
-    ctx.fillText(t.species_category, x, by + 22*s);
+    ctx.fillText(t.species_category, x, by + 25*s);
   }
 
   ctx.restore();
@@ -5773,7 +5809,8 @@ function onGameClick(e) {
   // Check treasures first
   for (const t of G.treasures) {
     const [tx, ty] = toScreen(t.lon, t.lat);
-    if (Math.abs(tx-x)<15 && Math.abs(ty-y)<15) { claimTreasure(t); return; }
+    const hr = 12 * treasureScale() + 8;
+    if (Math.abs(tx-x)<hr && Math.abs(ty-y)<hr) { claimTreasure(t); return; }
   }
 
   // Similar-parcel markers (before parcel hit-testing — they sit on top)
@@ -6985,3 +7022,123 @@ const pickObs = new MutationObserver(() => {
   if (document.getElementById('screen-pick').classList.contains('active') && !pickCanvas) initPicker();
 });
 pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attributeFilter:['class']});
+
+// ================= DEV / SCREENSHOT HELPERS =================
+// Scripting API for automated screenshots & QA (no UI). Usage from devtools /
+// browser automation, e.g.:
+//   await DEV.goto(15.5205, 48.3955, 17.5)          // move camera, wait for tiles
+//   await DEV.parcel('12105-68/3')                   // select parcel + open popup
+//   DEV.ez('12105', 430); DEV.kg('12105'); DEV.tree(0)
+//   DEV.chrome(false)                                // hide search/badges/attrib
+//   DEV.state()                                      // compact JSON of G
+// Also honoured on load: URL ?dev=1 skips the min. loading-screen dwell time,
+// and #v=lon,lat,zoom (existing) sets the initial camera.
+window.DEV = {
+  /** Wait until no viewport tiles are in flight (or timeout). */
+  idle(timeout = 15000) {
+    return new Promise(res => {
+      const t0 = Date.now();
+      (function chk() {
+        if (_vpBusy === 0 && Date.now() - t0 > 250) return res(true);
+        if (Date.now() - t0 > timeout) return res(false);
+        setTimeout(chk, 100);
+      })();
+    });
+  },
+  /** Move camera instantly, trigger loading, wait for idle, render. */
+  async goto(lon, lat, zoom, settleMs = 400) {
+    if (flyAnim) { cancelAnimationFrame(flyAnim); flyAnim = null; }
+    if (lon != null) G.cam.lon = lon;
+    if (lat != null) G.cam.lat = lat;
+    if (zoom != null) G.cam.zoom = Math.max(13, Math.min(20, zoom));
+    render(); renderMini();
+    await loadMoreParcels();
+    await this.idle();
+    await new Promise(r => setTimeout(r, settleMs));
+    render(); renderMini();
+    return this.state();
+  },
+  /** Close every popup and clear selection. */
+  closeAll() {
+    for (const id of ['parcel-popup','ez-popup','kg-popup','tree-popup']) {
+      const el = document.getElementById(id); if (!el) continue;
+      el.classList.remove('open'); try { resetPopupPosition(id); } catch(e) {}
+    }
+    document.getElementById('game-search-results').innerHTML = '';
+    G.sel = null; G.selFp = null; G.ezHighlight = null; render();
+  },
+  /** Find a loaded polygon feature by parcel_id. */
+  find(parcelId) { return G.parcelPolys.find(f => f.properties.parcel_id === parcelId) || null; },
+  /** Select a parcel by id (or feature) and open its popup; optionally center on it. */
+  async parcel(idOrFeature, center = false, zoom) {
+    const f = typeof idOrFeature === 'string' ? this.find(idOrFeature) : idOrFeature;
+    if (!f) return null;
+    if (center) { const [lon, lat] = featureLonLat(f); await this.goto(lon, lat, zoom || G.cam.zoom); }
+    showParcelPopup(f);
+    await new Promise(r => setTimeout(r, 1200)); // lazy rows (lidar/osm/price)
+    render();
+    return f.properties;
+  },
+  /** Open the EZ (folio) popup + gold highlight. */
+  ez(kg, ez) { openEZPopup(String(kg), Number(ez)); render(); return G.ezIndex[kg + '-EZ' + ez]?.length || 0; },
+  /** Open the KG statistics popup. */
+  kg(kg) { return openKGSummary(String(kg)); },
+  /** Open the giant-tree popup for the n-th tallest loaded tree (unlocks/reveals). */
+  tree(n = 0) {
+    G.tallUnlocked = true; G.tallRevealed = true;
+    const t = allTallTrees().sort((a,b) => b.height_m - a.height_m)[n];
+    if (t) { showTreePopup(t); render(); }
+    return t || null;
+  },
+  /** Unlock/reveal state for giant trees: 'locked' | 'hint' | 'revealed'. */
+  trees(mode) {
+    G.tallUnlocked = mode !== 'locked'; G.tallRevealed = mode === 'revealed'; render();
+  },
+  /** Candidate EZs on screen with n..m parcels (for finding a nice farm folio). */
+  ezCandidates(min = 4, max = 20) {
+    const out = [];
+    for (const [k, v] of Object.entries(G.ezIndex)) {
+      if (v.length < min || v.length > max) continue;
+      const area = v.reduce((s, f) => s + (f.properties.area_sqm || 0), 0);
+      const b = v.filter(f => (f.properties.building_count || 0) > 0).length;
+      out.push({ key: k, n: v.length, area_ha: +(area / 1e4).toFixed(2), withBuildings: b });
+    }
+    return out.sort((a, b) => b.n - a.n);
+  },
+  /** Loaded parcels near the camera matching a predicate on properties. */
+  parcelsNear(pred, limit = 20) {
+    const [cx, cy] = [gc.width / 2, gc.height / 2];
+    return G.parcelPolys.map(f => { const [x, y] = toScreen(...featureLonLat(f)); return { f, d: Math.hypot(x - cx, y - cy) }; })
+      .filter(o => o.d < Math.max(gc.width, gc.height) && (!pred || pred(o.f.properties)))
+      .sort((a, b) => a.d - b.d).slice(0, limit)
+      .map(o => Object.assign({ d: Math.round(o.d) }, o.f.properties));
+  },
+  /** Show/hide non-map chrome (search, badges, attribution, loading hint). */
+  chrome(on) {
+    for (const id of ['game-search','enhanced-badge','abroad-badge','map-attrib','map-loading','muni-toast'])
+      { const el = document.getElementById(id); if (el) el.style.visibility = on ? '' : 'hidden'; }
+  },
+  /** Sidebar (desktop) show/hide — more map for hero shots. */
+  sidebar(on) {
+    const el = document.getElementById('sidebar');
+    if (el) el.style.display = on ? '' : 'none';
+    resizeGame(); render();
+  },
+  /** Freeze/unfreeze sprite animations (deterministic frames). */
+  freeze(on = true) {
+    if (on && !this._now) { this._now = Date.now; const t = Date.now(); Date.now = () => t; }
+    if (!on && this._now) { Date.now = this._now; this._now = null; }
+    render();
+  },
+  /** Compact state snapshot. */
+  state() {
+    return {
+      cam: { lon: +G.cam.lon.toFixed(5), lat: +G.cam.lat.toFixed(5), zoom: +G.cam.zoom.toFixed(2) },
+      polys: G.parcelPolys.length, fps: G.buildingFootprints.length, claimed: G.claimed.length,
+      treasures: G.treasures.length, tall: G.tallUnlocked, revealed: G.tallRevealed,
+      trees: allTallTrees().length, busy: _vpBusy, coins: G.player?.coins, xp: G.player?.xp,
+      popups: ['parcel-popup','ez-popup','kg-popup','tree-popup'].filter(id => document.getElementById(id)?.classList.contains('open')),
+      sel: G.sel?.properties?.parcel_id || null,
+    };
+  },
+};
