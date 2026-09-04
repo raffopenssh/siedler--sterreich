@@ -13,7 +13,9 @@ const CAD = '/api/cadastre';
 const TERRAIN = {
   grass:    ['#4a8a30','#528e35','#5a9238','#4e8c32','#468828'],
   forest:   ['#1e5a1e','#245e22','#2a6228','#1c581c','#286026'],
-  water:    ['#2878b8','#3080c0','#2570a8','#3888c8','#2068a0'],
+  // One flat water colour: rivers/lakes are drawn from three sources (landuse
+  // polygons, OSM water_area, water-dominant parcels) that must be seamless.
+  water:    ['#2f7fbf','#2f7fbf','#2f7fbf','#2f7fbf','#2f7fbf'],
   farm:     ['#a8a040','#b0a848','#a09838','#b8b050','#989030'],
   meadow:   ['#5a9e3a','#62a240','#52963a','#6aaa48','#4e9234'],
   building: ['#c8b040','#d0b848','#bca838','#d8c050','#b4a030'],
@@ -2448,8 +2450,8 @@ const LANDUSE_POLY_COLORS = {
   '56': {fill:'#1e5a1e', stroke:'#145014'},          // Wälder
   '57': {fill:'#5a8a4a', stroke:'#4a7a3a'},          // Verbuschte Flächen
   '58': {fill:'#8a7a58', stroke:'#7a6a48', a:0.8},   // Forststraßen — gravel
-  '59': {fill:'#2888c8', stroke:'#1878b8', a:0.8},   // Fließende Gewässer
-  '60': {fill:'#3090d0', stroke:'#2080c0', a:0.8},   // Stehende Gewässer
+  '59': {fill:'#2f7fbf', stroke:'#2f7fbf', a:1},     // Fließende Gewässer (= TERRAIN.water)
+  '60': {fill:'#2f7fbf', stroke:'#2f7fbf', a:1},     // Stehende Gewässer
   '61': {fill:'#4a8a6a', stroke:'#3a7a5a'},          // Feuchtgebiete
   '62': {fill:'#9a9888', stroke:'#8a8878'},          // Vegetationsarme Flächen
   '63': {fill:'#a09070', stroke:'#907f60'},          // Betriebsflächen
@@ -2565,6 +2567,10 @@ function drawOSMLines(ctx, cat) {
   for (const kg in G.osmLines) {
     for (const ln of G.osmLines[kg]) {
       if (ln.cat !== cat) continue;
+      // Riverbank/lake outline chunks duplicate the filled water_area polygons
+      // (visible as dark diagonals across the Danube) — only streams/rivers
+      // without an area polygon still need the centreline.
+      if (cat === 'water' && (ln.fclass === 'riverbank' || ln.fclass === 'water' || ln.fclass === 'reservoir' || ln.fclass === 'wetland') && G.waterAreas[kg]) continue;
       if (majorsOnly && cat === 'road' && !ln.major) continue;
       const pts = ln.pts;
       // quick bbox cull using first/last point
@@ -2640,9 +2646,7 @@ function drawWaterAreas(ctx) {
   const W = gc.width, H = gc.height;
   const b = viewBounds();
   ctx.save();
-  ctx.fillStyle = TERRAIN.water[1];
-  ctx.strokeStyle = 'rgba(20,70,120,0.5)';
-  ctx.lineWidth = 1;
+  ctx.fillStyle = TERRAIN.water[0];
   for (const kg in G.waterAreas) {
     for (const wa of G.waterAreas[kg]) {
       const rings = geomAllRings(wa.geometry);
@@ -2661,7 +2665,6 @@ function drawWaterAreas(ctx) {
       }
       if (!vis) continue;
       ctx.fill('evenodd');
-      ctx.stroke();
     }
   }
   ctx.restore();
@@ -3685,17 +3688,19 @@ function drawParcelPoly(ctx, f, claimMap) {
   const hash = simpleHash(parcelId || '');
   const isBiodiversity = claim?.converted_to === 'biodiversity';
   const isForest = claim?.converted_to === 'forest';
+  const isWater = terrain === TERRAIN.water;
   ctx.fillStyle = terrain[Math.abs(hash) % terrain.length];
   // More transparent when real landuse polys provide terrain backdrop
   // Biodiversity parcels get higher opacity for vibrancy
-  ctx.globalAlpha = isBiodiversity
+  ctx.globalAlpha = isWater ? 1
+    : isBiodiversity
     ? (G.landusePolys.length > 0 ? 0.55 : 0.95)
     : (G.landusePolys.length > 0 ? 0.35 : 0.85);
   ctx.fill();
   ctx.globalAlpha = 1;
 
   // Enhanced mode: subtle per-parcel elevation tint (lidar) — cheap terrain shading
-  if (G.cam.zoom >= 14) {
+  if (G.cam.zoom >= 14 && !isWater) {
     const lp = G.lidarParcels[parcelId];
     if (lp && lp.elev != null) {
       const kt = G.lidarKGTerrain[lp.kg];
@@ -3754,8 +3759,8 @@ function drawParcelPoly(ctx, f, claimMap) {
     ctx.lineWidth = 2.5;
     ctx.stroke();
   }
-  // Normal border on top
-  ctx.strokeStyle = claim ? (G.pcolors[claim.player_id]||'#fff') : 'rgba(20,40,10,0.35)';
+  // Normal border on top (water↔water boundaries: barely-there light ripple line)
+  ctx.strokeStyle = claim ? (G.pcolors[claim.player_id]||'#fff') : (isWater ? 'rgba(200,230,255,0.12)' : 'rgba(20,40,10,0.35)');
   ctx.lineWidth = claim ? 2 : 0.5;
   ctx.stroke();
 
