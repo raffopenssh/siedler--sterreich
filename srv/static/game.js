@@ -489,7 +489,7 @@ async function startLucky() {
   }
 }
 
-// ================= MUNICIPALITY PICKER (Real GADM outlines) =================
+// ================= MUNICIPALITY PICKER (Statistik Austria outlines via /search/municipalities) =================
 let pickCanvas, pickCtx;
 const pickData = { states: [], munis: [], hover: null };
 
