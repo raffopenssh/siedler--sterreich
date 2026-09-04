@@ -3285,32 +3285,74 @@ function drawGeoDistanceAtTree(ctx, t) {
   ctx.textAlign = 'left';
 }
 
-/** Pulsing blue GPS dot + accuracy circle. */
+
+
+/** Kundschafter (scout) GPS marker — pixel-art settler with a red-white-red
+ *  pennant standing on the player's real position. The accuracy radius is a
+ *  dashed gold "Lagerkreis" instead of a Google-Maps blue disc. */
+const SCOUT_SPRITE = [
+  '....hhh.....',
+  '...hhhhh....',
+  '...hssss....',
+  '...hs.s.....',
+  '....sss.....',
+  '..ttbbbtt...',
+  '.t.bbbbb.t..',
+  '.t.bbbbb.t..',
+  '...bbbbb....',
+  '...ll.ll....',
+  '...ll.ll....',
+  '..kk...kk...',
+];
+const SCOUT_COLORS = { h:'#6b3a1e', s:'#f0c8a0', t:'#7a4a2a', b:'#2e6bb5', l:'#5a3a22', k:'#2a1a10' };
 function drawGeoMarker(ctx) {
   const g = G.geo;
   if (!g.lon) return;
   const [x, y] = toScreen(g.lon, g.lat);
   const W = gc.width, H = gc.height;
   if (x < -100 || x > W+100 || y < -100 || y > H+100) return;
-  // Accuracy circle (meters → px): 1°lat ≈ 111320m
+  const now = Date.now();
+  // Accuracy: dashed gold camp circle, slowly rotating
   const s = mapScale();
   const accPx = (g.acc / 111320) * s * 1.35;
   if (accPx > 8 && accPx < 600) {
-    ctx.fillStyle = 'rgba(60,140,255,0.12)';
-    ctx.strokeStyle = 'rgba(60,140,255,0.35)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(x, y, accPx, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.save();
+    ctx.setLineDash([6, 5]);
+    ctx.lineDashOffset = -(now / 60) % 11;
+    ctx.strokeStyle = 'rgba(255,208,80,0.75)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, accPx, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,208,80,0.06)'; ctx.fill();
+    ctx.restore();
   }
-  // Pulse ring
-  const pulse = (Date.now() % 1600) / 1600;
-  ctx.strokeStyle = 'rgba(60,140,255,' + (0.6 * (1-pulse)).toFixed(2) + ')';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(x, y, 8 + pulse * 16, 0, Math.PI*2); ctx.stroke();
-  // Dot
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#2a7ae0';
-  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();
+  // Ground shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(x, y + 2, 10, 4, 0, 0, Math.PI*2); ctx.fill();
+  // Sprite (bobbing)
+  const px = G.cam.zoom >= 17 ? 3 : 2;
+  const bob = Math.round(Math.sin(now / 260) * 1.5);
+  const sw = SCOUT_SPRITE[0].length * px, sh = SCOUT_SPRITE.length * px;
+  const ox = Math.round(x - sw / 2), oy = Math.round(y - sh + bob);
+  ctx.imageSmoothingEnabled = false;
+  for (let r = 0; r < SCOUT_SPRITE.length; r++) {
+    const row = SCOUT_SPRITE[r];
+    for (let c = 0; c < row.length; c++) {
+      const col = SCOUT_COLORS[row[c]];
+      if (col) { ctx.fillStyle = col; ctx.fillRect(ox + c * px, oy + r * px, px, px); }
+    }
+  }
+  // Pennant pole (right hand) with waving red-white-red flag
+  const poleX = ox + 10 * px, poleTop = oy - 10 * px;
+  ctx.fillStyle = '#3a2410';
+  ctx.fillRect(poleX, poleTop, px, sh + 6 * px);
+  const wave = Math.sin(now / 180);
+  const fw = 7 * px, fh = px;
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = i === 1 ? '#f4f0e8' : '#d0342c';
+    const skew = Math.round(wave * (i - 1));
+    ctx.fillRect(poleX + px, poleTop + i * fh + skew, fw - i * 0, fh);
+  }
+  ctx.fillStyle = '#ffd050'; ctx.fillRect(poleX - px/2, poleTop - px, px * 2, px); // gold finial
 }
 
 // ================= REAL BUILDING FOOTPRINTS =================
