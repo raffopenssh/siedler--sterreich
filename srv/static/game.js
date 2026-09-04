@@ -5367,6 +5367,16 @@ function initGameInput() {
     render();
   };
 
+  // Data attribution chip (CC BY 4.0 / ODbL): tap to expand, tap outside / Esc to close
+  const attrib = document.getElementById('map-attrib');
+  const attribBtn = document.getElementById('map-attrib-toggle');
+  if (attrib && attribBtn) {
+    const setOpen = (o) => { attrib.classList.toggle('open', o); attribBtn.setAttribute('aria-expanded', String(o)); };
+    attribBtn.onclick = (e) => { e.stopPropagation(); setOpen(!attrib.classList.contains('open')); };
+    document.addEventListener('pointerdown', (e) => { if (attrib.classList.contains('open') && !attrib.contains(e.target)) setOpen(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
+  }
+
   // "Developer mode": 7 quick taps on the Enhanced-Gelände badge (like
   // Android's build-number easter egg) unlock the giant tree nearest to the
   // viewport center and fly to it.
