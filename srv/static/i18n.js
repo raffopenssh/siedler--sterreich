@@ -487,7 +487,10 @@ const I18N_RX = [
 // users. German markup/code stays canonical.
 // ============================================================
 (function(){
-  var de = /^de/i.test(navigator.language || (navigator.languages||[])[0] || 'de');
+  var forced = null;
+  try { forced = new URLSearchParams(location.search).get('lang'); } catch(e) {}
+  var de = forced ? /^de/i.test(forced)
+    : /^de/i.test(navigator.language || (navigator.languages||[])[0] || 'de');
   window.LANG = de ? 'de' : 'en';
   if (de) {
     window.tr  = function(s){ return s; };
