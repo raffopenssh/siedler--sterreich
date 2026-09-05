@@ -386,7 +386,7 @@ function setUrlParams(obj) {
     G.freshPlayer = true; // first ever load → in-game herald intro
     G.playerToken = res.rejoin_token || null;
     setUrlParams({rejoin: res.rejoin_token || null});
-    toast('🎉 Willkommen, ' + res.player.name + '!', 'ok');
+    toast('🎉 Servus, ' + res.player.name + '!', 'ok');
     return res.player;
   }
 
@@ -7096,7 +7096,7 @@ async function claimTreasure(t) {
   if (!G.tallUnlocked) {
     G.tallUnlocked = true;
     if (allTallTrees().length > 0) {
-      setTimeout(() => toast('🌲 Gerücht: Irgendwo hier steht ein Riesenbaum... Finde und tippe ihn an!', 'ok'), 1200);
+      setTimeout(() => toast('🌲 Gerücht: Irgendwo da steht ein Riesenbaum... Find ihn und tipp ihn an!', 'ok'), 1200);
     }
   }
   render(); loadChallenges();
@@ -7467,9 +7467,9 @@ const Herald = {
       const muni = esc(G.session?.municipality_name || 'Österreich');
       const name = esc(G.player?.name || '');
       const lines = [
-        { icon:'🏰', tag: tr('Willkommen'), html: tr('Willkommen in') + ` <b>${muni}</b>, ${name}!\n` + tr('Alles hier ist echt — jede Parzelle stammt aus dem österreichischen Kataster.') },
-        { icon:'🏴', tag: tr('So geht’s'), html: tr('Tippe auf eine Parzelle und kaufe sie.') + ` <b>${(G.player?.coins ?? 10000).toLocaleString('de-AT')}🪙</b> ` + tr('hast du dabei.') + '\n' + tr('Was dir gehört, kannst du in 🌿 Naturschutz umwandeln — Ziel: 30 % der Gemeinde.') },
-        { icon:'💎', tag: tr('Unterwegs'), html: tr('Halte Ausschau nach 💎 Schätzen und 🦎 seltenen Arten der Roten Liste — beides bringt Münzen und XP.') },
+        { icon:'🏰', tag: tr('Servus'), html: tr('Servus in') + ` <b>${muni}</b>, ${name}!\n` + tr('Alles hier ist echt — jede Parzelle stammt aus dem österreichischen Kataster.') },
+        { icon:'🏴', tag: tr('So geht’s'), html: tr('Tipp auf eine Parzelle und kauf sie dir.') + ` <b>${(G.player?.coins ?? 10000).toLocaleString('de-AT')}🪙</b> ` + tr('hast du im Börserl.') + '\n' + tr('Was dir gehört, kannst du in 🌿 Naturschutz umwandeln — Ziel: 30 % der Gemeinde.') },
+        { icon:'💎', tag: tr('Unterwegs'), html: tr('Halt die Augen offen nach 💎 Schätzen und 🦎 seltenen Arten der Roten Liste — beides bringt Münzen und XP.') },
       ];
       if (q) lines.push(this.questLine(q, tr('Deine erste Aufgabe')));
       this.play(lines, 'intro');
@@ -7484,9 +7484,9 @@ const Herald = {
     this.init(); if (!this.el || this.seen.has(key)) return;
     if (this.mode === 'intro' && this.el.classList.contains('show')) return; // don't interrupt the intro
     const H = {
-      first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stück Land! Öffne es erneut und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das gibt XP und zählt zum 30 %-Ziel.') },
-      trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen, wo sie stehen. Kaufe eine Parzelle mit einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
-      enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Hier gibt es echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Finde zuerst einen Schatz, um sie zu sehen.') },
+      first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Mach es noch einmal auf und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das bringt XP und zählt zum 30 %-Ziel.') },
+      trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen dir, wo sie stehen. Kauf dir eine Parzelle mit so einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
+      enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Da gibt’s echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz, dann siehst du sie.') },
     };
     if (!H[key]) return;
     if (key === 'enhanced' && (!G.freshPlayer || G.tallUnlocked)) { this.seen.add(key); return; }
@@ -7497,7 +7497,7 @@ const Herald = {
   /** Quest completed → celebrate, then reveal the next one. */
   completed(title) {
     this.init(); if (!this.el) return;
-    const lines = [{ icon:'🏆', tag: tr('Erledigt'), html: '<b>' + esc(tr(title || 'Aufgabe')) + '</b> ✔', cls:'done' }];
+    const lines = [{ icon:'🏆', tag: tr('Passt!'), html: '<b>' + esc(tr(title || 'Aufgabe')) + '</b> ✔', cls:'done' }];
     // Next quest gets appended once loadChallenges() refreshed — see questsChanged().
     this._awaitNext = true;
     this.play(lines, 'done', 7000);
