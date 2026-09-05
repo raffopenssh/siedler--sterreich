@@ -383,6 +383,7 @@ function setUrlParams(obj) {
     }
     if (res.error) { err.textContent=res.error; return null; }
     savePlayer(res.player);
+    G.freshPlayer = true; // first ever load → in-game herald intro
     G.playerToken = res.rejoin_token || null;
     setUrlParams({rejoin: res.rejoin_token || null});
     toast('🎉 Willkommen, ' + res.player.name + '!', 'ok');
@@ -1377,6 +1378,7 @@ async function startGameWithLoading() {
   stopTipRotation();
   stopLoadingCountdown();
   show('game');
+  setTimeout(() => Herald.start(G.freshPlayer ? 'intro' : 'quest'), 400);
 
   // Init canvas AFTER showing the game screen (so clientWidth/Height > 0)
   gc = document.getElementById('game-canvas');
@@ -2049,7 +2051,10 @@ function camOverEnhancedKG() {
 function updateEnhancedBadge() {
   const el = document.getElementById('enhanced-badge');
   if (!el) return;
-  el.style.display = (camOverEnhancedKG() && insideAustria(G.cam.lon, G.cam.lat)) ? '' : 'none';
+  const onEnh = camOverEnhancedKG() && insideAustria(G.cam.lon, G.cam.lat);
+  el.style.display = onEnh ? '' : 'none';
+  if (onEnh) Herald.hint('enhanced');
+  if (G.enhancedKGs.size && G._questEnh !== enhancedLoaded()) { G._questEnh = enhancedLoaded(); renderQuests(); }
   // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
   el.textContent = G.devTree ? '✨ Enhanced Gelände 🌲' : '✨ Enhanced Gelände';
 }
@@ -2122,14 +2127,26 @@ function renderPlayerList() {
     return `<div class="stat"><span style="color:${G.pcolors[p.id]}">■</span> ${esc(p.name)}${p.id===G.player.id?' (du)':''}<b>${p.coins}🪙</b></div>`;
   }).join('');
 }
+const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲'};
+/** Any lidar-enhanced KG among the loaded ones? (giant trees only exist there) */
+function enhancedLoaded() {
+  for (const kg of G.kgsLoaded) if (G.enhancedKGs.has(kg)) return true;
+  return false;
+}
+/** Open quests the player can actually pursue here (Baumriese needs an enhanced KG). */
+function visibleQuests() {
+  const enh = enhancedLoaded();
+  return (G.challenges||[]).filter(c => c.challenge_type !== 'tree' || enh);
+}
 function renderQuests() {
-  document.getElementById('quest-list').innerHTML = (G.challenges||[]).map(c => {
-    const icon = {explore:'🗺️',restore:'🌿',treasure:'💎'}[c.challenge_type]||'📜';
+  document.getElementById('quest-list').innerHTML = visibleQuests().map(c => {
+    const icon = QUEST_ICONS[c.challenge_type]||'📜';
     return `<div class="quest-item" title="${tr('Wird automatisch erledigt')}">
       <div class="qt">${icon} ${esc(c.title)}</div>
       <div class="qd">${esc(c.description||'')}</div>
       <div class="qr">+${c.reward_coins}🪙 +${c.reward_xp}⚡</div></div>`;
   }).join('') || '<div style="font:16px VT323;color:var(--text-dim)">Alle erledigt!</div>';
+  Herald.questsChanged();
 }
 function renderChat() {
   const el = document.getElementById('chat-log');
@@ -2267,7 +2284,7 @@ function handleEvent(d) {
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed':
-      if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); loadChallenges(); updateStatsFromServer(); }
+      if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); Herald.completed(d.title); loadChallenges(); updateStatsFromServer(); }
       else toast('🏆 '+d.player+': '+tr(d.title||'Aufgabe'),'');
       break;
     case 'treasures_updated': loadTreasures().then(()=>{ render(); toast('🛡️ Seltene Arten in Natura-2000-Gebieten entdeckt!','ok'); }); break;
@@ -6962,6 +6979,7 @@ window.doClaim = async function() {
   } else toast('🏴 Gekauft für '+res.price+'🪙!','ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
+  Herald.hint('first_claim');
 };
 
 window.doConvert = async function(to) {
@@ -7073,6 +7091,7 @@ async function claimTreasure(t) {
   }
   G.player = res.player; updateStats();
   G.treasures = G.treasures.filter(tr=>tr.id!==t.id);
+  if (!G.tallUnlocked && enhancedLoaded()) setTimeout(() => Herald.hint('trees_unlocked'), 1200);
   // First treasure unlocks the giant trees (enhanced mode)
   if (!G.tallUnlocked) {
     G.tallUnlocked = true;
@@ -7300,9 +7319,15 @@ window.DEV = {
       .sort((a, b) => a.d - b.d).slice(0, limit)
       .map(o => Object.assign({ d: Math.round(o.d) }, o.f.properties));
   },
+  /** Herald (typewriter hint box): DEV.herald('intro'|'quest'|'off') or DEV.herald('hint','first_claim'). */
+  herald(mode, key) {
+    if (mode === 'off') return Herald.dismiss();
+    if (mode === 'hint') { Herald.seen.delete(key); return Herald.hint(key); }
+    Herald.reset(); Herald.start(mode || 'intro');
+  },
   /** Show/hide non-map chrome (search, badges, attribution, loading hint). */
   chrome(on) {
-    for (const id of ['game-search','enhanced-badge','abroad-badge','map-attrib','map-loading','muni-toast'])
+    for (const id of ['game-search','enhanced-badge','abroad-badge','map-attrib','map-loading','muni-toast','herald'])
       { const el = document.getElementById(id); if (el) el.style.visibility = on ? '' : 'hidden'; }
   },
   /** Sidebar (desktop) show/hide — more map for hero shots. */
@@ -7393,5 +7418,168 @@ window.DEV = {
       popups: ['parcel-popup','ez-popup','kg-popup','tree-popup'].filter(id => document.getElementById(id)?.classList.contains('open')),
       sel: G.sel?.properties?.parcel_id || null,
     };
+  },
+};
+
+// ================= HERALD — typewriter quest/hint dialogue =================
+// RPG-style dialogue box over the map. Fresh players get a 3-line intro that
+// ends on their first quest; everyone gets quest-completion beats and a few
+// one-shot contextual hints. Click/tap: finish line → next line → dismiss.
+// No storage (no cookies policy): "seen" lives for this page load only.
+const Herald = {
+  el: null, seen: new Set(), lines: [], idx: 0, timer: null, typing: null, mode: null, hideTimer: null,
+  reduced: window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches,
+
+  init() {
+    if (this.el) return;
+    this.el = document.getElementById('herald');
+    if (!this.el) return;
+    this.el.addEventListener('click', e => { if (e.target.id !== 'herald-close') this.advance(); });
+    document.getElementById('herald-close').onclick = e => { e.stopPropagation(); this.dismiss(true); };
+    document.addEventListener('keydown', e => {
+      if (!this.el.classList.contains('show')) return;
+      if (e.key === 'Escape') this.dismiss(true);
+      else if ((e.key === 'Enter' || e.key === ' ') && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) { e.preventDefault(); this.advance(); }
+    });
+    // Hide while a popup is open (mobile: they share the bottom edge).
+    setInterval(() => {
+      if (!this.el.classList.contains('show')) return;
+      const busy = !!document.querySelector('.popup.open');
+      this.el.style.visibility = busy ? 'hidden' : '';
+    }, 300);
+  },
+  reset() { this.seen.clear(); this.dismiss(); },
+
+  /** Top open quest (respecting enhanced visibility). */
+  topQuest() { return visibleQuests()[0] || null; },
+  questLine(c, tag) {
+    return {
+      tag: tag || tr('Aufgabe'), icon: QUEST_ICONS[c.challenge_type] || '📜',
+      html: `<b>${esc(tr(c.title))}</b>\n${esc(tr(c.description || ''))}  <span class="rw">+${c.reward_coins}🪙 +${c.reward_xp}⚡</span>`,
+    };
+  },
+
+  start(mode) {
+    this.init(); if (!this.el) return;
+    const q = this.topQuest();
+    if (mode === 'intro' && !this.seen.has('intro')) {
+      this.seen.add('intro');
+      const muni = esc(G.session?.municipality_name || 'Österreich');
+      const name = esc(G.player?.name || '');
+      const lines = [
+        { icon:'🏰', tag: tr('Willkommen'), html: tr('Willkommen in') + ` <b>${muni}</b>, ${name}!\n` + tr('Alles hier ist echt — jede Parzelle stammt aus dem österreichischen Kataster.') },
+        { icon:'🏴', tag: tr('So geht’s'), html: tr('Tippe auf eine Parzelle und kaufe sie.') + ` <b>${(G.player?.coins ?? 10000).toLocaleString('de-AT')}🪙</b> ` + tr('hast du dabei.') + '\n' + tr('Was dir gehört, kannst du in 🌿 Naturschutz umwandeln — Ziel: 30 % der Gemeinde.') },
+        { icon:'💎', tag: tr('Unterwegs'), html: tr('Halte Ausschau nach 💎 Schätzen und 🦎 seltenen Arten der Roten Liste — beides bringt Münzen und XP.') },
+      ];
+      if (q) lines.push(this.questLine(q, tr('Deine erste Aufgabe')));
+      this.play(lines, 'intro');
+    } else if (q && G.freshPlayer && !this.seen.has('quest0')) {
+      this.seen.add('quest0');
+      this.play([this.questLine(q)], 'quest');
+    }
+  },
+
+  /** One-shot contextual hints. */
+  hint(key) {
+    this.init(); if (!this.el || this.seen.has(key)) return;
+    if (this.mode === 'intro' && this.el.classList.contains('show')) return; // don't interrupt the intro
+    const H = {
+      first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stück Land! Öffne es erneut und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das gibt XP und zählt zum 30 %-Ziel.') },
+      trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen, wo sie stehen. Kaufe eine Parzelle mit einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
+      enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Hier gibt es echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Finde zuerst einen Schatz, um sie zu sehen.') },
+    };
+    if (!H[key]) return;
+    if (key === 'enhanced' && (!G.freshPlayer || G.tallUnlocked)) { this.seen.add(key); return; }
+    this.seen.add(key);
+    this.play([H[key]], 'hint', 9000);
+  },
+
+  /** Quest completed → celebrate, then reveal the next one. */
+  completed(title) {
+    this.init(); if (!this.el) return;
+    const lines = [{ icon:'🏆', tag: tr('Erledigt'), html: '<b>' + esc(tr(title || 'Aufgabe')) + '</b> ✔', cls:'done' }];
+    // Next quest gets appended once loadChallenges() refreshed — see questsChanged().
+    this._awaitNext = true;
+    this.play(lines, 'done', 7000);
+  },
+  questsChanged() {
+    if (!this._awaitNext) return;
+    this._awaitNext = false;
+    const q = this.topQuest();
+    if (q) { this.lines.push(this.questLine(q, tr('Nächste Aufgabe'))); this.renderDots(); }
+  },
+
+  play(lines, mode, autoHide) {
+    // Something already on screen → chain the new lines onto it instead of clobbering.
+    if (this.el.classList.contains('show') && this.lines.length) {
+      this.lines.push(...lines); this.autoHide = autoHide || this.autoHide; this.renderDots();
+      if (this.el.classList.contains('ready') && this.idx === this.lines.length - lines.length - 1) { // was idle on its last line
+        clearTimeout(this.hideTimer); clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.advance(), 1800);
+      }
+      return;
+    }
+    clearTimeout(this.hideTimer); this.stopTyping();
+    this.lines = lines; this.idx = 0; this.mode = mode; this.autoHide = autoHide || 0;
+    this.el.className = 'herald show' + (mode === 'quest' ? ' quest' : '');
+    this.showLine();
+  },
+  renderDots() {
+    const d = document.getElementById('herald-dots');
+    d.innerHTML = this.lines.length > 1 ? this.lines.map((_, i) => `<i class="${i <= this.idx ? 'on' : ''}"></i>`).join('') : '';
+  },
+  showLine() {
+    const L = this.lines[this.idx]; if (!L) return this.dismiss();
+    this.el.classList.remove('ready');
+    this.el.classList.toggle('done', !!L.cls);
+    document.getElementById('herald-avatar').textContent = L.icon || '🏰';
+    document.getElementById('herald-tag').textContent = L.tag || '';
+    this.renderDots();
+    this.type(L.html, () => {
+      this.el.classList.add('ready');
+      const last = this.idx >= this.lines.length - 1;
+      const dwell = Math.min(9000, 2600 + L.html.replace(/<[^>]+>/g, '').length * 45);
+      // Auto-advance through multi-line sequences; quests linger, hints fade.
+      // (while a popup hides us, timers re-arm instead of firing unseen)
+      const later = (fn, ms) => setTimeout(() => document.querySelector('.popup.open') ? (this[fn === 'adv' ? 'timer' : 'hideTimer'] = later(fn, 3000)) : (fn === 'adv' ? this.advance() : this.dismiss()), ms);
+      if (!last) this.timer = later('adv', dwell);
+      else if (this.autoHide) this.hideTimer = later('hide', Math.max(this.autoHide, dwell));
+      else if (this.mode === 'intro' || this.mode === 'quest') this.hideTimer = later('hide', 25000);
+    });
+  },
+  /** Typewriter over an HTML string: tags appear whole, text char by char. */
+  type(html, done) {
+    const t = document.getElementById('herald-text');
+    t.classList.remove('typed');
+    if (this.reduced) { t.innerHTML = html; t.classList.add('typed'); done(); return; }
+    const tokens = html.match(/<[^>]+>|&[a-z#0-9]+;|[\s\S]/gu) || [];
+    let i = 0, out = '';
+    const step = () => {
+      if (i >= tokens.length) { t.innerHTML = out; t.classList.add('typed'); this.typing = null; done(); return; }
+      const tk = tokens[i++]; out += tk;
+      t.innerHTML = out + '<span class="cur"></span>';
+      let d = 24;
+      if (tk[0] === '<' || tk[0] === '&') d = 0;
+      else if (/[.!?]/.test(tk)) d = 260; else if (/[,;:—]/.test(tk)) d = 120; else if (tk === '\n') d = 200;
+      else d = 18 + Math.random() * 22;
+      this.typing = setTimeout(step, d);
+    };
+    step();
+    this._finish = () => { this.stopTyping(); t.innerHTML = html; t.classList.add('typed'); done(); };
+  },
+  stopTyping() { clearTimeout(this.typing); clearTimeout(this.timer); this.typing = null; this._finish = null; },
+  /** Click: finish typing → next line → dismiss. */
+  advance() {
+    if (this.typing) { const f = this._finish; this._finish = null; f && f(); return; }
+    clearTimeout(this.timer); clearTimeout(this.hideTimer);
+    this.idx++;
+    if (this.idx < this.lines.length) this.showLine(); else this.dismiss();
+  },
+  dismiss(user) {
+    if (!this.el) return;
+    this.stopTyping(); clearTimeout(this.hideTimer);
+    this.el.classList.remove('show', 'ready');
+    if (user && this.mode === 'intro') this.seen.add('quest0');
+    this.mode = null; this._awaitNext = false; this.lines = []; this.idx = 0;
   },
 };

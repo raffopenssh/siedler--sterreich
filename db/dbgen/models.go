@@ -73,6 +73,7 @@ type ParcelClaim struct {
 	PurchasePrice int64     `json:"purchase_price"`
 	ClaimedAt     time.Time `json:"claimed_at"`
 	Ez            string    `json:"ez"`
+	TallTrees     int64     `json:"tall_trees"`
 }
 
 type ParcelOffer struct {

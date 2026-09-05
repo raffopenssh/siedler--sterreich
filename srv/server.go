@@ -690,6 +690,7 @@ func (s *Server) handleGetChallenges(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "player_id required", 400)
 		return
 	}
+	s.backfillChallenges(r.Context(), r.PathValue("id"), playerID)
 	challenges, err := s.Q.GetPlayerChallenges(r.Context(), dbgen.GetPlayerChallengesParams{
 		SessionID: r.PathValue("id"),
 		PlayerID:  playerID,
@@ -779,6 +780,16 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tall-tree bonus: parcels containing lidar-confirmed landmark trees award extra XP
+	tallBonus, tallTrees := 0, 0
+	if req.TallTreeCount > 0 && req.TallTreeCount <= 10 && req.TallTreeMaxH > 0 && req.TallTreeMaxH <= 60 {
+		tallTrees = req.TallTreeCount
+		tallBonus = req.TallTreeCount*40 + int(req.TallTreeMaxH)
+		if tallBonus > 300 {
+			tallBonus = 300
+		}
+	}
+
 	landuse := req.Landuse
 	err := s.Q.ClaimParcel(r.Context(), dbgen.ClaimParcelParams{
 		SessionID:     req.SessionID,
@@ -790,6 +801,7 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		AreaSqm:       req.AreaSqm,
 		Landuse:       &landuse,
 		PurchasePrice: int64(price),
+		TallTrees:     int64(tallTrees),
 	})
 	if err != nil {
 		slog.Error("claim parcel", "error", err)
@@ -801,14 +813,6 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		Coins: int64(-price),
 		ID:    req.PlayerID,
 	})
-	// Tall-tree bonus: parcels containing lidar-confirmed landmark trees award extra XP
-	tallBonus := 0
-	if req.TallTreeCount > 0 && req.TallTreeCount <= 10 && req.TallTreeMaxH > 0 && req.TallTreeMaxH <= 60 {
-		tallBonus = req.TallTreeCount*40 + int(req.TallTreeMaxH)
-		if tallBonus > 300 {
-			tallBonus = 300
-		}
-	}
 	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
 		Xp: int64(10 + tallBonus),
 		ID: req.PlayerID,
@@ -1342,7 +1346,7 @@ func (s *Server) handleCompleteChallenge(w http.ResponseWriter, r *http.Request)
 		jsonErr(w, "Challenge not found or already completed", 404)
 		return
 	}
-	if c, cv, t := s.questProgress(r.Context(), sessionID, req.PlayerID); !questSatisfied(title, c, cv, t) {
+	if !questSatisfied(title, s.questProgress(r.Context(), sessionID, req.PlayerID)) {
 		jsonErr(w, "Aufgabe noch nicht erfüllt", 400)
 		return
 	}
@@ -2407,6 +2411,33 @@ func (s *Server) generateTreasures(ctx context.Context, sessionID string, lon, l
 	}
 }
 
+// backfillChallenges adds quests introduced after a session was created (only
+// for players who already have quests there, i.e. are members).
+func (s *Server) backfillChallenges(ctx context.Context, sessionID, playerID string) {
+	var n int64
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM challenges WHERE session_id=? AND player_id=?", sessionID, playerID).Scan(&n)
+	if n == 0 {
+		return
+	}
+	add := []struct {
+		cType, title, desc string
+		coins, xp          int64
+	}{
+		{"species", "Artenforscher", "Entdecke eine seltene Art der Roten Liste", 250, 150},
+		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
+	}
+	for _, c := range add {
+		var have int64
+		s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM challenges WHERE session_id=? AND player_id=? AND title=?", sessionID, playerID, c.title).Scan(&have)
+		if have > 0 {
+			continue
+		}
+		desc := c.desc
+		s.Q.CreateChallenge(ctx, dbgen.CreateChallengeParams{SessionID: sessionID, PlayerID: playerID, ChallengeType: c.cType,
+			Title: c.title, Description: &desc, RewardCoins: c.coins, RewardXp: c.xp})
+	}
+}
+
 func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID string, lon, lat float64) {
 	challenges := []struct {
 		cType, title, desc string
@@ -2414,10 +2445,13 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 	}{
 		// Canonical German — translated client-side via the i18n exact dictionary.
 		{"explore", "Erkunde deine Gemeinde", "Kaufe deine erste Parzelle", 100, 50},
-		{"restore", "Naturschützer", "Wandle eine Parzelle in ein Naturschutzgebiet um", 200, 100},
-		{"explore", "Landvermesser", "Kaufe 5 Parzellen", 300, 150},
 		{"treasure", "Schatzsucher", "Finde einen versteckten Schatz", 150, 75},
+		{"restore", "Naturschützer", "Wandle eine Parzelle in ein Naturschutzgebiet um", 200, 100},
+		{"species", "Artenforscher", "Entdecke eine seltene Art der Roten Liste", 250, 150},
+		{"explore", "Landvermesser", "Kaufe 5 Parzellen", 300, 150},
 		{"restore", "Waldmeister", "Wandle 3 Parzellen in Wald oder Naturschutz um", 500, 250},
+		// Only achievable in lidar-enhanced KGs; the client hides it until one is loaded.
+		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
 	}
 
 	for _, c := range challenges {
@@ -3736,16 +3770,27 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 // ---- Challenge auto-completion ----
 
 // questProgress returns the player's counters relevant to the built-in quests.
-func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) (claims, converted, treasures int64) {
-	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=?", sessionID, playerID).Scan(&claims)
-	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND converted_to IS NOT NULL AND converted_to<>''", sessionID, playerID).Scan(&converted)
-	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=?", sessionID, playerID).Scan(&treasures)
+type questCounters struct {
+	claims, converted, treasures, species, tallTrees int64
+}
+
+func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) (q questCounters) {
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=?", sessionID, playerID).Scan(&q.claims)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND converted_to IS NOT NULL AND converted_to<>''", sessionID, playerID).Scan(&q.converted)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND tall_trees>0", sessionID, playerID).Scan(&q.tallTrees)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=?", sessionID, playerID).Scan(&q.treasures)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=? AND treasure_type IN ('species','n2k_species')", sessionID, playerID).Scan(&q.species)
 	return
 }
 
 // questSatisfied maps the built-in quest titles (see generateChallenges) to their condition.
-func questSatisfied(title string, claims, converted, treasures int64) bool {
+func questSatisfied(title string, q questCounters) bool {
+	claims, converted, treasures := q.claims, q.converted, q.treasures
 	switch title {
+	case "Artenforscher":
+		return q.species >= 1
+	case "Baumriese":
+		return q.tallTrees >= 1
 	case "Erkunde deine Gemeinde":
 		return claims >= 1
 	case "Landvermesser":
@@ -3764,7 +3809,7 @@ func questSatisfied(title string, claims, converted, treasures int64) bool {
 // now satisfies, awards the rewards and broadcasts. Called after claim/convert/
 // treasure actions so the sidebar quest list keeps up without a manual click.
 func (s *Server) autoCompleteChallenges(ctx context.Context, sessionID, playerID string) []map[string]any {
-	claims, converted, treasures := s.questProgress(ctx, sessionID, playerID)
+	prog := s.questProgress(ctx, sessionID, playerID)
 	rows, err := s.DB.QueryContext(ctx, "SELECT id, title, reward_coins, reward_xp FROM challenges WHERE session_id=? AND player_id=? AND completed=0", sessionID, playerID)
 	if err != nil {
 		return nil
@@ -3785,7 +3830,7 @@ func (s *Server) autoCompleteChallenges(ctx context.Context, sessionID, playerID
 	var done []map[string]any
 	var name string
 	for _, c := range open {
-		if !questSatisfied(c.title, claims, converted, treasures) {
+		if !questSatisfied(c.title, prog) {
 			continue
 		}
 		s.Q.CompleteChallenge(ctx, c.id)

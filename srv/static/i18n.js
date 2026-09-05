@@ -341,6 +341,33 @@ const I18N_EXACT = {
   'Finde einen versteckten Schatz': 'Find a hidden treasure',
   'Waldmeister': 'Forest master',
   'Wandle 3 Parzellen in Wald oder Naturschutz um': 'Convert 3 parcels to forest or nature reserve',
+  'Artenforscher': 'Species researcher',
+  'Entdecke eine seltene Art der Roten Liste': 'Discover a rare Red List species',
+  'Baumriese': 'Tree giant',
+  'Kaufe eine Parzelle mit einem Riesenbaum': 'Buy a parcel with a giant tree',
+  'Aufgabe': 'Quest',
+  'Willkommen': 'Welcome',
+  'Willkommen in': 'Welcome to',
+  'Alles hier ist echt — jede Parzelle stammt aus dem österreichischen Kataster.': 'Everything here is real — every parcel comes from the Austrian cadastre.',
+  'So geht’s': 'How it works',
+  'Tippe auf eine Parzelle und kaufe sie.': 'Tap a parcel and buy it.',
+  'hast du dabei.': 'are in your purse.',
+  'Was dir gehört, kannst du in 🌿 Naturschutz umwandeln — Ziel: 30 % der Gemeinde.': 'Land you own can be turned into 🌿 nature reserve — goal: 30 % of the municipality.',
+  'Unterwegs': 'On the way',
+  'Halte Ausschau nach 💎 Schätzen und 🦎 seltenen Arten der Roten Liste — beides bringt Münzen und XP.': 'Watch out for 💎 treasures and 🦎 rare Red List species — both earn coins and XP.',
+  'Deine erste Aufgabe': 'Your first quest',
+  'Tipp': 'Tip',
+  'Dein erstes Stück Land! Öffne es erneut und wandle es in': 'Your first piece of land! Open it again and convert it to',
+  'Naturschutz': 'nature reserve',
+  'um — das gibt XP und zählt zum 30 %-Ziel.': '— that earns XP and counts towards the 30 % goal.',
+  'Freigeschaltet': 'Unlocked',
+  'Riesenbäume sichtbar! Goldene Bäume zeigen, wo sie stehen. Kaufe eine Parzelle mit einem Riesen für die Aufgabe': 'Giant trees revealed! Golden trees show where they stand. Buy a parcel with a giant for the quest',
+  'Enhanced Gelände': 'Enhanced terrain',
+  'Hier gibt es echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Finde zuerst einen Schatz, um sie zu sehen.': 'Real tree heights from laser scans live here — and hidden giant trees. Find a treasure first to see them.',
+  'Erledigt': 'Done',
+  'Nächste Aufgabe': 'Next quest',
+  'Ausblenden': 'Hide',
+  'Weiter': 'Next',
 
 };
 
@@ -447,7 +474,7 @@ const I18N_RX = [
 
   [/^(.+) \(du\)$/, '$1 (you)'],
   [/^([\d.,]+ Mio €) \((Bauland \(bebaut\)|Bauland|Ackerland|Grünland|Wald|Sonstig)\)$/, function(_,a,c){return a+' ('+({'Bauland (bebaut)':'building land (built-up)','Bauland':'building land','Ackerland':'farmland','Grünland':'grassland','Wald':'forest','Sonstig':'other'})[c]+')';}],
-  [/^([\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u2696\u26F0]+ )(Erkunde deine Gemeinde|Naturschützer|Landvermesser|Schatzsucher|Waldmeister)$/u, function(_,e,t){return e+({'Erkunde deine Gemeinde':'Explore your municipality','Naturschützer':'Conservationist','Landvermesser':'Land surveyor','Schatzsucher':'Treasure hunter','Waldmeister':'Forest master'})[t];}],
+  [/^([\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u2696\u26F0]+ )(Erkunde deine Gemeinde|Naturschützer|Landvermesser|Schatzsucher|Waldmeister|Artenforscher|Baumriese)$/u, function(_,e,t){return e+({'Erkunde deine Gemeinde':'Explore your municipality','Naturschützer':'Conservationist','Landvermesser':'Land surveyor','Schatzsucher':'Treasure hunter','Waldmeister':'Forest master','Artenforscher':'Species researcher','Baumriese':'Tree giant'})[t];}],
   // Landuse summary lists like "Sonstige (×5), Straße, Wald" — translate each term.
   [/^([A-Za-zÄÖÜäöüß()×X\d ]+)(, [A-Za-zÄÖÜäöüß()×X\d ]+)+$/, function(m0){
     return m0.split(', ').map(function(part){

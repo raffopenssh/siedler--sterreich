@@ -958,3 +958,54 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .report-reasons label { font:17px var(--font-game); cursor:pointer; display:flex; gap:8px; align-items:center; }
 #report-note { width:100%; padding:6px; min-height:56px; resize:vertical; }
 .modal .btn-row { margin-top:10px; display:flex; gap:8px; justify-content:flex-end; }
+
+/* =================== HERALD (typewriter quest/hint dialogue) =================== */
+.herald {
+  position:absolute; bottom:44px; left:50%; transform:translateX(-50%) translateY(16px);
+  width:min(600px, calc(100% - 24px)); z-index:58;
+  display:flex; gap:12px; align-items:stretch;
+  background:var(--panel); border:3px solid var(--gold); box-shadow:4px 4px 0 #000, inset 0 0 0 1px rgba(0,0,0,.5);
+  background-image:linear-gradient(180deg, rgba(60,50,30,.25) 0%, transparent 100%);
+  padding:10px 34px 8px 10px; border-radius:4px;
+  opacity:0; pointer-events:none; visibility:hidden;
+  transition:opacity .25s ease, transform .25s ease, visibility .25s;
+  cursor:pointer; user-select:none; -webkit-user-select:none;
+}
+.herald.show { opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; visibility:visible; }
+.herald.quest { border-color:var(--panel-border); }
+.herald.quest .herald-tag { color:var(--gold); }
+.herald.done { border-color:var(--green-light); }
+.herald-avatar {
+  flex:0 0 46px; height:46px; display:grid; place-content:center; font-size:26px;
+  background:rgba(0,0,0,.35); border:2px solid var(--panel-border); box-shadow:inset 2px 2px 0 rgba(0,0,0,.5);
+  align-self:center; image-rendering:pixelated;
+}
+.herald-body { flex:1; min-width:0; display:flex; flex-direction:column; }
+.herald-tag { font:8px var(--font-pixel); color:var(--text-dim); letter-spacing:.5px; margin-bottom:6px; min-height:8px; }
+.herald-text {
+  font:21px/1.2 var(--font-game); color:var(--text-bright); min-height:2.4em; white-space:pre-wrap; word-break:break-word;
+}
+.herald-text b, .herald-text .hl { color:var(--gold); font-weight:normal; }
+.herald-text .rw { color:var(--green-light); }
+.herald-text .cur { display:inline-block; width:.55em; height:1em; background:var(--gold); vertical-align:-.15em; margin-left:2px; animation:heraldBlink .8s steps(1) infinite; }
+.herald-text.typed .cur { display:none; }
+.herald-foot { display:flex; justify-content:space-between; align-items:center; margin-top:4px; min-height:12px; }
+.herald-dots { display:flex; gap:5px; }
+.herald-dots i { width:7px; height:7px; background:rgba(255,255,255,.18); display:block; }
+.herald-dots i.on { background:var(--gold); }
+.herald-next { font:9px var(--font-pixel); color:var(--gold); opacity:0; animation:heraldBob 1s ease-in-out infinite; }
+.herald.ready .herald-next { opacity:1; }
+.herald-close {
+  position:absolute; top:4px; right:4px; width:26px; height:26px; padding:0;
+  background:transparent; border:none; color:var(--text-dim); font:12px var(--font-pixel); cursor:pointer;
+}
+.herald-close:hover { color:var(--text-bright); }
+@keyframes heraldBlink { 50% { opacity:0; } }
+@keyframes heraldBob { 50% { transform:translateY(3px); } }
+@media (max-width:768px) {
+  .herald { bottom:62px; padding:8px 30px 6px 8px; gap:8px; width:calc(100% - 16px); }
+  .herald-avatar { flex-basis:38px; height:38px; font-size:22px; }
+  .herald-text { font-size:18px; min-height:2.4em; }
+  .herald-tag { font-size:7px; }
+  #sidebar.expanded ~ #game-main .herald { display:none; }
+}
