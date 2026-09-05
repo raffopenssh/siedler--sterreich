@@ -383,6 +383,24 @@ Loading: only the 2 nearest KGs block the loading screen (`fetchKGPolygonsBlocki
 
 Frontend (`loadEnhancedForKGs`, all background, never blocks loading): `G.enhancedKGs`, `G.lidarParcels` (elevation tint ≥z15, slope hatching ≥z16.5), `G.lidarBuildingIdx` (real building heights/roof types, matched by centroid grid + `G.lidarGen` invalidation), `G.topTrees`/`G.topObjects` (landmark sprites), `G.osmLines` (roads/water/rail; majors-only <z15), `G.n2kSites` (hatched overlay, toggle `#btn-n2k`), `G.landPrices` (lazy per-parcel market value in popup). GPS: `#btn-gps`, `G.geo`, follow-mode disabled on manual pan. Popup enhanced rows: `renderEnhancedPopupRows` (`#pp-enhanced`, mobile "Mehr ▸" expander).
 
+## Quests → Herald briefings
+
+`GET /api/session/{id}/challenges` returns each open quest with live
+`progress`/`goal` (server `questProgressFor`, same counters as
+`autoCompleteChallenges`). The sidebar renders a progress bar for goal>1.
+**Tapping a quest** calls `Herald.brief(id)`: the herald plays a 2-line
+briefing built by `questBriefing(c)` in game.js — the quest card, then a
+"So geht's / Wo?" line with live context (nearest treasure distance, owned
+unconverted parcels, tallest nearby giant tree, coins) — and on the last
+line shows a gold **action button** (`#herald-act`) that does the thing:
+`questPing(lon,lat,zoom)` flies there and pulses gold rings + a 📍 for 5 s
+(`drawQuestPing`, drawn just before the scale bar), then opens the parcel
+popup where relevant. Tapping the same quest again toggles the herald off;
+on mobile the bottom sheet collapses so the herald is visible. All strings
+are in the i18n dictionary. QA: `await DEV.quest()` (list),
+`await DEV.quest(id|title)` (open briefing), `await DEV.quest(id, true)`
+(also run the action).
+
 ## Screenshots / QA scripting (`window.DEV`)
 
 game.js exposes a `DEV` helper for browser automation (no UI). Rejoin a
@@ -399,6 +417,7 @@ DEV.trees('locked'|'hint'|'revealed')    // giant-tree gameplay state
 DEV.ezCandidates(4, 20); DEV.parcelsNear(p => p.building_count > 0)
 DEV.chrome(false); DEV.sidebar(false); DEV.freeze()  // clean hero shots
 DEV.closeAll(); DEV.state()
+await DEV.quest(); await DEV.quest('Schatzsucher', true)   // quest briefing + action
 ```
 
 Use `emulate_custom` with DPR 2 (desktop 1920×1080) or `emulate_device`
