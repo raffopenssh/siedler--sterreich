@@ -2175,9 +2175,11 @@ function applyChatMode(mode) {
   q.style.display = mode === 'quick' ? '' : (G.quickOpen ? '' : 'none');
   document.getElementById('btn-chat-quick').style.display = mode === 'free' ? '' : 'none';
 }
-document.getElementById('btn-chat-quick').onclick = () => {
+document.getElementById('btn-chat-quick').onclick = (e) => {
   G.quickOpen = !G.quickOpen;
   document.getElementById('chat-quick').style.display = G.quickOpen ? '' : 'none';
+  e.currentTarget.classList.toggle('on', G.quickOpen);
+  e.currentTarget.setAttribute('aria-pressed', String(G.quickOpen));
 };
 document.getElementById('btn-chat-safety').onclick = () => showChatRules(false);
 function showChatRules(gate) {
