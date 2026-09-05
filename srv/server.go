@@ -699,7 +699,19 @@ func (s *Server) handleGetChallenges(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "error", 500)
 		return
 	}
-	jsonResp(w, challenges)
+	// Attach live progress (have/goal) so the client can render bars + briefings.
+	prog := s.questProgress(r.Context(), r.PathValue("id"), playerID)
+	type withProg struct {
+		dbgen.Challenge
+		Progress int64 `json:"progress"`
+		Goal     int64 `json:"goal"`
+	}
+	out := make([]withProg, 0, len(challenges))
+	for _, c := range challenges {
+		have, goal := questProgressFor(c.Title, prog)
+		out = append(out, withProg{c, have, goal})
+	}
+	jsonResp(w, out)
 }
 
 func toFloat(v interface{}) float64 {
@@ -3781,6 +3793,34 @@ func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) 
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=?", sessionID, playerID).Scan(&q.treasures)
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=? AND treasure_type IN ('species','n2k_species')", sessionID, playerID).Scan(&q.species)
 	return
+}
+
+// questProgressFor returns (have, goal) for a built-in quest — the counter it
+// tracks, clamped to the goal, so the client can draw a progress bar.
+func questProgressFor(title string, q questCounters) (int64, int64) {
+	var have, goal int64
+	switch title {
+	case "Artenforscher":
+		have, goal = q.species, 1
+	case "Baumriese":
+		have, goal = q.tallTrees, 1
+	case "Erkunde deine Gemeinde":
+		have, goal = q.claims, 1
+	case "Landvermesser":
+		have, goal = q.claims, 5
+	case "Naturschützer":
+		have, goal = q.converted, 1
+	case "Waldmeister":
+		have, goal = q.converted, 3
+	case "Schatzsucher":
+		have, goal = q.treasures, 1
+	default:
+		return 0, 1
+	}
+	if have > goal {
+		have = goal
+	}
+	return have, goal
 }
 
 // questSatisfied maps the built-in quest titles (see generateChallenges) to their condition.

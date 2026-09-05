@@ -2141,12 +2141,112 @@ function visibleQuests() {
 function renderQuests() {
   document.getElementById('quest-list').innerHTML = visibleQuests().map(c => {
     const icon = QUEST_ICONS[c.challenge_type]||'📜';
-    return `<div class="quest-item" title="${tr('Wird automatisch erledigt')}">
+    const goal = c.goal || 1, have = Math.min(c.progress || 0, goal);
+    const bar = goal > 1 ? `<div class="qp"><i style="width:${Math.round(have/goal*100)}%"></i><span>${have}/${goal}</span></div>` : '';
+    const active = Herald.activeQuestId === c.id ? ' active' : '';
+    return `<div class="quest-item${active}" role="button" tabindex="0" data-qid="${c.id}" title="${tr('Antippen für Details')}"
+        onclick="Herald.brief(${c.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();Herald.brief(${c.id})}">
       <div class="qt">${icon} ${esc(c.title)}</div>
       <div class="qd">${esc(c.description||'')}</div>
-      <div class="qr">+${c.reward_coins}🪙 +${c.reward_xp}⚡</div></div>`;
+      ${bar}<div class="qr">+${c.reward_coins}🪙 +${c.reward_xp}⚡<span class="qgo">▸</span></div></div>`;
   }).join('') || '<div style="font:16px VT323;color:var(--text-dim)">Alle erledigt!</div>';
   Herald.questsChanged();
+}
+
+// ---- Quest briefings: what to do, where, and a one-tap action that moves the
+// game along (fly to the nearest treasure, open an owned parcel to convert, …).
+/** Owned, still-unconverted parcels of the player, nearest to camera first. */
+function myUnconvertedClaims() {
+  return (G.claimed||[]).filter(c => c.player_id === G.player?.id && !c.converted_to)
+    .map(c => { const f = G.parcelPolys.find(p => p.properties.parcel_id === c.parcel_id); const ll = f ? featureLonLat(f) : null; return {c, f, ll}; })
+    .filter(o => o.ll).sort((a,b) => geoDist(a.ll, [G.cam.lon,G.cam.lat]) - geoDist(b.ll, [G.cam.lon,G.cam.lat]));
+}
+function geoDist(a, b) { return Math.hypot((a[0]-b[0]) * Math.cos(b[1]*Math.PI/180), a[1]-b[1]) * 111000; }
+function nearestTreasure(pred) {
+  const cam = [G.cam.lon, G.cam.lat];
+  return (G.treasures||[]).filter(t => !t.found_by && (!pred || pred(t)))
+    .map(t => ({t, d: geoDist([t.lon,t.lat], cam)})).sort((a,b) => a.d-b.d)[0] || null;
+}
+function fmtDist(m) { return m >= 1000 ? (m/1000).toFixed(1).replace('.',',') + ' km' : Math.round(m) + ' m'; }
+/** Fly + pulse a map marker so the eye lands on the target (see drawQuestPing). */
+function questPing(lon, lat, zoom) {
+  G.questPing = { lon, lat, t0: performance.now() };
+  flyTo(lon, lat, zoom || Math.max(G.cam.zoom, 17));
+  const tick = () => { if (!G.questPing) return; render(); if (performance.now() - G.questPing.t0 < 3200) requestAnimationFrame(tick); else { G.questPing = null; render(); } };
+  requestAnimationFrame(tick);
+}
+function drawQuestPing(ctx) {
+  const p = G.questPing; if (!p) return;
+  const [x, y] = toScreen(p.lon, p.lat);
+  const age = (performance.now() - p.t0) / 1000;
+  const R = Math.max(60, Math.min(gc.width, gc.height) * 0.16); // radius scales with screen
+  ctx.save();
+  for (let k = 0; k < 3; k++) {
+    const ph = ((age * 0.9) + k / 3) % 1;
+    const r = 10 + ph * R;
+    ctx.globalAlpha = (1 - ph) * 0.95;
+    ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#ffd23f'; ctx.setLineDash([8, 5]);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.setLineDash([]);
+  const bob = Math.abs(Math.sin(age * 5)) * 8;
+  ctx.font = '28px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('📍', x, y - 26 - bob);
+  ctx.restore();
+}
+
+/** Build the briefing lines + action for a quest. */
+function questBriefing(c) {
+  const t = c.title, goal = c.goal || 1, have = Math.min(c.progress || 0, goal);
+  const rw = `<span class="rw">+${c.reward_coins}🪙 +${c.reward_xp}⚡</span>`;
+  const left = goal - have;
+  const prog = goal > 1 ? `\n${tr('Fortschritt')}: <b>${have}/${goal}</b>` : '';
+  const brief = { lines: [], act: null };
+  const L = (icon, tag, html) => brief.lines.push({ icon, tag, html });
+  const icon = QUEST_ICONS[c.challenge_type] || '📜';
+  L(icon, tr('Aufgabe'), `<b>${esc(tr(t))}</b>\n${esc(tr(c.description||''))}  ${rw}${prog}`);
+
+  const mine = myUnconvertedClaims();
+  if (t === 'Erkunde deine Gemeinde' || t === 'Landvermesser') {
+    const coins = (G.player?.coins ?? 0).toLocaleString('de-AT');
+    L('🏴', tr('So geht’s'), tr('Tipp auf eine Parzelle am Kartenrand — Wiesen und Wald sind billig, Bauland teuer.') + ` <b>${coins}🪙</b> ` + tr('hast du im Börserl.') + (left > 1 ? `\n${tr('Noch')} <b>${left}</b> ${tr('Parzellen fehlen.')}` : ''));
+    // Cheapest unclaimed parcel on screen → jump there.
+    const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
+    const cheap = DEV.parcelsNear(p => !owned.has(p.parcel_id) && (p.area_sqm||0) > 500 && !(p.building_count > 0), 80)
+      .map(p => ({p, price: calcPrice(p.area_sqm||0, extractLuCode('', p), p.building_count||0, p.total_building_area_sqm||0)}))
+      .sort((a,b) => a.price - b.price)[0];
+    if (cheap) brief.act = { label: `${tr('Günstige Parzelle zeigen')} · ${cheap.price}🪙`, run: async () => { const f = DEV.find(cheap.p.parcel_id); if (!f) return; const [lon, lat] = featureLonLat(f); questPing(lon, lat, Math.max(G.cam.zoom, 17.5)); setTimeout(() => showParcelPopup(f), 850); } };
+  } else if (t === 'Schatzsucher') {
+    const n = nearestTreasure();
+    L('💎', tr('Wo?'), n ? tr('Schatzkisten liegen offen auf der Karte — die nächste ist') + ` <b>${fmtDist(n.d)}</b> ` + tr('entfernt. Zoom hin und tipp sie an.') : tr('Hier liegt gerade kein Schatz. Fahr ein Stück weiter — jede Gemeinde hat welche.'));
+    if (n) brief.act = { label: tr('Zum Schatz fliegen') + ` · ${fmtDist(n.d)}`, run: () => questPing(n.t.lon, n.t.lat, 17.5) };
+  } else if (t === 'Artenforscher') {
+    const n = nearestTreasure(x => x.treasure_type === 'species' || x.treasure_type === 'n2k_species');
+    L('🦎', tr('Wo?'), n ? tr('Seltene Arten verstecken sich als 🦎-Marker, oft in Natura-2000-Gebieten (🛡️). Die nächste ist') + ` <b>${fmtDist(n.d)}</b> ` + tr('entfernt.') : tr('Hier ist gerade keine Art bekannt. Schalte 🛡️ Natura 2000 ein und such in Schutzgebieten.'));
+    if (n) brief.act = { label: tr('Zur Art fliegen') + ` · ${fmtDist(n.d)}`, run: () => questPing(n.t.lon, n.t.lat, 17.5) };
+    else brief.act = { label: tr('Natura 2000 einblenden'), run: () => { DEV.n2k(true); } };
+  } else if (t === 'Naturschützer' || t === 'Waldmeister') {
+    if (mine.length) {
+      L('🌿', tr('So geht’s'), tr('Öffne eine Parzelle, die dir gehört, und tipp auf') + ' <b>🌿 ' + tr('Naturschutz') + '</b>. ' + (mine.length === 1 ? tr('Eine Parzelle wartet schon auf dich.') : tr('Du hast') + ` <b>${mine.length}</b> ` + tr('Parzellen, die noch warten.')) + (left > 1 ? `\n${tr('Noch')} <b>${left}</b> ${tr('Umwandlungen fehlen.')}` : ''));
+      brief.act = { label: tr('Meine Parzelle öffnen'), run: () => { const o = mine[0]; questPing(o.ll[0], o.ll[1], Math.max(G.cam.zoom, 17.5)); setTimeout(() => showParcelPopup(o.f), 850); } };
+    } else {
+      L('🌿', tr('So geht’s'), tr('Dafür brauchst du zuerst Land: Kauf eine Parzelle, öffne sie dann noch einmal und wandle sie um.'));
+    }
+  } else if (t === 'Baumriese') {
+    if (!G.tallUnlocked) {
+      L('🌲', tr('Versteckt'), tr('Riesenbäume zeigen sich erst, wenn du deinen ersten Schatz gefunden hast.'));
+      const n = nearestTreasure();
+      if (n) brief.act = { label: tr('Zum Schatz fliegen') + ` · ${fmtDist(n.d)}`, run: () => questPing(n.t.lon, n.t.lat, 17.5) };
+    } else {
+      const trees = (G.tallRevealed ? allTallTrees() : hintTallTrees(12)).map(x => ({x, d: geoDist([x.lon,x.lat],[G.cam.lon,G.cam.lat])})).sort((a,b) => a.d-b.d);
+      const n = trees[0];
+      L('🌲', tr('Wo?'), n ? (G.tallRevealed ? tr('Kauf die Parzelle, auf der ein Riesenbaum steht. Der nächste') : tr('Goldene Bäume zeigen dir Riesen. Der nächste')) + ` (<b>${Math.round(n.x.height_m)} m</b>) ` + tr('ist') + ` <b>${fmtDist(n.d)}</b> ` + tr('entfernt.') : tr('In dieser Gegend sind noch keine Riesenbäume geladen — fahr ins ✨ Enhanced Gelände.'));
+      if (n) brief.act = { label: tr('Zum Baum fliegen') + ` · ${fmtDist(n.d)}`, run: () => questPing(n.x.lon, n.x.lat, 17.5) };
+    }
+  }
+  return brief;
 }
 function renderChat() {
   const el = document.getElementById('chat-log');
@@ -2430,6 +2530,7 @@ function render() {
   updateAbroadBadge();
 
   // Scale bar
+  drawQuestPing(ctx);
   drawScaleBar(ctx, W, H);
 }
 
@@ -7319,6 +7420,16 @@ window.DEV = {
       .sort((a, b) => a.d - b.d).slice(0, limit)
       .map(o => Object.assign({ d: Math.round(o.d) }, o.f.properties));
   },
+  /** Quest briefing: DEV.quest() lists quests; DEV.quest(id|title) opens the herald briefing; DEV.quest(id, true) also runs its action. */
+  async quest(idOrTitle, act = false) {
+    if (idOrTitle === undefined) return (G.challenges||[]).map(c => ({ id: c.id, title: c.title, type: c.challenge_type, progress: c.progress, goal: c.goal, visible: visibleQuests().includes(c) }));
+    const c = (G.challenges||[]).find(x => x.id === idOrTitle || x.title === idOrTitle); if (!c) return null;
+    Herald.brief(c.id);
+    await new Promise(r => setTimeout(r, 200));
+    const b = questBriefing(c);
+    if (act && Herald.action) { Herald.runAction(); await new Promise(r => setTimeout(r, 1200)); await this.idle(); render(); }
+    return { id: c.id, lines: b.lines.map(l => l.html.replace(/<[^>]+>/g, '')), action: b.act ? b.act.label : null };
+  },
   /** Herald (typewriter hint box): DEV.herald('intro'|'quest'|'off') or DEV.herald('hint','first_claim'). */
   herald(mode, key) {
     if (mode === 'off') return Herald.dismiss();
@@ -7436,6 +7547,7 @@ const Herald = {
     if (!this.el) return;
     this.el.addEventListener('click', e => { if (e.target.id !== 'herald-close') this.advance(); });
     document.getElementById('herald-close').onclick = e => { e.stopPropagation(); this.dismiss(true); };
+    document.getElementById('herald-act').onclick = e => { e.stopPropagation(); this.runAction(); };
     document.addEventListener('keydown', e => {
       if (!this.el.classList.contains('show')) return;
       if (e.key === 'Escape') this.dismiss(true);
@@ -7449,6 +7561,27 @@ const Herald = {
     }, 300);
   },
   reset() { this.seen.clear(); this.dismiss(); },
+
+  /** Quest tapped in the sidebar → detailed briefing with a one-tap action. */
+  activeQuestId: null, action: null,
+  brief(id) {
+    this.init(); if (!this.el) return;
+    const c = (G.challenges||[]).find(x => x.id === id); if (!c) return;
+    if (this.activeQuestId === id && this.el.classList.contains('show')) { this.dismiss(true); return; } // toggle
+    const b = questBriefing(c);
+    this.dismiss(); // clean slate, no chaining onto hints
+    this.activeQuestId = id;
+    document.querySelectorAll('.quest-item').forEach(q => q.classList.toggle('active', +q.dataset.qid === id));
+    // Mobile: the sheet covers the herald — collapse it so the briefing is visible.
+    const sb = document.getElementById('sidebar'); if (sb && innerWidth <= 768) sb.classList.remove('expanded');
+    this.action = b.act || null;
+    this.play(b.lines, 'brief');
+  },
+  runAction() {
+    const a = this.action; if (!a) return;
+    this.dismiss(true);
+    try { a.run(); } catch (e) { console.warn('quest action', e); }
+  },
 
   /** Top open quest (respecting enhanced visibility). */
   topQuest() { return visibleQuests()[0] || null; },
@@ -7535,9 +7668,11 @@ const Herald = {
     document.getElementById('herald-avatar').textContent = L.icon || '🏰';
     document.getElementById('herald-tag').textContent = L.tag || '';
     this.renderDots();
+    document.getElementById('herald-act').style.display = 'none';
     this.type(L.html, () => {
       this.el.classList.add('ready');
       const last = this.idx >= this.lines.length - 1;
+      if (last && this.mode === 'brief' && this.action) { const a = document.getElementById('herald-act'); a.textContent = this.action.label; a.style.display = ''; }
       const dwell = Math.min(9000, 2600 + L.html.replace(/<[^>]+>/g, '').length * 45);
       // Auto-advance through multi-line sequences; quests linger, hints fade.
       // (while a popup hides us, timers re-arm instead of firing unseen)
@@ -7545,6 +7680,7 @@ const Herald = {
       if (!last) this.timer = later('adv', dwell);
       else if (this.autoHide) this.hideTimer = later('hide', Math.max(this.autoHide, dwell));
       else if (this.mode === 'intro' || this.mode === 'quest') this.hideTimer = later('hide', 25000);
+      else if (this.mode === 'brief') this.hideTimer = later('hide', 40000);
     });
   },
   /** Typewriter over an HTML string: tags appear whole, text char by char. */
@@ -7580,6 +7716,8 @@ const Herald = {
     this.stopTyping(); clearTimeout(this.hideTimer);
     this.el.classList.remove('show', 'ready');
     if (user && this.mode === 'intro') this.seen.add('quest0');
+    if (this.mode === 'brief') { this.activeQuestId = null; document.querySelectorAll('.quest-item.active').forEach(q => q.classList.remove('active')); }
+    this.action = null; const ab = document.getElementById('herald-act'); if (ab) ab.style.display = 'none';
     this.mode = null; this._awaitNext = false; this.lines = []; this.idx = 0;
   },
 };
