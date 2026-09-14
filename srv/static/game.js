@@ -1490,6 +1490,7 @@ async function loadMoreParcels() {
   // *device* pixels — tripped at zoom ≈15 on a wide/retina screen and made the
   // map silently stop loading when you panned into a new KG.
   fetchKGPolygons().then(() => buildEZIndex()).catch(e => console.error(e));
+  loadToponyms().catch(e => console.error(e));
   detectAdjacentMunicipalities();
   checkViewportMunicipality();
 
@@ -2505,6 +2506,9 @@ function render() {
 
   // ---- Tallest-tree + landmark markers (enhanced mode) ----
   drawTopLandmarks(ctx);
+
+  // ---- Official place names (BEV DLM Riednamen, Almen, Gipfel, Bäche…) ----
+  drawToponyms(ctx);
 
   // ---- Similar-parcels overlay (below treasures, above parcels) ----
   if (G.similar) drawSimilarParcels(ctx);
@@ -5802,6 +5806,19 @@ function initGameInput() {
     render();
   };
 
+  // Place-name (Flurnamen) layer toggle
+  const topoBtn = document.getElementById('btn-topo');
+  if (topoBtn) {
+    topoBtn.classList.toggle('off', !G.topoVisible);
+    topoBtn.onclick = () => {
+      G.topoVisible = !G.topoVisible;
+      localStorage.setItem('topoVisible', G.topoVisible ? '1' : '0');
+      topoBtn.classList.toggle('off', !G.topoVisible);
+      toast(G.topoVisible ? '🏷️ ' + tr('Flurnamen sichtbar') : '🏷️ ' + tr('Flurnamen ausgeblendet'), '');
+      render();
+    };
+  }
+
   // Data attribution chip (CC BY 4.0 / ODbL): tap to expand, tap outside / Esc to close
   const attrib = document.getElementById('map-attrib');
   const attribBtn = document.getElementById('map-attrib-toggle');
@@ -5947,6 +5964,12 @@ function flyTo(lon, lat, zoom) {
 
 /** Short two-line label for an OSM address result. */
 function addrLabel(a) {
+  if (a._topo) {
+    const t = a._topo;
+    const km = t.distance_m != null ? (t.distance_m < 950 ? Math.round(t.distance_m / 50) * 50 + ' m' : (t.distance_m / 1000).toFixed(1) + ' km') : '';
+    const sub = [topoKindLabel(t), t.gemeinde_name, km].filter(Boolean).join(' · ');
+    return { main: topoIcon(t) + ' ' + t.name + (t.elevation_m ? ' (' + t.elevation_m + ' m)' : ''), sub };
+  }
   const ad = a.address || {};
   const parts = (a.display_name || '').split(', ');
   // First segment is the most specific (POI/house number/street)
@@ -5962,6 +5985,7 @@ function addrLabel(a) {
 
 /** Zoom level so the result's bbox fills a sensible part of the screen. */
 function zoomForResult(a) {
+  if (a._topo) return topoZoom(a._topo);
   const b = a.bbox;
   if (b && b.east > b.west) {
     const span = Math.max(b.east - b.west, (b.north - b.south) * 1.5, 1e-5);
@@ -6007,9 +6031,15 @@ function initGameSearch() {
       dd.innerHTML = '<div class="search-item"><small>Suche…</small></div>';
       dd.classList.add('open');
       try {
-        const res = await GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=6');
+        const [res, topo] = await Promise.all([
+          GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=6').catch(() => ({data: []})),
+          searchToponyms(q, 4),
+        ]);
         if (mySeq !== seq) return; // stale response — a newer query is in flight
-        items = res.data || [];
+        // Official BEV names (Almen, Rieden, Gipfel, Höfe) rank above OSM when
+        // they match well; weaker fuzzy hits go below the addresses.
+        const strong = topo.filter(t => t._topo.score >= 0.85), weak = topo.filter(t => t._topo.score < 0.85);
+        items = [...strong, ...(res.data || []), ...weak].slice(0, 8);
         hi = items.length ? 0 : -1;
         renderDD();
       } catch(e) {
@@ -6274,6 +6304,7 @@ function showParcelPopup(f, tappedFp) {
   }
   const ez = p.ez || '';
   document.getElementById('pp-ez').textContent = ez ? 'EZ ' + ez : '-';
+  renderFlurRow(f);
   document.getElementById('pp-area').textContent = area>10000?(area/10000).toFixed(2)+' ha':Math.round(area)+' m²';
   document.getElementById('pp-use').textContent = getLanduseName(p);
   // Density label based on built-up ratio
@@ -7077,7 +7108,10 @@ window.doClaim = async function() {
   if (res.error) { toast(res.error,'err'); return; }
   if (res.tall_bonus_xp > 0) {
     toast('🏴 Gekauft für '+res.price+'🪙! 🌲 Riesenbaum-Bonus: +'+res.tall_bonus_xp+'⚡','ok');
-  } else toast('🏴 Gekauft für '+res.price+'🪙!','ok');
+  } else {
+    const fl = parcelFlur(G.sel);
+    toast('🏴 Gekauft für '+res.price+'🪙!' + (fl && fl.t.layer === 'ried' ? ' 🌾 ' + tr('Ried') + ' „' + fl.label + '“' : fl && fl.inside ? ' · ' + fl.label : ''),'ok');
+  }
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
   Herald.hint('first_claim');
@@ -7341,6 +7375,16 @@ pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attrib
 // Also honoured on load: URL ?dev=1 skips the min. loading-screen dwell time,
 // and #v=lon,lat,zoom (existing) sets the initial camera.
 window.DEV = {
+  /** Toponyms: DEV.topo() → counts; DEV.topo('Wunderburg') → fly to best local match. */
+  async topo(q) {
+    if (!q) {
+      const by = {}; for (const t of G.toponyms) by[t.layer] = (by[t.layer] || 0) + 1;
+      return { loaded: G.toponyms.length, shown: (G.topoShown || []).length, visible: G.topoVisible, by };
+    }
+    const r = await searchToponyms(q, 1);
+    if (!r.length) return null;
+    flyTo(r[0].lon, r[0].lat, topoZoom(r[0]._topo)); return r[0]._topo;
+  },
   /** Wait until no viewport tiles are in flight (or timeout). */
   idle(timeout = 15000) {
     return new Promise(res => {
@@ -7721,3 +7765,289 @@ const Herald = {
     this.mode = null; this._awaitNext = false; this.lines = []; this.idx = 0;
   },
 };
+
+// ================= TOPONYMS — BEV DLM Geographische Namen =================
+// Official Austrian place names (Riednamen, Almen, Höfe, Gipfel, Bäche, Kapellen…)
+// drawn as hand-lettered map labels in Settlers style. Data: cadastre
+// /spatial/bbox?layers=toponyms (BEV DLM 7000 NAMEN, CC BY 4.0, ±50 m points).
+// Loaded per 0.04° grid tile on camera idle, deduped by BEV GLOBALID.
+G.toponyms = [];            // all loaded rows
+G.topoIds = new Set();      // ids already loaded
+G.topoTiles = new Set();    // grid tiles fetched
+G.topoVisible = localStorage.getItem('topoVisible') !== '0';
+G.topoRied = null;          // last placed label set (for hit-testing / DEV)
+let _topoBusy = 0, _topoFadeRAF = null;
+const TOPO_TILE = 0.04;
+
+/** Label class → { minZoom, prio, style }. Higher prio wins collisions. */
+function topoClass(t) {
+  const fc = t.f_code, L = t.layer;
+  if (L === 'siedlung') {
+    if (fc === 7101) return { z: 12, prio: 100, kind: 'town', size: 12 };
+    if (fc === 7102) return { z: 12, prio: 95,  kind: 'town', size: 10 };
+    if (fc === 7103) return { z: 13, prio: 90,  kind: 'town', size: 8 };
+    if (fc === 7104) return { z: 14.5, prio: 70, kind: 'town', size: 7 };
+    if (t.abandoned)  return { z: 16.5, prio: 20, kind: 'ruinhof' };
+    return { z: 16, prio: 40, kind: 'hof' };                     // 7111 Einzelhäuser / Almhütten
+  }
+  if (L === 'gelaende') {
+    if (fc === 7302) return { z: 13, prio: 85, kind: 'peak' };
+    if (fc === 7301) return { z: 13, prio: 80, kind: 'range' };
+    if (fc === 7303) return { z: 14.5, prio: 60, kind: 'range' };
+    if (fc === 7304) return { z: 14.5, prio: 60, kind: 'pass' };
+    return { z: 14.5, prio: 55, kind: 'valley' };                // 7305 Tal
+  }
+  if (L === 'gewaesser') {
+    if (fc === 7501 || fc === 7511) return { z: 12, prio: 88, kind: 'water', size: 18 };
+    if (fc === 7502 || fc === 7512) return { z: 13.5, prio: 75, kind: 'water', size: 16 };
+    if (fc === 7513) return { z: 14.5, prio: 65, kind: 'water', size: 15 };
+    return { z: 15.5, prio: 45, kind: 'water', size: 14 };       // Bäche
+  }
+  if (L === 'gletscher') return { z: 13, prio: 82, kind: 'ice' };
+  if (L === 'gebiet')    return { z: 14, prio: 58, kind: 'area' };
+  if (L === 'ried')      return { z: 15, prio: 30, kind: 'ried' };
+  if (L === 'sonstige')  return { z: 15.5, prio: 50, kind: 'poi' };
+  return null;
+}
+
+/** Objektart code (sonstige) → tiny pictogram. */
+const TOPO_POI_ICON = {
+  '2301': '⛪', '2213': '🍺', '2216': '🛖', '2212': '⛺', '2313': '✝', '2321': '🏰', '2323': '🏚️',
+  '2324': '🗼', '2331': '🗿', '2222': '🕳️', '2221': '⛏️', '2114': '🪵', '2441': '✚', '2421': '🦌',
+  '2405': '🏟️', '2404': '🏟️', '2431': '🎭', '2603': '📌', '7603': '📌',
+};
+function topoPoiIcon(t) { const c = String(t.objektart || '').slice(0, 4); return TOPO_POI_ICON[c] || '📌'; }
+function topoKindLabel(t) {
+  const c = topoClass(t); if (!c) return '';
+  switch (c.kind) {
+    case 'town': return t.f_name;
+    case 'hof': return /alm|alpe|hütte/i.test(t.name) ? tr('Almhütte') : tr('Hof');
+    case 'ruinhof': return tr('aufgelassener Hof');
+    case 'peak': return tr('Gipfel'); case 'range': return t.f_name; case 'pass': return tr('Übergang');
+    case 'valley': return tr('Tal'); case 'water': return t.f_name; case 'ice': return tr('Gletscher');
+    case 'area': return tr('Gebiet'); case 'ried': return tr('Riedname'); case 'poi': return (t.art || t.objektart || '').replace(/^\d+\s*/, '');
+  }
+  return '';
+}
+
+/** Fetch toponyms for the (padded) viewport as 0.04° grid tiles. */
+async function loadToponyms() {
+  if (!gc || !G.session) return;
+  const v = viewBounds();
+  const pad = (v.e - v.w) * 0.25;
+  const b = { w: v.w - pad, e: v.e + pad, s: v.s - pad * 0.72, n: v.n + pad * 0.72 };
+  const x0 = Math.floor(b.w / TOPO_TILE), x1 = Math.floor(b.e / TOPO_TILE);
+  const y0 = Math.floor(b.s / TOPO_TILE), y1 = Math.floor(b.n / TOPO_TILE);
+  const tiles = [];
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+    const k = x + ',' + y;
+    if (G.topoTiles.has(k)) continue;
+    const cx = (x + 0.5) * TOPO_TILE, cy = (y + 0.5) * TOPO_TILE;
+    if (typeof insideAustria === 'function' && !insideAustria(cx, cy)) continue;
+    tiles.push({ k, x, y, d: Math.hypot(cx - G.cam.lon, (cy - G.cam.lat) / 0.72) });
+  }
+  if (!tiles.length) return;
+  tiles.sort((a, b) => a.d - b.d);
+  const batch = tiles.slice(0, 12);
+  _topoBusy++;
+  try {
+    await Promise.all(batch.map(async t => {
+      G.topoTiles.add(t.k);
+      const w = (t.x * TOPO_TILE).toFixed(3), e = ((t.x + 1) * TOPO_TILE).toFixed(3);
+      const s = (t.y * TOPO_TILE).toFixed(3), n = ((t.y + 1) * TOPO_TILE).toFixed(3);
+      try {
+        const d = await GET(CAD + `/spatial/bbox?west=${w}&south=${s}&east=${e}&north=${n}&layers=toponyms&limit=3000`);
+        const rows = d?.data?.toponyms || [];
+        let added = 0;
+        for (const r of rows) {
+          if (!r.id || G.topoIds.has(r.id) || !r.name) continue;
+          G.topoIds.add(r.id); r._cls = topoClass(r); r._t0 = 0;
+          G.toponyms.push(r); added++;
+        }
+        if (added) render();
+      } catch (err) { G.topoTiles.delete(t.k); console.warn('toponyms tile failed', t.k, err); }
+    }));
+  } finally { _topoBusy--; }
+}
+
+/** Nearest toponym of given kinds to (lon,lat) within maxM metres. */
+function nearestToponym(lon, lat, maxM, filter) {
+  const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540;
+  let best = null, bd = Infinity;
+  for (const t of G.toponyms) {
+    if (filter && !filter(t)) continue;
+    const d = Math.hypot((t.lon - lon) * kx, (t.lat - lat) * ky);
+    if (d < bd) { bd = d; best = t; }
+  }
+  return best && bd <= maxM ? { t: best, d: bd } : null;
+}
+
+/** Flur context for a parcel: a toponym INSIDE the polygon (Hof, Kapelle, Gipfel…)
+ *  or the nearest Riedname within 400 m. Returns {label, sub, t} or null. */
+function parcelFlur(f) {
+  if (!f || !G.toponyms.length) return null;
+  const [lon, lat] = featureLonLat(f);
+  const g = f.geometry;
+  if (isAreaGeom(g)) {
+    let inside = null;
+    for (const t of G.toponyms) {
+      if (t.layer === 'ried' || t.layer === 'gebiet' || (t.layer === 'gelaende' && t.f_code !== 7302)) continue;
+      if (Math.abs(t.lon - lon) > 0.03 || Math.abs(t.lat - lat) > 0.02) continue;
+      if (pipGeom(t.lon, t.lat, g) && (!inside || t._cls.prio > inside._cls.prio)) inside = t;
+    }
+    if (inside) return { label: inside.name, sub: topoKindLabel(inside), t: inside, inside: true };
+  }
+  const r = nearestToponym(lon, lat, 400, t => t.layer === 'ried');
+  if (r) return { label: r.t.name, sub: tr('Riedname') + (r.d > 60 ? ' · ~' + Math.round(r.d / 10) * 10 + ' m' : ''), t: r.t };
+  const a = nearestToponym(lon, lat, 800, t => t.layer === 'gebiet' || (t.layer === 'siedlung' && t.f_code === 7111));
+  if (a) return { label: a.t.name, sub: topoKindLabel(a.t) + ' · ~' + Math.round(a.d / 10) * 10 + ' m', t: a.t };
+  return null;
+}
+
+// ---- Rendering ----
+function _topoFont(kind, size) {
+  switch (kind) {
+    case 'town':  return `${size}px "Press Start 2P", monospace`;
+    case 'peak': case 'range': case 'pass': return 'bold 15px VT323, monospace';
+    case 'ice':   return 'bold 15px VT323, monospace';
+    case 'valley': case 'area': return 'italic 15px VT323, monospace';
+    case 'water': return `italic ${size}px VT323, monospace`;
+    case 'ried':  return 'italic 15px VT323, monospace';
+    case 'hof': case 'ruinhof': return '14px VT323, monospace';
+    default:      return '13px VT323, monospace';
+  }
+}
+function _topoColor(kind) {
+  switch (kind) {
+    case 'town':  return '#fff3c4';
+    case 'peak': case 'range': case 'pass': return '#f2e6d0';
+    case 'ice':   return '#dff6ff';
+    case 'water': return '#a9dcff';
+    case 'valley': case 'area': return 'rgba(255,240,200,0.85)';
+    case 'ried':  return 'rgba(255,236,190,0.78)';
+    case 'hof':   return '#ffe9a0';
+    case 'ruinhof': return 'rgba(200,190,170,0.75)';
+    default:      return '#ffe9a0';
+  }
+}
+function _topoText(t, kind) {
+  if (kind === 'peak') return '▲ ' + t.name + (t.elevation_m ? ' ' + t.elevation_m : '');
+  if (kind === 'pass') return '⌒ ' + t.name + (t.elevation_m ? ' ' + t.elevation_m : '');
+  if (kind === 'ice') return '❄ ' + t.name;
+  if (kind === 'area' || kind === 'range') return t.name.toUpperCase();
+  if (kind === 'hof') return '⌂ ' + t.name;
+  if (kind === 'ruinhof') return '† ' + t.name;
+  if (kind === 'poi') return topoPoiIcon(t) + ' ' + t.name;
+  return t.name;
+}
+
+function drawToponyms(ctx) {
+  if (!G.topoVisible || !G.toponyms.length) return;
+  const zoom = G.cam.zoom, W = gc.width, H = gc.height;
+  const now = performance.now();
+  const cands = [];
+  for (const t of G.toponyms) {
+    const c = t._cls; if (!c || zoom < c.z) { t._t0 = 0; continue; }
+    const [x, y] = toScreen(t.lon, t.lat);
+    if (x < -120 || x > W + 120 || y < -30 || y > H + 30) { t._t0 = 0; continue; }
+    cands.push({ t, c, x, y });
+  }
+  // Priority first, then tie-break: bigger things first, then top-to-bottom
+  cands.sort((a, b) => b.c.prio - a.c.prio || a.y - b.y);
+  const placed = [];
+  const budget = zoom < 14 ? 40 : zoom < 15.5 ? 90 : 160;
+  let fading = false;
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  const shown = [];
+  for (const cd of cands) {
+    if (placed.length >= budget) break;
+    const { t, c } = cd;
+    const kind = c.kind;
+    const size = c.size || 0;
+    ctx.font = _topoFont(kind, size);
+    const spaced = kind === 'town' || kind === 'area' || kind === 'range' || kind === 'ried';
+    if ('letterSpacing' in ctx) ctx.letterSpacing = spaced ? (kind === 'town' ? '1px' : '2px') : '0px';
+    const text = _topoText(t, kind);
+    const m = ctx.measureText(text);
+    const w = m.width + 8, h = (kind === 'town' ? size * 1.6 : 16) + 4;
+    // Anchor: towns/peaks/POIs sit just above their point; area-like names centred on it.
+    const cx = cd.x, cy = (kind === 'ried' || kind === 'area' || kind === 'valley' || kind === 'water') ? cd.y : cd.y - 10;
+    const bx = cx - w / 2, by = cy - h / 2;
+    let hit = false;
+    for (const p of placed) { if (bx < p.x + p.w && bx + w > p.x && by < p.y + p.h && by + h > p.y) { hit = true; break; } }
+    if (hit) { t._t0 = 0; continue; }
+    placed.push({ x: bx, y: by, w, h });
+    if (!t._t0) t._t0 = now;
+    const k = Math.min(1, (now - t._t0) / 420);
+    if (k < 1) fading = true;
+    shown.push({ t, kind, text, x: cx, y: cy, alpha: k });
+  }
+  // Draw in two passes so outlines never cut through neighbouring glyphs.
+  for (const s of shown) {
+    ctx.font = _topoFont(s.kind, s.t._cls.size || 0);
+    if ('letterSpacing' in ctx) ctx.letterSpacing = (s.kind === 'town') ? '1px' : (s.kind === 'area' || s.kind === 'range' || s.kind === 'ried') ? '2px' : '0px';
+    ctx.textAlign = 'center';
+    ctx.globalAlpha = s.alpha * (s.kind === 'ried' ? 0.9 : 1);
+    // Pixel-art style: hard offset shadow + dark outline, no blur
+    ctx.strokeStyle = s.kind === 'water' ? 'rgba(10,30,60,0.85)' : 'rgba(30,18,6,0.85)';
+    ctx.lineWidth = s.kind === 'town' ? 3 : 2.5;
+    ctx.strokeText(s.text, s.x, s.y);
+    ctx.fillStyle = _topoColor(s.kind);
+    ctx.fillText(s.text, s.x, s.y);
+    if (s.kind === 'town') {
+      // Small pennant tick under settlement names — the Settlers "town sign"
+      const tw = ctx.measureText(s.text).width;
+      ctx.fillStyle = 'rgba(30,18,6,0.85)'; ctx.fillRect(s.x - tw / 2, s.y + (s.t._cls.size || 8) * 0.8 + 1, tw, 2);
+      ctx.fillStyle = '#d8b040'; ctx.fillRect(s.x - tw / 2, s.y + (s.t._cls.size || 8) * 0.8, tw, 1);
+    }
+  }
+  ctx.restore();
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  ctx.globalAlpha = 1;
+  G.topoShown = shown;
+  if (fading && !_topoFadeRAF) {
+    _topoFadeRAF = requestAnimationFrame(() => { _topoFadeRAF = null; render(); });
+  }
+}
+
+/** Toponym search results for the in-game search (near the camera first). */
+async function searchToponyms(q, limit) {
+  try {
+    const d = await GET(CAD + `/toponyms/search?q=${encodeURIComponent(q)}&near=${G.cam.lon.toFixed(3)},${G.cam.lat.toFixed(3)}&radius=60000&limit=${limit || 5}`);
+    return (d?.data || []).map(t => ({ _topo: t, lon: t.lon, lat: t.lat, display_name: t.name }));
+  } catch (e) { return []; }
+}
+function topoZoom(t) {
+  const c = topoClass(t) || { kind: 'poi' };
+  switch (c.kind) {
+    case 'town': return t.f_code === 7101 ? 14.5 : t.f_code === 7102 ? 15 : 15.5;
+    case 'peak': case 'range': case 'pass': case 'ice': case 'area': return 14.5;
+    case 'water': return t.f_code <= 7502 || t.f_code === 7511 ? 14 : 15.5;
+    case 'ried': return 16.2;
+    default: return 17;
+  }
+}
+function topoIcon(t) {
+  const c = topoClass(t) || {};
+  switch (c.kind) {
+    case 'town': return '🏘️'; case 'hof': return '🏠'; case 'ruinhof': return '🏚️'; case 'peak': return '⛰️';
+    case 'range': return '🏔️'; case 'pass': return '🪧'; case 'valley': return '🌄'; case 'water': return '💧';
+    case 'ice': return '❄️'; case 'area': return '🌿'; case 'ried': return '🌾'; case 'poi': return topoPoiIcon(t);
+  }
+  return '📌';
+}
+
+/** "Flur" row in the parcel popup: the official Riedname / Hof / Gipfel this
+ *  parcel belongs to. Hidden when nothing is known nearby. */
+function renderFlurRow(f) {
+  const lab = document.getElementById('pp-flur-l'), val = document.getElementById('pp-flur');
+  if (!lab || !val) return;
+  const fl = parcelFlur(f);
+  if (!fl) { lab.style.display = 'none'; val.style.display = 'none'; return; }
+  lab.style.display = ''; val.style.display = '';
+  lab.textContent = fl.t.layer === 'ried' ? tr('Ried') : tr('Flur');
+  val.innerHTML = `<span class="pp-flur-name" title="${esc(tr('BEV Geographische Namen'))}">${topoIcon(fl.t)} ${esc(fl.label)}</span>` +
+    (fl.sub ? `<small class="pp-flur-sub">${esc(fl.sub)}</small>` : '');
+}

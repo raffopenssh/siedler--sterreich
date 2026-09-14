@@ -74,7 +74,7 @@
 <link rel="preload" href="/static/game-bg.jpg?v=1" as="image" type="image/jpeg">
 <link rel="preload" href="/static/fonts/press-start-2p-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/vt323-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/style.css?v=20260905g">
+<link rel="stylesheet" href="/static/style.css?v=20260914a">
 </head>
 <body>
 <div id="app">
@@ -317,7 +317,7 @@
       <div id="game-search" class="game-search">
         <div class="game-search-inner">
           <span class="game-search-icon">🔍</span>
-          <input type="text" id="game-search-input" placeholder="Adresse suchen... (/)" autocomplete="off">
+          <input type="text" id="game-search-input" placeholder="Adresse, Ried, Alm, Gipfel... (/)" autocomplete="off">
           <kbd class="game-search-kbd">/</kbd>
         </div>
         <div id="game-search-results" class="search-dropdown"></div>
@@ -333,6 +333,7 @@
           <span>Parzelle</span><b id="pp-id">-</b>
           <span>KG</span><b id="pp-kg">-</b>
           <span>EZ</span><b id="pp-ez">-</b>
+          <span id="pp-flur-l" style="display:none">Flur</span><b id="pp-flur" style="display:none">-</b>
           <span>Fläche</span><b id="pp-area">-</b>
           <span>Nutzung</span><b id="pp-use">-</b>
           <span>Bebauung</span><b id="pp-density">-</b>
@@ -381,6 +382,7 @@
         <button class="btn btn-small" id="btn-gearth" title="In Google Earth öffnen">🌍</button>
         <button class="btn btn-small" id="btn-share" title="Diese Ansicht teilen — Einladungslink kopieren">🔗</button>
         <button class="btn btn-small" id="btn-n2k" title="Natura-2000-Schutzgebiete ein/aus">🛡️</button>
+        <button class="btn btn-small" id="btn-topo" title="Flurnamen &amp; Ortsnamen (BEV) ein/aus">🏷️</button>
         <button class="btn btn-small" id="btn-gps" title="Mein Standort" style="display:none">📍</button>
       </div>
       <div id="herald" class="herald" role="status" aria-live="polite">
@@ -403,7 +405,7 @@
         <button class="map-attrib-toggle" id="map-attrib-toggle" title="Datenquellen &amp; Lizenzen" aria-expanded="false">© BEV · OSM</button>
         <div class="map-attrib-body">
           <div class="map-attrib-title">📜 Datenquellen</div>
-          <div class="map-attrib-row">Kataster &amp; ALS-Höhenmodell: <a href="https://www.bev.gv.at" rel="noopener license" target="_blank">© BEV – Bundesamt für Eich- und Vermessungswesen</a>, <a href="https://creativecommons.org/licenses/by/4.0/deed.de" rel="noopener license" target="_blank">CC BY 4.0</a>, bearbeitet (vereinfacht, segmentiert, angereichert)</div>
+          <div class="map-attrib-row">Kataster &amp; ALS-Höhenmodell: <a href="https://www.bev.gv.at" rel="noopener license" target="_blank">© BEV – Bundesamt für Eich- und Vermessungswesen</a>, <a href="https://creativecommons.org/licenses/by/4.0/deed.de" rel="noopener license" target="_blank">CC BY 4.0</a>, bearbeitet (vereinfacht, segmentiert, angereichert) · Flur- &amp; Ortsnamen: BEV DLM Geographische Namen, CC BY 4.0</div>
           <div class="map-attrib-row">Straßen, Gewässer, Bahn: <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">© OpenStreetMap-Mitwirkende</a>, ODbL</div>
           <div class="map-attrib-row">Schutzgebiete: EEA Natura 2000 · Gemeinden &amp; Bodenpreise: Statistik Austria (CC BY 4.0) · Landbedeckung: Copernicus / ESA WorldCover 2021 (CC BY 4.0)</div>
           <div class="map-attrib-note">Spielerische Darstellung – keine amtliche Auskunft. <a href="/impressum">Impressum</a></div>
@@ -415,6 +417,6 @@
 </div>
 
 <script src="/static/i18n.js?v=20260905h"></script>
-<script src="/static/game.js?v=20260905l"></script>
+<script src="/static/game.js?v=20260914a"></script>
 </body>
 </html>

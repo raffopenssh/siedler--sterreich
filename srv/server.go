@@ -2171,7 +2171,9 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			// KG geometry exports are static → 24h; everything else 1h
 			ttl := 1 * time.Hour
-			if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/osm/geometry") || strings.Contains(path, "/natura2000/") {
+			// BEV DLM toponyms (Riednamen, Almen, Gipfel…) change ~2×/yr → 24h too
+			if strings.Contains(path, "/export/geojson") || strings.Contains(path, "/osm/geometry") || strings.Contains(path, "/natura2000/") ||
+				strings.HasPrefix(path, "/toponyms/") || strings.Contains(query, "layers=toponyms") {
 				ttl = 24 * time.Hour
 			}
 			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{

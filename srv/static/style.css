@@ -896,7 +896,9 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   display:inline-block; width:8px; height:8px; border:1px solid #1a1408;
 }
 
-#btn-n2k.off { opacity:0.45; }
+#btn-n2k.off, #btn-topo.off { opacity:0.45; }
+.pp-flur-name { color:var(--gold); }
+.pp-flur-sub { display:block; font-size:14px; color:var(--text-dim); line-height:1.1; }
 @media (max-width:768px) {
   .enhanced-badge { top:52px; font-size:7px; padding:5px 8px; }
   /* Bottom sheet toggle (52px) covers the map's bottom edge — lift the chip above it */
