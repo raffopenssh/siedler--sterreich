@@ -7961,28 +7961,66 @@ function drawToponyms(ctx) {
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   const shown = [];
+  // Name dedup: the register carries the same name several times for one
+  // place (Stadt "Dürnstein" + Schloss "Dürnstein" + Burgruine "Dürnstein";
+  // a Ried split over two KGs). Once a name is on screen, a second copy only
+  // shows if it is far away (and never for the same layer within 600 px).
+  const byName = new Map(); // norm name → [{x,y,layer}]
+  const norm = n => n.toLowerCase().replace(/[^a-zäöüß0-9]/g, '');
+  // Fixed obstacles: treasures, the selected parcel's centre, giant-tree hint.
+  const obstacles = [];
+  for (const tz of G.treasures) { const [ox, oy] = toScreen(tz.lon, tz.lat); obstacles.push({ x: ox - 16, y: oy - 20, w: 32, h: 36 }); }
+  const pad = 3;
+  const collides = (bx, by, w, h) => {
+    for (const p of placed) if (bx < p.x + p.w + pad && bx + w + pad > p.x && by < p.y + p.h + pad && by + h + pad > p.y) return true;
+    for (const p of obstacles) if (bx < p.x + p.w && bx + w > p.x && by < p.y + p.h && by + h > p.y) return true;
+    return bx < 2 || by < 2 || bx + w > W - 2 || by + h > H - 2;
+  };
   for (const cd of cands) {
     if (placed.length >= budget) break;
     const { t, c } = cd;
     const kind = c.kind;
     const size = c.size || 0;
+    const nk = norm(t.name);
+    const prev = byName.get(nk);
+    if (prev) {
+      let dup = false;
+      for (const q of prev) {
+        const d = Math.hypot(q.x - cd.x, q.y - cd.y);
+        // POI named after the town it stands in (Schloss/Ruine "Dürnstein")
+        // never repeats the town label; otherwise proximity-based.
+        const townPoi = (q.layer === 'siedlung' && t.layer === 'sonstige') || (q.layer === 'sonstige' && t.layer === 'siedlung');
+        if (townPoi || d < 400 || (q.layer === t.layer && d < 700)) { dup = true; break; }
+      }
+      if (dup) { t._t0 = 0; continue; }
+    }
     ctx.font = _topoFont(kind, size);
     const spaced = kind === 'town' || kind === 'area' || kind === 'range' || kind === 'ried';
     if ('letterSpacing' in ctx) ctx.letterSpacing = spaced ? (kind === 'town' ? '1px' : '2px') : '0px';
     const text = _topoText(t, kind);
     const m = ctx.measureText(text);
     const w = m.width + 8, h = (kind === 'town' ? size * 1.6 : 16) + 4;
-    // Anchor: towns/peaks/POIs sit just above their point; area-like names centred on it.
-    const cx = cd.x, cy = (kind === 'ried' || kind === 'area' || kind === 'valley' || kind === 'water') ? cd.y : cd.y - 10;
-    const bx = cx - w / 2, by = cy - h / 2;
-    let hit = false;
-    for (const p of placed) { if (bx < p.x + p.w && bx + w > p.x && by < p.y + p.h && by + h > p.y) { hit = true; break; } }
-    if (hit) { t._t0 = 0; continue; }
-    placed.push({ x: bx, y: by, w, h });
+    // Candidate anchors, in preference order. Area-like names (Ried, Gebiet,
+    // Tal, Gewässer) want to sit ON their point; point features (towns,
+    // peaks, Höfe, POIs) sit above it and fall back to the right / below /
+    // left so a crowded spot still gets its name instead of nothing.
+    const areaLike = kind === 'ried' || kind === 'area' || kind === 'valley' || kind === 'water';
+    const up = kind === 'town' ? h / 2 + 8 : 11;
+    const offs = areaLike
+      ? [[0, 0], [0, -h], [0, h], [w / 2 + 6, 0], [-w / 2 - 6, 0]]
+      : [[0, -up], [w / 2 + 8, -2], [0, up + 2], [-w / 2 - 8, -2], [w / 2 + 8, -up], [-w / 2 - 8, -up]];
+    let cx = 0, cy = 0, ok = false;
+    for (const [dx, dy] of offs) {
+      cx = cd.x + dx; cy = cd.y + dy;
+      if (!collides(cx - w / 2, cy - h / 2, w, h)) { ok = true; break; }
+    }
+    if (!ok) { t._t0 = 0; continue; }
+    placed.push({ x: cx - w / 2, y: cy - h / 2, w, h });
+    if (!prev) byName.set(nk, [{ x: cd.x, y: cd.y, layer: t.layer }]); else prev.push({ x: cd.x, y: cd.y, layer: t.layer });
     if (!t._t0) t._t0 = now;
     const k = Math.min(1, (now - t._t0) / 420);
     if (k < 1) fading = true;
-    shown.push({ t, kind, text, x: cx, y: cy, alpha: k });
+    shown.push({ t, kind, text, x: cx, y: cy, alpha: k, dx: cx - cd.x, dy: cy - cd.y });
   }
   // Draw in two passes so outlines never cut through neighbouring glyphs.
   for (const s of shown) {
@@ -7996,6 +8034,11 @@ function drawToponyms(ctx) {
     ctx.strokeText(s.text, s.x, s.y);
     ctx.fillStyle = _topoColor(s.kind);
     ctx.fillText(s.text, s.x, s.y);
+    if (s.kind !== 'town' && s.kind !== 'ried' && s.kind !== 'area' && s.kind !== 'valley' && s.kind !== 'water' && Math.abs(s.dx) > 4) {
+      // Label pushed sideways: tiny pixel leader dot at the true position
+      ctx.fillStyle = 'rgba(30,18,6,0.85)'; ctx.fillRect(s.x - s.dx - 2, s.y - s.dy - 2, 4, 4);
+      ctx.fillStyle = _topoColor(s.kind); ctx.fillRect(s.x - s.dx - 1, s.y - s.dy - 1, 2, 2);
+    }
     if (s.kind === 'town') {
       // Small pennant tick under settlement names — the Settlers "town sign"
       const tw = ctx.measureText(s.text).width;
