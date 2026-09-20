@@ -356,6 +356,18 @@ func (q *Queries) CreateTreasure(ctx context.Context, arg CreateTreasureParams) 
 	return err
 }
 
+const deleteCacheLike = `-- name: DeleteCacheLike :execrows
+DELETE FROM api_cache WHERE cache_key LIKE ?
+`
+
+func (q *Queries) DeleteCacheLike(ctx context.Context, cacheKey string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCacheLike, cacheKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteExpiredCache = `-- name: DeleteExpiredCache :execrows
 DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP
 `

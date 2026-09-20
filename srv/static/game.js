@@ -177,7 +177,8 @@ const G = {
   vpTiles: new Set(),        // quantized viewport tiles already fetched
   // ---- Enhanced mode (srtm-lidar + OSM + Natura-2000 + land prices) ----
   enhancedKGs: new Set(),   // kg_codes with lidar data available
-  enhancedGemeinden: [],    // [{gemeinde_code, gemeinde_name, lon, lat}] deduped
+  enhancedGemeinden: [],    // [{gemeinde_code, gemeinde_name, lon, lat, v2}] deduped
+  v2KGs: new Set(),         // subset of enhancedKGs on srtm product 2.1 (richer trees / grids)
   enhancedLoaded: new Set(),// kg_codes whose enhanced data has been fetched
   lidarParcels: {},         // parcel_id → {elev, elevMin, elevMax, slope, aspect, tclass, dom, forestFrac}
   lidarKGTerrain: {},       // kg_code → {emin, emax, tclass}
@@ -469,7 +470,11 @@ async function startLucky() {
     try {
       if (G.enhancedGemeinden.length === 0) await loadEnhancedRegistry();
       if (G.enhancedGemeinden.length > 0 && Math.random() < 0.9) {
-        const g = G.enhancedGemeinden[Math.floor(Math.random() * G.enhancedGemeinden.length)];
+        // Within enhanced, lean (~60%) toward gemeinden with a srtm v2 KG:
+        // same UI, but far richer giant-tree data. Invisible to the player.
+        const v2 = G.enhancedGemeinden.filter(g => g.v2);
+        const pool = (v2.length >= 5 && Math.random() < 0.6) ? v2 : G.enhancedGemeinden;
+        const g = pool[Math.floor(Math.random() * pool.length)];
         picked = { code: g.gemeinde_code, name: g.gemeinde_name, lon: g.lon, lat: g.lat, enhanced: true };
       }
     } catch(e) { console.error('enhanced lucky failed:', e); }
@@ -1746,8 +1751,10 @@ async function loadEnhancedRegistry() {
     if (!res || !res.kgs) return;
     G.enhancedKGs = new Set(res.kgs.map(k => k.kg_code));
     const byGem = {};
+    G.v2KGs = new Set(res.kgs.filter(k => k.v2).map(k => k.kg_code));
     for (const k of res.kgs) {
-      if (!byGem[k.gemeinde_code]) byGem[k.gemeinde_code] = { gemeinde_code: k.gemeinde_code, gemeinde_name: k.gemeinde_name, lon: k.lon, lat: k.lat };
+      if (!byGem[k.gemeinde_code]) byGem[k.gemeinde_code] = { gemeinde_code: k.gemeinde_code, gemeinde_name: k.gemeinde_name, lon: k.lon, lat: k.lat, v2: false };
+      if (k.v2) byGem[k.gemeinde_code].v2 = true;
     }
     G.enhancedGemeinden = Object.values(byGem);
   } catch(e) { console.error('enhanced registry failed:', e); }
@@ -1814,7 +1821,7 @@ async function fetchEnhancedKG(kg) {
   // 1. LiDAR slim KG data (terrain, buildings, top trees/objects — flags already applied server-side)
   GET('/api/lidar/kg/'+kg).then(d => {
     if (!d || d.error) return;
-    if (d.terrain) G.lidarKGTerrain[kg] = { emin: d.terrain.elevation_min_m, emax: d.terrain.elevation_max_m, tclass: d.terrain.terrain_class };
+    if (d.terrain) G.lidarKGTerrain[kg] = { emin: d.terrain.elevation_min_m, emax: d.terrain.elevation_max_m, tclass: d.terrain.terrain_class, product: d.product_version || 'v1' };
     for (const p of (d.parcels||[])) {
       G.lidarParcels[p.parcel_id] = {
         elev: p.elevation_m, elevMin: p.elevation_min_m, elevMax: p.elevation_max_m,

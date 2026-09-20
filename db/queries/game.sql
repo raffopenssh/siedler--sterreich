@@ -224,3 +224,6 @@ DELETE FROM reports WHERE created_at < datetime('now', '-180 days');
 
 -- name: PurgeOldSafetyEvents :execrows
 DELETE FROM safety_events WHERE created_at < datetime('now', '-180 days');
+
+-- name: DeleteCacheLike :execrows
+DELETE FROM api_cache WHERE cache_key LIKE ?;

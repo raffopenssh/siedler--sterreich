@@ -2696,6 +2696,12 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 	slim := map[string]any{
 		"kg_code": kg,
 		"kg_name": full["kg_name"],
+		// srtm product generation: "2.1" for v2 KGs (apex-based tree
+		// inventory, 25m DTM/landcover grids), absent/nil for legacy v1.
+		// The JSON shape is a superset of v1, so nothing below branches on it;
+		// it is exposed for QA (DEV.state) and the registry's upgrade diff.
+		"product_version": full["product_version"],
+		"generated_at":    full["generated_at"],
 	}
 	if t, ok := full["terrain"].(map[string]any); ok {
 		slim["terrain"] = map[string]any{
@@ -3342,8 +3348,12 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		GemeindeName string  `json:"gemeinde_name"`
 		Lon          float64 `json:"lon"`
 		Lat          float64 `json:"lat"`
+		// V2 = srtm product 2.1 (apex tree inventory: ~40x more giant trees
+		// than v1, true 25m DTM grid). Used only to bias "Auf Glück".
+		V2 bool `json:"v2,omitempty"`
 	}
 	var all []kgEntry
+	gen := map[string]string{} // kg_code -> generated_at (for upgrade detection)
 	offset := 0
 	for {
 		url := fmt.Sprintf("%s/query?bbox=9,46,18,49.5&processed_only=true&limit=1000&offset=%d", lidarAPI, offset)
@@ -3360,6 +3370,8 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 				GemeindeName string  `json:"gemeinde_name"`
 				CentroidLon  float64 `json:"centroid_lon"`
 				CentroidLat  float64 `json:"centroid_lat"`
+				ProductVer   string  `json:"product_version"`
+				GeneratedAt  string  `json:"generated_at"`
 			} `json:"results"`
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
@@ -3368,7 +3380,8 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 			return jsonErrBody("data service parse error"), 502
 		}
 		for _, res := range page.Results {
-			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat})
+			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat, res.ProductVer == "v2"})
+			gen[res.KgCode] = res.GeneratedAt
 		}
 		offset += len(page.Results)
 		if offset >= page.Total || len(page.Results) == 0 {
@@ -3376,11 +3389,59 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		}
 	}
 
-	out, _ := json.Marshal(map[string]any{"count": len(all), "kgs": all})
+	nv2 := 0
+	for _, e := range all {
+		if e.V2 {
+			nv2++
+		}
+	}
+	s.invalidateRegeneratedKGs(gen)
+
+	out, _ := json.Marshal(map[string]any{"count": len(all), "v2_count": nv2, "kgs": all})
 	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 		CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(15 * time.Minute),
 	})
 	return out, 200
+}
+
+// invalidateRegeneratedKGs makes the v1 → v2 (and any future) product upgrade
+// transparent: srtm re-generates a KG in place under the same code, so our
+// 6h lidar-slim and 1h similar caches would keep serving the old product.
+// We persist the index's generated_at per KG and, on every registry refresh
+// (15 min, FAST index query — no extra upstream cost), purge our derived
+// caches for KGs whose timestamp changed. The next client request rebuilds
+// them from the new product. The first run (no snapshot) only records.
+func (s *Server) invalidateRegeneratedKGs(gen map[string]string) {
+	const snapKey = "enhanced-gen:v1"
+	ctx := context.Background()
+	prev := map[string]string{}
+	hadSnap := false
+	if cached, err := s.Q.GetCachedData(ctx, snapKey); err == nil {
+		hadSnap = json.Unmarshal([]byte(cached), &prev) == nil
+	}
+	if hadSnap {
+		purged := 0
+		for kg, g := range gen {
+			if pg, ok := prev[kg]; !ok || pg == g {
+				continue
+			}
+			for _, pat := range []string{
+				"lidar-slim2:/kg/" + kg,
+				"lidar:/kg/" + kg + "%",
+				"similar:v3:" + kg + "-%",
+			} {
+				s.Q.DeleteCacheLike(ctx, pat)
+			}
+			purged++
+		}
+		if purged > 0 {
+			slog.Info("lidar registry: purged derived caches for regenerated KGs", "kgs", purged)
+		}
+	}
+	b, _ := json.Marshal(gen)
+	s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{
+		CacheKey: snapKey, Data: string(b), ExpiresAt: time.Now().Add(10 * 365 * 24 * time.Hour),
+	})
 }
 
 // generateN2KTreasures places extra high-value rare-species treasures on parcels
