@@ -2571,6 +2571,39 @@ func landmarkLetter(typ string) string {
 	return ""
 }
 
+// isV2Product: the srtm index reports "v2", "v2.1", "v2.2", "v2.3", ... while
+// the KG JSON carries "2.1"/"2.3". Anything ≥ 2 counts as the v2 product line.
+func isV2Product(pv string) bool {
+	return strings.HasPrefix(pv, "v2") || strings.HasPrefix(pv, "2.")
+}
+
+// robustHeight returns srtm v2.3's height_robust_m (= min(hmax, p90+10), the
+// metric upstream now ranks on) when present, else the legacy field.
+func robustHeight(td map[string]any, legacy string) float64 {
+	if h, ok := td["height_robust_m"].(float64); ok && h > 0 {
+		return h
+	}
+	h, _ := td[legacy].(float64)
+	return h
+}
+
+// badQualityFlags: v2.3 top lists carry inline quality_flags; anything
+// implausible/critical or a low-confidence classification is dropped.
+func badQualityFlags(td map[string]any) bool {
+	qf, ok := td["quality_flags"].([]any)
+	if !ok {
+		return false
+	}
+	for _, f := range qf {
+		fs, _ := f.(string)
+		if strings.Contains(fs, "implausible") || strings.Contains(fs, "critical") ||
+			strings.Contains(fs, "low_rf") || strings.Contains(fs, "spike") {
+			return true
+		}
+	}
+	return false
+}
+
 func correctedDomTerrain(pd map[string]any) any {
 	as, ok := pd["area_summary"].(map[string]any)
 	if !ok || len(as) == 0 {
@@ -2902,10 +2935,10 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 			if !ok {
 				continue
 			}
-			if flagged[fmt.Sprintf("%s:top_tree:%d", kg, i)] {
+			if flagged[fmt.Sprintf("%s:top_tree:%d", kg, i)] || badQualityFlags(td) {
 				continue
 			}
-			h, _ := td["height_m"].(float64)
+			h := robustHeight(td, "height_m")
 			if h > 60 || h <= 0 {
 				continue
 			}
@@ -2968,15 +3001,25 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 	// towers/silos, masts, wind turbines). v2.2 KG-level top_10_objects is
 	// dominated by natural segments with implausible heights (80 m "crop"), so
 	// everything natural is dropped and heights are clamped per class.
+	// v2.3 adds top_manmade_objects (ranked on height_robust_m, inline
+	// quality_flags) — preferred over top_10_objects when present.
 	var topObjects []map[string]any
 	seenObj := map[string]bool{}
-	if to, ok := full["top_10_objects"].([]any); ok {
+	objSrc, hasManmade := full["top_manmade_objects"].([]any)
+	if !hasManmade || len(objSrc) == 0 {
+		objSrc, _ = full["top_10_objects"].([]any)
+	}
+	{
+		to := objSrc
 		for i, t := range to {
 			td, ok := t.(map[string]any)
 			if !ok {
 				continue
 			}
-			if flagged[fmt.Sprintf("%s:top_object:%d", kg, i)] || flagged[fmt.Sprintf("%s:top_obj:%d", kg, i)] {
+			if !hasManmade && (flagged[fmt.Sprintf("%s:top_object:%d", kg, i)] || flagged[fmt.Sprintf("%s:top_obj:%d", kg, i)]) {
+				continue
+			}
+			if badQualityFlags(td) {
 				continue
 			}
 			typ, _ := td["type"].(string)
@@ -2987,7 +3030,7 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 			if ltyp == "" {
 				continue
 			}
-			h, _ := td["height_max_m"].(float64)
+			h := robustHeight(td, "height_max_m")
 			if h < minH || h > maxH {
 				continue
 			}
@@ -3442,7 +3485,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 // handleEnhancedKGs returns the list of lidar-processed KGs (the "enhanced" set).
 // Cached 15 minutes — the lidar service processes more KGs continuously.
 func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
-	cacheKey := "enhanced-kgs:v1"
+	cacheKey := "enhanced-kgs:v2"
 	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
 		return s.buildEnhancedKGs(cacheKey)
 	})
@@ -3488,7 +3531,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 			return jsonErrBody("data service parse error"), 502
 		}
 		for _, res := range page.Results {
-			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat, res.ProductVer == "v2"})
+			all = append(all, kgEntry{res.KgCode, res.KgName, res.GemeindeCode, res.GemeindeName, res.CentroidLon, res.CentroidLat, isV2Product(res.ProductVer)})
 			gen[res.KgCode] = res.GeneratedAt
 		}
 		offset += len(page.Results)
