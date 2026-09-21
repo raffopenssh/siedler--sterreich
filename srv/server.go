@@ -2539,6 +2539,38 @@ var imperviousCover = map[string]bool{
 // building lot or a road parcel) nothing natural remains, so we return "" and the
 // client falls back to cadastre landuse. Buildings themselves are drawn as
 // footprints on top, so roofs still render — just not as the terrain backdrop.
+// landmarkClass maps a srtm TYPE_LETTER to a landmark type plus the plausible
+// height window [minH, maxH] that makes it worth showing as a map landmark.
+// Only man-made verticals qualify; "" means not a landmark.
+func landmarkClass(letter string) (typ string, minH, maxH float64) {
+	switch letter {
+	case "R":
+		return "roof", 18, 60 // church towers, silos, high-rises
+	case "M":
+		return "mast", 15, 120
+	case "T":
+		return "wind_turbine", 40, 200
+	case "b":
+		return "bridge", 20, 120
+	}
+	return "", 0, 0
+}
+
+// landmarkLetter maps a long srtm object_type back to its TYPE_LETTER.
+func landmarkLetter(typ string) string {
+	switch typ {
+	case "roof":
+		return "R"
+	case "mast":
+		return "M"
+	case "wind_turbine":
+		return "T"
+	case "bridge":
+		return "b"
+	}
+	return ""
+}
+
 func correctedDomTerrain(pd map[string]any) any {
 	as, ok := pd["area_summary"].(map[string]any)
 	if !ok || len(as) == 0 {
@@ -2722,6 +2754,14 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 		phen              string
 	}
 	var harvested []giantTree
+	// Man-made landmarks harvested from per-parcel top_objs (v2.2 products carry
+	// 5 compact rows per parcel: [type_letter, hmax, hmean, area, lon, lat, conf,
+	// rf_conf, manmade]). Only tall, confident, man-made structures qualify.
+	type landmark struct {
+		typ         string
+		h, lon, lat float64
+	}
+	var landmarks []landmark
 	if p, ok := full["parcels"].(map[string]any); ok {
 		if details, ok := p["details"].([]any); ok {
 			for _, d := range details {
@@ -2732,6 +2772,31 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 				// top_trees rows: [hmax, hmean, hp90, area, lon, lat, ndvi_mean,
 				// ndvi_fused, height_change_m, phenology, conf, rf_conf]
 				pid, _ := pd["parcel_id"].(string)
+				if tos, ok := pd["top_objs"].([]any); ok {
+					for i, tr := range tos {
+						row, ok := tr.([]any)
+						if !ok || len(row) < 9 {
+							continue
+						}
+						if pid != "" && flagged[fmt.Sprintf("%s:parcel_top_obj:%s:%d", kg, pid, i)] {
+							continue
+						}
+						letter, _ := row[0].(string)
+						h, _ := row[1].(float64)
+						lon, _ := row[4].(float64)
+						lat, _ := row[5].(float64)
+						rf, _ := row[7].(float64)
+						manmade, _ := row[8].(float64)
+						if manmade < 1 || rf < 0.6 || lon == 0 || lat == 0 {
+							continue
+						}
+						typ, minH, maxH := landmarkClass(letter)
+						if typ == "" || h < minH || h > maxH {
+							continue
+						}
+						landmarks = append(landmarks, landmark{typ: typ, h: h, lon: lon, lat: lat})
+					}
+				}
 				if tts, ok := pd["top_trees"].([]any); ok {
 					for i, tr := range tts {
 						row, ok := tr.([]any)
@@ -2891,10 +2956,20 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 		}
 		topTrees = append(topTrees, tt)
 	}
+	// Tallest first: the client relies on this order for hint/LOD tiers.
+	sort.Slice(topTrees, func(i, j int) bool {
+		hi, _ := topTrees[i]["height_m"].(float64)
+		hj, _ := topTrees[j]["height_m"].(float64)
+		return hi > hj
+	})
 	slim["top_trees"] = topTrees
 
-	// Flag-filtered top objects (non-tree landmarks: tall roofs/masts confirmed OK)
+	// Flag-filtered top objects: man-made landmarks only (tall roofs = church
+	// towers/silos, masts, wind turbines). v2.2 KG-level top_10_objects is
+	// dominated by natural segments with implausible heights (80 m "crop"), so
+	// everything natural is dropped and heights are clamped per class.
 	var topObjects []map[string]any
+	seenObj := map[string]bool{}
 	if to, ok := full["top_10_objects"].([]any); ok {
 		for i, t := range to {
 			td, ok := t.(map[string]any)
@@ -2905,25 +2980,58 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 				continue
 			}
 			typ, _ := td["type"].(string)
-			if typ == "tree" {
-				continue // trees handled above
+			if mm, ok := td["is_manmade"].(bool); ok && !mm {
+				continue
+			}
+			ltyp, minH, maxH := landmarkClass(landmarkLetter(typ))
+			if ltyp == "" {
+				continue
 			}
 			h, _ := td["height_max_m"].(float64)
-			if h > 120 || h <= 0 {
+			if h < minH || h > maxH {
+				continue
+			}
+			if rf, ok := td["rf_confidence"].(float64); ok && rf < 0.6 {
 				continue
 			}
 			c, _ := td["coordinate"].(map[string]any)
 			if c == nil {
 				continue
 			}
+			lon, _ := c["lon"].(float64)
+			lat, _ := c["lat"].(float64)
+			seenObj[gridKey(lon, lat)] = true
 			topObjects = append(topObjects, map[string]any{
-				"type":     typ,
+				"type":     ltyp,
 				"height_m": math.Round(h*10) / 10,
-				"lon":      c["lon"],
-				"lat":      c["lat"],
+				"lon":      lon,
+				"lat":      lat,
 			})
 		}
 	}
+	sort.Slice(landmarks, func(i, j int) bool { return landmarks[i].h > landmarks[j].h })
+	const maxLandmarks = 30
+	for _, l := range landmarks {
+		if len(topObjects) >= maxLandmarks {
+			break
+		}
+		k := gridKey(l.lon, l.lat)
+		if seenObj[k] {
+			continue
+		}
+		seenObj[k] = true
+		topObjects = append(topObjects, map[string]any{
+			"type":     l.typ,
+			"height_m": math.Round(l.h*10) / 10,
+			"lon":      l.lon,
+			"lat":      l.lat,
+		})
+	}
+	sort.Slice(topObjects, func(i, j int) bool {
+		hi, _ := topObjects[i]["height_m"].(float64)
+		hj, _ := topObjects[j]["height_m"].(float64)
+		return hi > hj
+	})
 	slim["top_objects"] = topObjects
 
 	out, err := json.Marshal(slim)

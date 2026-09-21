@@ -201,8 +201,9 @@ const G = {
   similarRadius: 5000,      // selected search radius in m (5/10/20/50 km)
   geo: { watching:false, lon:0, lat:0, acc:0, follow:false, id:null },
   tallUnlocked: false,      // giant trees unlock after first treasure collected
-  tallRevealed: false,      // tapping the hint tree reveals all giant trees
+  tallRevealed: false,      // tapping the hint tree starts discovery mode (persisted via tallSeen)
   tallRevealAt: 0,          // timestamp for pop-in animation
+  tallSeen: new Set(),      // "Riesen-Chronik": keys of giant trees discovered so far (localStorage per session)
   devTree: null,            // giant tree unlocked via 5-tap "developer mode" on the enhanced badge
   lidarGen: 0,              // bumped when new lidar building data arrives (invalidates footprint matches)
 };
@@ -1336,6 +1337,7 @@ async function startGameWithLoading() {
   // Registry is already loaded above; just kick the per-KG enhanced fetches.
   loadEnhancedForKGs();
   // Giant trees unlock persists: check if player already found a treasure
+  loadTallSeen();
   GET('/api/player/'+G.player.id).then(pl => {
     if (pl && pl.treasures_found > 0) { G.tallUnlocked = true; }
   }).catch(()=>{});
@@ -1880,7 +1882,9 @@ function tallTreesInParcel(f) {
   const rings = geomOuterRings(f && f.geometry);
   if (!rings.length) return {count:0, maxH:0};
   let count = 0, maxH = 0;
+  const b = f._bb || (f._bb = geoBounds(f.geometry));
   for (const t of allTallTrees()) {
+    if (t.lon < b.w || t.lon > b.e || t.lat < b.s || t.lat > b.n) continue;
     if (pipRings(t.lon, t.lat, rings)) { count++; if (t.height_m > maxH) maxH = t.height_m; }
   }
   return {count, maxH};
@@ -2064,7 +2068,12 @@ function updateEnhancedBadge() {
   if (onEnh) Herald.hint('enhanced');
   if (G.enhancedKGs.size && G._questEnh !== enhancedLoaded()) { G._questEnh = enhancedLoaded(); renderQuests(); }
   // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
-  el.textContent = G.devTree ? '✨ Enhanced Gelände 🌲' : '✨ Enhanced Gelände';
+  let txt = G.devTree ? '✨ Enhanced Gelände 🌲' : '✨ Enhanced Gelände';
+  if (G.tallUnlocked && G.tallRevealed) {
+    const c = giantChronik();
+    if (c.total) txt += ' · 🌲 ' + c.seen + '/' + c.total;
+  }
+  el.textContent = txt;
 }
 
 async function loadClaimed() { G.claimed = await GET('/api/session/'+G.session.id+'/parcels') || []; updateParcelCount(); }
@@ -2454,11 +2463,22 @@ function hillshade(lp) {
   return Math.max(-1, Math.min(1, (cosI - flat) / flat));
 }
 
-function render() {
-  if (!gctx) return;
-  const ctx = gctx;
-  const W = gc.width, H = gc.height;
-
+// ---- Two-layer rendering. The static "base" (terrain, parcels, roads,
+// buildings, border) is drawn into an offscreen canvas and only redrawn when
+// the camera/data signature changes or it gets older than `maxAge`; the
+// animated overlay (giants, treasures, GPS, highlights) is drawn on top every
+// frame. Before this, the 10 fps tree tick redrew thousands of parcel
+// polygons on every frame — the main reason slow phones stuttered.
+let _base = null, _baseSig = '', _baseAt = 0;
+function baseSignature(W, H) {
+  let conv = 0; for (const c of G.claimed) if (c.converted_to) conv++;
+  return [G.cam.lon.toFixed(7), G.cam.lat.toFixed(7), G.cam.zoom.toFixed(4), W, H,
+    G.parcelPolys.length, G.parcels.length, G.buildingFootprints.length, G.landusePolys.length,
+    G.claimed.length, conv, G.lidarGen, G.n2kVisible ? 1 : 0, Object.keys(G.n2kSites).length,
+    Object.keys(G.osmLines).length, Object.keys(G.waterAreas || {}).length,
+    G.atBorder ? 1 : 0, G.baseGen || 0].join('|');
+}
+function drawBaseLayers(ctx, W, H, claimMap) {
   // ---- Background terrain ----
   ctx.fillStyle = '#3a6828';
   ctx.fillRect(0, 0, W, H);
@@ -2466,10 +2486,6 @@ function render() {
 
   // ---- Foreign territory (outside Austria — no cadastre data exists there) ----
   drawForeignShading(ctx, W, H);
-
-  // Build claim lookup
-  const claimMap = {};
-  for (const c of G.claimed) claimMap[c.parcel_id] = c;
 
   // ---- Draw real landuse polygons (forests, water, roads, etc.) ----
   if (G.landusePolys.length > 0) drawLandusePolygons(ctx);
@@ -2484,6 +2500,7 @@ function render() {
   drawOSMLines(ctx, 'water');
 
   // ---- Draw parcel polygons (from export/geojson KG data) ----
+  G._biodivDrawn = false;
   if (G.parcelPolys.length > 0) {
     for (const f of G.parcelPolys) {
       drawParcelPoly(ctx, f, claimMap);
@@ -2510,6 +2527,30 @@ function render() {
 
   // ---- Draw real building footprints ----
   if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
+}
+
+function render() {
+  if (!gctx) return;
+  const ctx = gctx;
+  const W = gc.width, H = gc.height;
+
+  // Build claim lookup
+  const claimMap = {};
+  for (const c of G.claimed) claimMap[c.parcel_id] = c;
+
+  // ---- Static base layer (cached) ----
+  const sig = baseSignature(W, H);
+  const now = performance.now();
+  // Biodiversity parcels carry subtle butterfly/sparkle animation → refresh faster.
+  const maxAge = G._biodivDrawn ? 250 : 1000;
+  if (!_base || _baseSig !== sig || now - _baseAt > maxAge) {
+    if (!_base || _base.width !== W || _base.height !== H) {
+      _base = document.createElement('canvas'); _base.width = W; _base.height = H;
+    }
+    drawBaseLayers(_base.getContext('2d'), W, H, claimMap);
+    _baseSig = sig; _baseAt = now;
+  }
+  ctx.drawImage(_base, 0, 0);
 
   // ---- Tallest-tree + landmark markers (enhanced mode) ----
   drawTopLandmarks(ctx);
@@ -2544,6 +2585,8 @@ function render() {
   drawQuestPing(ctx);
   drawScaleBar(ctx, W, H);
 }
+/** Force the cached base layer to redraw on the next frame. */
+function invalidateBase() { G.baseGen = (G.baseGen || 0) + 1; }
 
 let grassPatternCanvas = null;
 function createGrassPattern() {
@@ -2899,11 +2942,91 @@ function drawN2KOverlay(ctx, labelsOnly) {
   }
 }
 
-/** All loaded tall trees as a flat list. */
-function allTallTrees() {
-  const out = [];
-  for (const kg in G.topTrees) for (const t of G.topTrees[kg]) out.push(t);
+// ---- Giant-tree index: cached flat list (tallest first) + 0.01° grid for
+// viewport culling. Rebuilt only when lidar data changes (G.lidarGen). v2.2
+// products carry ~120 giants per KG, so a dozen loaded KGs = ~1500 trees;
+// nothing per frame may touch that whole list.
+let _tallIdx = null, _tallIdxGen = -1;
+function treeKey(t) { return t._k || (t._k = t.lon.toFixed(5) + ',' + t.lat.toFixed(5)); }
+function tallIndex() {
+  if (_tallIdx && _tallIdxGen === G.lidarGen) return _tallIdx;
+  const all = [];
+  for (const kg in G.topTrees) for (const t of (G.topTrees[kg] || [])) { treeKey(t); t._kg = kg; all.push(t); }
+  all.sort((a, b) => b.height_m - a.height_m);
+  const cells = new Map();
+  for (const t of all) {
+    const k = Math.floor(t.lon * 100) + ':' + Math.floor(t.lat * 100);
+    let c = cells.get(k); if (!c) cells.set(k, c = []);
+    c.push(t);
+  }
+  _tallIdx = { all, cells, maxH: all.length ? all[0].height_m : 0 };
+  _tallIdxGen = G.lidarGen;
+  return _tallIdx;
+}
+/** All loaded tall trees, tallest first. Cached — never mutate. */
+function allTallTrees() { return tallIndex().all; }
+/** Giant trees inside the (padded) viewport, tallest first. */
+function tallTreesInView(padFrac) {
+  const b = viewBounds();
+  const pw = (b.e - b.w) * (padFrac == null ? 0.08 : padFrac), ph = (b.n - b.s) * (padFrac == null ? 0.15 : padFrac);
+  const w = b.w - pw, e = b.e + pw, so = b.s - ph, n = b.n + ph;
+  const idx = tallIndex(), out = [];
+  const gx0 = Math.floor(w * 100), gx1 = Math.floor(e * 100), gy0 = Math.floor(so * 100), gy1 = Math.floor(n * 100);
+  if ((gx1 - gx0 + 1) * (gy1 - gy0 + 1) > 4000) {
+    for (const t of idx.all) if (t.lon >= w && t.lon <= e && t.lat >= so && t.lat <= n) out.push(t);
+    return out;
+  }
+  for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
+    const c = idx.cells.get(gx + ':' + gy); if (!c) continue;
+    for (const t of c) if (t.lon >= w && t.lon <= e && t.lat >= so && t.lat <= n) out.push(t);
+  }
+  out.sort((a, b) => b.height_m - a.height_m);
   return out;
+}
+
+// ---- Riesen-Chronik (discovery): after the hint tree is tapped, giants are
+// NOT all shown at once. Trees the player has seen up close (zoom ≥ 15.5, in
+// view, within the draw budget) become "discovered"; zoomed out only
+// discovered giants render, so the overview grows with exploration — a
+// fog-of-war that also bounds the sprite count on slow phones.
+const TALL_SEEN_MAX = 4000;
+function tallSeenKey() { return 'siedler.giants.' + (G.session ? G.session.id : 'x'); }
+function loadTallSeen() {
+  try { G.tallSeen = new Set(JSON.parse(localStorage.getItem(tallSeenKey()) || '[]')); }
+  catch (e) { G.tallSeen = new Set(); }
+  if (G.tallSeen.size) { G.tallRevealed = true; G.tallRevealAt = 0; }
+}
+let _seenSaveT = 0;
+function saveTallSeen() {
+  clearTimeout(_seenSaveT);
+  _seenSaveT = setTimeout(() => {
+    try { localStorage.setItem(tallSeenKey(), JSON.stringify([...G.tallSeen].slice(-TALL_SEEN_MAX))); } catch (e) {}
+  }, 800);
+}
+let _discPending = 0, _discToastT = 0;
+function discoverTrees(list, stagger) {
+  let n = 0; const now = Date.now();
+  for (const t of list) {
+    if (G.tallSeen.has(treeKey(t))) continue;
+    G.tallSeen.add(t._k); t._seenAt = now + (stagger ? n * 90 : 0); n++;
+  }
+  if (n) {
+    saveTallSeen(); _discPending += n;
+    clearTimeout(_discToastT);
+    _discToastT = setTimeout(() => {
+      const c = giantChronik();
+      toast('🌲 +' + _discPending + ' ' + tr('Riesen entdeckt') + ' · ' + tr('Chronik') + ' ' + c.seen + '/' + c.total, 'ok');
+      _discPending = 0;
+    }, 1800);
+    updateEnhancedBadge();
+  }
+  return n;
+}
+/** Discovered / loaded giant counts (loaded KGs only). */
+function giantChronik() {
+  const all = allTallTrees(); let seen = 0;
+  for (const t of all) if (G.tallSeen.has(treeKey(t))) seen++;
+  return { seen, total: all.length };
 }
 
 // ---- Miraculous tree names: deterministic per tree (seeded by coordinates),
@@ -2981,6 +3104,10 @@ function showTreePopup(tree) {
   document.getElementById('tp-age').textContent = age.text +
     (age.elev != null ? ' (auf ' + Math.round(age.elev) + ' m Seehöhe)' : '');
   document.getElementById('tp-rank').textContent = rank > 0 ? rank + '. von ' + nearby.length + ' Riesen in der Nähe' : '-';
+  discoverTrees([tree]);
+  const chron = giantChronik();
+  const tpc = document.getElementById('tp-chron');
+  if (tpc) tpc.textContent = chron.seen + ' ' + tr('von') + ' ' + chron.total + ' ' + tr('entdeckt');
 
   // Histogram: 2m buckets across the nearby height range
   const hs = nearby.map(t => t.height_m);
@@ -3026,17 +3153,10 @@ function showTreePopup(tree) {
   document.getElementById('tree-popup').classList.add('open');
 }
 
-/** Cheap check: is any giant tree (visible per current mode) inside the viewport? */
-function anyTallTreeOnScreen() {
-  if (!gc) return false;
-  const W = gc.width, H = gc.height;
-  const cand = !G.tallRevealed ? hintTallTrees(12) : allTallTrees();
-  for (const t of cand) {
-    const [x, y] = toScreen(t.lon, t.lat);
-    if (x > -80 && x < W+80 && y > -140 && y < H+80) return true;
-  }
-  return false;
-}
+/** Giant trees actually drawn in the last frame: [{t, x, y, hint}]. Drives
+ * hit testing, the fog hint and animation-tick gating. */
+let _drawnTrees = [];
+function anyTallTreeOnScreen() { return _drawnTrees.length > 0; }
 
 /** The single "hint" tree shown after unlock but before reveal — the tallest loaded tree. */
 function hintTallTree() {
@@ -3047,19 +3167,13 @@ function hintTallTree() {
 
 /** The top-N tallest loaded trees, shown as hints before reveal (easier to spot). */
 function hintTallTrees(n) {
-  return allTallTrees().sort((a,b) => b.height_m - a.height_m).slice(0, n || 5);
+  return allTallTrees().slice(0, n || 5);
 }
 
 /** Height (m) of the tallest loaded giant tree — the reference for relative
  *  sizing when zoomed out. Cached, invalidated when new lidar data arrives. */
 let _tallMaxH = 0, _tallMaxHGen = -1;
-function tallestTreeHeight() {
-  if (_tallMaxHGen === G.lidarGen) return _tallMaxH;
-  let m = 0;
-  for (const kg in G.topTrees) for (const t of G.topTrees[kg]) if (t.height_m > m) m = t.height_m;
-  _tallMaxH = m; _tallMaxHGen = G.lidarGen;
-  return m;
-}
+function tallestTreeHeight() { return tallIndex().maxH; }
 
 // ---- Giant tree pixel-art sprite sheets (pre-rendered sway frames) ----
 // Two variants: conifer (fir tiers) and broadleaf (round layered canopy) —
@@ -3201,11 +3315,18 @@ function giantTreeHitBox(t, zoom) {
   return { hw: Math.max(30, dw / 2 + 6), up: Math.max(90, dh + 10), down: 20 };
 }
 
-function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
+/**
+ * tier: 2 = full (aura + label + animation per `animate`), 1 = static aura +
+ * label, 0 = sprite + shadow only (cheap filler for dense groves). Records the
+ * tree in `_drawnTrees` when it lands on screen. Returns true if drawn.
+ */
+function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH, tier) {
   if (animate === undefined) animate = true;
+  if (tier === undefined) tier = 2;
   const [x, y] = toScreen(t.lon, t.lat);
   const W = gc.width, H = gc.height;
-  if (x < -80 || x > W+80 || y < -140 || y > H+80) return;
+  if (x < -80 || x > W+80 || y < -140 || y > H+80) return false;
+  _drawnTrees.push({ t, x, y, hint: !!isHint });
   // Much taller than normal trees: height drives the scale (30m → ~2.2x, 55m → ~3.4x)
   const zs = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3));
   let s = zs * (1.0 + t.height_m / 22) * pop;
@@ -3228,7 +3349,9 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
   // still gets a distinct (but static) sway frame / aura level. `phase*1000`
   // spreads them across the animation cycles deterministically.
   const now = animate ? Date.now() : phase * 1000;
-  if (isHint) {
+  if (tier === 0) {
+    // filler tier: no aura
+  } else if (isHint) {
     // Hint tree: pulsing golden aura
     const pulse = 0.5 + Math.sin(now/400 + phase) * 0.3;
     ctx.fillStyle = 'rgba(255,215,0,' + (0.18*pulse).toFixed(3) + ')';
@@ -3267,7 +3390,7 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
   const label = isHint ? glyph + ' ???'
     : (zoom >= 17 ? glyph + ' ' + giantTreeName(t) + ' · ' + t.height_m + 'm'
                   : glyph + ' ' + t.height_m + 'm');
-  if (isHint || zoom >= 15.5) {
+  if (tier > 0 && (isHint || zoom >= 15.5)) {
     const bob = Math.sin(now/450 + phase) * 3;
     const lp = 0.7 + Math.sin(now/300 + phase) * 0.3;
     const ly = y - dh + 3*s - 8 + bob;
@@ -3281,6 +3404,18 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH) {
     ctx.fillText(label, x, ly);
     ctx.textAlign = 'left';
   }
+  return true;
+}
+
+/** Total giant sprites per frame (all tiers). Scales with the animation
+ *  budget; phones get ~48, desktops up to 128. Cached. */
+let _drawBudget = null;
+function giantDrawBudget() {
+  if (_drawBudget != null) return _drawBudget;
+  let b = giantAnimBudget() * 8;
+  try { if (window.matchMedia && matchMedia('(pointer: coarse)').matches) b = Math.min(b, 48); } catch (e) {}
+  _drawBudget = Math.max(24, Math.min(128, b));
+  return _drawBudget;
 }
 
 /**
@@ -3319,9 +3454,15 @@ function giantAnimBudget() {
 let fogHintSince = 0;
 let fogHintPos = null; // {x, y, lon, lat} for tap handling
 function drawTallTreeFogHint(ctx) {
-  const trees = G.tallRevealed ? allTallTrees() : hintTallTrees(12);
+  let trees = G.tallRevealed ? allTallTrees() : hintTallTrees(12);
   if (!trees.length) return;
   if (anyTallTreeOnScreen()) { fogHintSince = 0; fogHintPos = null; return; }
+  // Discovery mode: the mist is a scout — it leads to giants NOT yet in the
+  // Chronik (falls back to any giant once everything loaded is discovered).
+  if (G.tallRevealed) {
+    const undiscovered = trees.filter(t => !G.tallSeen.has(treeKey(t)));
+    if (undiscovered.length) trees = undiscovered;
+  }
   const now = Date.now();
   if (!fogHintSince) { fogHintSince = now; fogHintPos = null; return; }
   const age = now - fogHintSince;
@@ -3338,15 +3479,18 @@ function drawTallTreeFogHint(ctx) {
   if (!best) return;
   // Clamp direction vector to the screen edge (with margin)
   const dx = best.x - W/2, dy = best.y - H/2;
-  const k = Math.min(
+  const k = Math.min(1,
     (W/2 - 70) / Math.max(Math.abs(dx), 1e-9),
     (H/2 - 90) / Math.max(Math.abs(dy), 1e-9));
+  // k<1: target is off screen → mist sits at the edge with a chevron.
+  // k=1: an undiscovered giant hides right here → mist gathers on the spot.
+  const onSpot = k >= 1;
   const ex = W/2 + dx*k, ey = H/2 + dy*k;
   fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat };
   // Distance in meters (approx equirectangular)
   const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
   const dm = Math.hypot((best.t.lon - G.cam.lon) * mLon, (best.t.lat - G.cam.lat) * 110540);
-  const distTxt = dm >= 1000 ? (dm/1000).toFixed(1) + ' km' : Math.round(dm/10)*10 + ' m';
+  const distTxt = onSpot ? '?' : dm >= 1000 ? (dm/1000).toFixed(1) + ' km' : Math.round(dm/10)*10 + ' m';
   // Swirling mist: 3 layered drifting blobs + sparkle motes
   ctx.save();
   ctx.globalAlpha = fade;
@@ -3375,10 +3519,12 @@ function drawTallTreeFogHint(ctx) {
   const bob = Math.sin(now/350) * 3;
   ctx.translate(ex, ey);
   ctx.rotate(ang);
-  ctx.fillStyle = 'rgba(255,215,0,0.95)';
-  ctx.beginPath();
-  ctx.moveTo(34 + bob, 0); ctx.lineTo(22 + bob, -7); ctx.lineTo(22 + bob, 7);
-  ctx.closePath(); ctx.fill();
+  if (!onSpot) {
+    ctx.fillStyle = 'rgba(255,215,0,0.95)';
+    ctx.beginPath();
+    ctx.moveTo(34 + bob, 0); ctx.lineTo(22 + bob, -7); ctx.lineTo(22 + bob, 7);
+    ctx.closePath(); ctx.fill();
+  }
   ctx.rotate(-ang);
   ctx.font = '20px serif';
   ctx.textAlign = 'center';
@@ -3399,36 +3545,57 @@ function drawTopLandmarks(ctx) {
   const W = gc.width, H = gc.height;
   const sway = Math.sin(Date.now() / 1200) * 1.5;
 
-  // Giant trees: locked until first treasure; then only the hint tree until tapped.
+  // Giant trees: locked until first treasure; then hint trees until tapped;
+  // then discovery mode (see tallSeen). Everything below is viewport-culled
+  // via the grid index and bounded by giantDrawBudget().
+  _drawnTrees = [];
   if (G.tallUnlocked) {
     const maxH = tallestTreeHeight();
     if (!G.tallRevealed) {
-      // Show the same hint set at every zoom level so giants stay visible
-      // when zooming out.
-      for (const hint of hintTallTrees(12)) drawGiantTree(ctx, hint, zoom, sway, 1, true, true, maxH);
+      // Same hint set at every zoom level so giants stay visible zoomed out.
+      for (const hint of hintTallTrees(zoom < 14 ? 3 : 12)) drawGiantTree(ctx, hint, zoom, sway, 1, true, true, maxH);
     } else {
-      // Revealed: show ALL giant trees at every zoom level. To keep frame cost
-      // bounded on weaker devices, only the tallest few (per the device's
-      // animation budget) get the animated aura/sweep/sway; the rest render
-      // static. When only a handful are on screen, animate them all.
-      let trees = allTallTrees().sort((a,b) => b.height_m - a.height_m);
-      // Zoomed far out, hundreds of giants become a solid canopy that hides
-      // everything else (treasures, similar-parcel markers). Keep the tallest
-      // ones only; the full set returns as the player zooms in.
-      if (zoom < 15.5) trees = trees.slice(0, zoom < 13.5 ? 12 : zoom < 14.5 ? 30 : 80);
+      const inView = tallTreesInView();
+      const drawCap = giantDrawBudget();
+      let pool;
+      if (zoom >= 15.5) {
+        // Up close: every giant in view (tallest first, within budget) is
+        // drawn — and thereby discovered.
+        pool = inView.length > drawCap ? inView.slice(0, drawCap) : inView;
+        discoverTrees(pool, true);
+      } else {
+        // Zoomed out: only discovered giants, tallest first, capped so a
+        // canopy of hundreds never buries treasures/markers.
+        const cap = Math.min(drawCap, zoom < 13.5 ? 12 : zoom < 14.5 ? 30 : 80);
+        pool = [];
+        for (const t of inView) { if (G.tallSeen.has(t._k)) { pool.push(t); if (pool.length >= cap) break; } }
+      }
       const budget = giantAnimBudget();
-      const dt = Date.now() - G.tallRevealAt;
-      for (let i = 0; i < trees.length; i++) {
-        // Pop-in animation staggered by height rank (skips off-budget extras).
+      const now = Date.now();
+      // Back-to-front by tier so animated champions sit on top of fillers.
+      for (let i = pool.length - 1; i >= 0; i--) {
+        const t = pool[i];
         const animate = i < budget;
-        const t0 = i * 90;
+        const tier = i < budget ? 2 : i < budget * 3 ? 1 : 0;
+        // Pop-in when a tree enters the Chronik (staggered by rank on reveal).
         let pop = 1;
-        if (animate) {
-          if (dt < t0) continue;
-          const k = Math.min(1, (dt - t0) / 350);
-          pop = k < 1 ? 0.3 + 0.7 * (1 - (1-k)*(1-k)) * (1 + 0.25*Math.sin(k*Math.PI)) : 1;
+        if (t._seenAt) {
+          const dt = now - t._seenAt;
+          if (dt < 0) continue;
+          if (dt < 350) { const k = dt / 350; pop = 0.3 + 0.7 * (1 - (1-k)*(1-k)) * (1 + 0.25*Math.sin(k*Math.PI)); }
+          else t._seenAt = 0;
         }
-        drawGiantTree(ctx, trees[i], zoom, sway, pop, false, animate, maxH);
+        drawGiantTree(ctx, t, zoom, sway, pop, false, animate, maxH, tier);
+      }
+      // Overflow chip: more giants in view than we draw at this zoom.
+      const hidden = (zoom >= 15.5 ? inView.length : 0) - pool.length;
+      if (hidden > 0 && zoom < 17) {
+        ctx.save();
+        ctx.font = '13px VT323, monospace'; ctx.textAlign = 'right';
+        const txt = '🌲 +' + hidden + ' ' + tr('weitere · näher zoomen');
+        ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(txt, W - 11, H - 31);
+        ctx.fillStyle = '#c8ffb0'; ctx.fillText(txt, W - 12, H - 32);
+        ctx.restore();
       }
     }
     drawTallTreeFogHint(ctx);
@@ -3445,9 +3612,9 @@ function drawTopLandmarks(ctx) {
   } else if (G.geo.watching && G.geo.lon && G.tallUnlocked && zoom >= 15) {
     // Kundschafter: with GPS on, the nearest visible giant tree shows walking
     // distance + compass bearing from the player's real position.
-    const pool = G.tallRevealed ? allTallTrees() : hintTallTrees(12);
     let best = null, bd = Infinity;
-    for (const t of pool) {
+    for (const d0 of _drawnTrees) {
+      const t = d0.t;
       const d = Math.hypot((t.lon - G.geo.lon) * 0.66, t.lat - G.geo.lat);
       if (d < bd) { bd = d; best = t; }
     }
@@ -3885,6 +4052,7 @@ function drawParcelPoly(ctx, f, claimMap) {
 
   // Biodiversity: soft green glow overlay
   if (isBiodiversity) {
+    G._biodivDrawn = true;
     const pulse = 0.12 + Math.sin(Date.now() / 2000 + Math.abs(hash) * 0.1) * 0.04;
     ctx.fillStyle = `rgba(60,200,80,${pulse})`;
     ctx.fill();
@@ -6184,35 +6352,29 @@ function onGameClick(e) {
     return;
   }
 
-  // Hint giant tree: tapping it reveals ALL giant trees
-  if (G.tallUnlocked && !G.tallRevealed) {
-    for (const hint of hintTallTrees(G.cam.zoom < 14 ? 3 : 12)) {
-      const [tx, ty] = toScreen(hint.lon, hint.lat);
-      const hb = giantTreeHitBox(hint, G.cam.zoom);
-      if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) {
-        G.tallRevealed = true;
-        G.tallRevealAt = Date.now();
-        const n = allTallTrees().length;
-        toast('🌲 Riesenbaum entdeckt! ' + n + ' Riesenbäume sind nun sichtbar — Grundstücke mit Riesenbäumen bringen Bonus-XP!', 'ok');
-        render();
-        return;
+  // Giant trees: only what was actually drawn last frame is tappable.
+  if (G.tallUnlocked) {
+    let hit = null, hitD = Infinity;
+    for (const d of _drawnTrees) {
+      const hb = giantTreeHitBox(d.t, G.cam.zoom);
+      if (Math.abs(d.x-x) < hb.hw && d.y-y > -hb.down && d.y-y < hb.up) {
+        const dd = Math.abs(d.x-x) + Math.abs(d.y-y - hb.up/2);
+        if (dd < hitD) { hitD = dd; hit = d; }
       }
     }
-  }
-
-  // Revealed giant tree: tap opens info popup with height, age + histogram
-  if (G.tallUnlocked && G.tallRevealed) {
-    let hitTree = null, hitD = Infinity;
-    const treeSet = G.cam.zoom < 14 ? hintTallTrees(6) : allTallTrees();
-    for (const t of treeSet) {
-      const [tx, ty] = toScreen(t.lon, t.lat);
-      const hb = giantTreeHitBox(t, G.cam.zoom);
-      if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) {
-        const d = Math.abs(tx-x) + Math.abs(ty-y - hb.up/2);
-        if (d < hitD) { hitD = d; hitTree = t; }
-      }
+    if (hit && hit.hint && !G.tallRevealed) {
+      // Hint tree tapped: discovery mode begins with the giants in sight.
+      G.tallRevealed = true;
+      G.tallRevealAt = Date.now();
+      const inView = tallTreesInView().slice(0, giantDrawBudget());
+      if (!inView.includes(hit.t)) inView.unshift(hit.t);
+      discoverTrees(inView, true);
+      const total = allTallTrees().length;
+      toast('🌲 ' + tr('Riesenbaum entdeckt!') + ' ' + inView.length + ' ' + tr('Riesen in Sicht — erkunde das Land und finde alle') + ' ' + total + '. ' + tr('Grundstücke mit Riesenbäumen bringen Bonus-XP!'), 'ok');
+      render();
+      return;
     }
-    if (hitTree) { showTreePopup(hitTree); return; }
+    if (hit && G.tallRevealed) { showTreePopup(hit.t); return; }
   }
 
   // Dev-mode tree (5-tap badge easter egg) is drawn even before reveal
@@ -7355,7 +7517,10 @@ setInterval(() => {
   if (!document.getElementById('screen-game').classList.contains('active')) return;
   // Animate when a giant tree is on screen, or while the miracle fog hint
   // is gathering/visible (no tree on screen → fog timer runs in render).
-  const treeAnim = G.tallUnlocked && Object.keys(G.topTrees).length > 0;
+  // Only when something tree-related is actually animating: giants drawn in the
+  // last frame, the fog scout gathering, or a fresh reveal pop-in.
+  const treeAnim = G.tallUnlocked && (_drawnTrees.length > 0 || (fogHintSince > 0 && allTallTrees().length > 0) ||
+    Date.now() - G.tallRevealAt < 3000);
   if (G.geo.watching || treeAnim) render();
 }, 100);
 
@@ -7444,13 +7609,18 @@ window.DEV = {
   /** Open the giant-tree popup for the n-th tallest loaded tree (unlocks/reveals). */
   tree(n = 0) {
     G.tallUnlocked = true; G.tallRevealed = true;
-    const t = allTallTrees().sort((a,b) => b.height_m - a.height_m)[n];
+    const t = allTallTrees()[n];
     if (t) { showTreePopup(t); render(); }
     return t || null;
   },
   /** Unlock/reveal state for giant trees: 'locked' | 'hint' | 'revealed'. */
+  /** 'locked' | 'hint' | 'revealed' (discover what's in view) | 'all' (discover every loaded giant) | 'reset' (forget Chronik) */
   trees(mode) {
-    G.tallUnlocked = mode !== 'locked'; G.tallRevealed = mode === 'revealed'; render();
+    if (mode === 'reset') { G.tallSeen = new Set(); saveTallSeen(); for (const t of allTallTrees()) t._seenAt = 0; G.tallRevealed = false; render(); return giantChronik(); }
+    G.tallUnlocked = mode !== 'locked'; G.tallRevealed = mode === 'revealed' || mode === 'all';
+    if (mode === 'revealed') discoverTrees(tallTreesInView().slice(0, giantDrawBudget()), true);
+    if (mode === 'all') discoverTrees(allTallTrees());
+    render(); return giantChronik();
   },
   /** Candidate EZs on screen with n..m parcels (for finding a nice farm folio). */
   ezCandidates(min = 4, max = 20) {

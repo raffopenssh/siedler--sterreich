@@ -365,6 +365,14 @@ const I18N_EXACT = {
   'Naturschutz': 'nature reserve',
   'um — das bringt XP und zählt zum 30 %-Ziel.': '— that earns XP and counts towards the 30 % goal.',
   'Freigeschaltet': 'Unlocked',
+  'Riesen entdeckt': 'giants discovered',
+  'Chronik': 'Chronicle',
+  'weitere · näher zoomen': 'more · zoom in',
+  'Riesenbaum entdeckt!': 'Giant tree discovered!',
+  'Riesen in Sicht — erkunde das Land und finde alle': 'giants in sight — explore the land and find all',
+  'Grundstücke mit Riesenbäumen bringen Bonus-XP!': 'Parcels with giant trees earn bonus XP!',
+  'von': 'of',
+  'entdeckt': 'discovered',
   'Riesenbäume sichtbar! Goldene Bäume zeigen dir, wo sie stehen. Kauf dir eine Parzelle mit so einem Riesen für die Aufgabe': 'Giant trees revealed! Golden trees show where they stand. Buy a parcel with a giant for the quest',
   'Enhanced Gelände': 'Enhanced terrain',
   'Da gibt’s echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz, dann siehst du sie.': 'Real tree heights from laser scans live here — and hidden giant trees. Find a treasure first to see them.',
@@ -476,7 +484,7 @@ const I18N_RX = [
   [/^💎 Schatz! \+(\d+)(.+)$/, '💎 Treasure! +$1$2'],
 
   // ---------- giant trees ----------
-  [/^🌲 Riesenbaum entdeckt! (\d+) Riesenbäume sind nun sichtbar — Grundstücke mit Riesenbäumen bringen Bonus-XP!$/, '🌲 Giant tree discovered! $1 giant trees are now visible — parcels with giant trees earn bonus XP!'],
+  [/^🌲 \+(\d+) Riesen entdeckt · Chronik (\d+)\/(\d+)$/, '🌲 +$1 giants discovered · Chronicle $2/$3'],
   [/^🔓 Entdeckermodus: (.+) \((.+) m\) freigeschaltet!$/, '🔓 Explorer mode: $1 ($2 m) unlocked!'],
   [/^🌲 Nächster Riesenbaum: (.+) \((.+) m\)$/, '🌲 Nearest giant tree: $1 ($2 m)'],
   [/^✨ Noch 1 Tap …$/, '✨ 1 more tap …'],
