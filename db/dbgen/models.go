@@ -13,6 +13,7 @@ type ApiCache struct {
 	Data      string    `json:"data"`
 	FetchedAt time.Time `json:"fetched_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+	Etag      string    `json:"etag"`
 }
 
 type Challenge struct {

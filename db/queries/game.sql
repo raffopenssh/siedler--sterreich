@@ -100,7 +100,20 @@ INSERT OR REPLACE INTO api_cache (cache_key, data, fetched_at, expires_at)
 VALUES (?, ?, CURRENT_TIMESTAMP, ?);
 
 -- name: DeleteExpiredCache :execrows
-DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP;
+-- Expired rows with an ETag are kept up to 30 days as revalidation candidates.
+DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP
+  AND (etag = '' OR expires_at <= datetime('now', '-30 days'));
+
+-- name: GetStaleCachedData :one
+-- Body + etag regardless of expiry (for If-None-Match revalidation).
+SELECT data, etag FROM api_cache WHERE cache_key = ? AND etag != '';
+
+-- name: SetCachedDataEtag :exec
+INSERT OR REPLACE INTO api_cache (cache_key, data, etag, fetched_at, expires_at)
+VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?);
+
+-- name: TouchCache :exec
+UPDATE api_cache SET fetched_at = CURRENT_TIMESTAMP, expires_at = ? WHERE cache_key = ?;
 
 -- name: GetSessionBiodiversityPercent :one
 SELECT

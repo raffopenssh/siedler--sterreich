@@ -322,6 +322,64 @@ var upstreamClient = &http.Client{
 
 func upstreamGet(url string) (*http.Response, error) { return upstreamClient.Get(url) }
 
+// exportTTL is how long a cached /export/geojson body is served without
+// asking upstream. Upstream advertises max-age=86400 with a content ETag
+// that is a pure function of the KG file, so after expiry we revalidate
+// with If-None-Match (0-byte 304) instead of re-downloading 1.5-10 MB.
+const exportTTL = 24 * time.Hour
+
+// fetchCachedUpstream is the cache-miss path for static upstream GETs
+// (currently /export/geojson). If an expired copy with an ETag exists it
+// sends If-None-Match; on 304 the stale body is re-armed for ttl and
+// returned. On 200 the body is passed through transform (compaction) and
+// stored with its ETag. Returns (body, status).
+func (s *Server) fetchCachedUpstream(cacheKey, url string, ttl time.Duration, transform func([]byte) []byte) ([]byte, int) {
+	ctx := context.Background()
+	stale, haveStale := s.Q.GetStaleCachedData(ctx, cacheKey)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return jsonErrBody("data service error"), 502
+	}
+	if haveStale == nil && stale.Etag != "" {
+		req.Header.Set("If-None-Match", stale.Etag)
+	}
+	resp, err := upstreamClient.Do(req)
+	if err != nil {
+		if haveStale == nil {
+			return []byte(stale.Data), 200 // upstream down → serve stale
+		}
+		return jsonErrBody("data service error"), 502
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && haveStale == nil {
+		s.Q.TouchCache(ctx, dbgen.TouchCacheParams{ExpiresAt: time.Now().Add(ttl), CacheKey: cacheKey})
+		fmt.Printf("cache revalidated (304): %s\n", cacheKey)
+		return []byte(stale.Data), 200
+	}
+	if resp.StatusCode != 200 {
+		return jsonErrBody("upstream error"), resp.StatusCode
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return jsonErrBody("Read error"), 502
+	}
+	body := raw
+	if transform != nil {
+		body = transform(raw)
+	}
+	s.Q.SetCachedDataEtag(ctx, dbgen.SetCachedDataEtagParams{
+		CacheKey: cacheKey, Data: string(body), Etag: resp.Header.Get("ETag"), ExpiresAt: time.Now().Add(ttl),
+	})
+	return body, 200
+}
+
+func compactOrRaw(raw []byte) []byte {
+	if c, err := compactGeoJSON(raw); err == nil {
+		return c
+	}
+	return raw
+}
+
 // unpadKG strips leading zeros from a KG code. Upstream is inconsistent about
 // zero-padding: /lookup echoes back "3301" for a query of "03301", while
 // /query?kg= only matches the zero-padded form. Compare codes unpadded.
@@ -1790,22 +1848,10 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 			if cached, err := s.Q.GetCachedData(context.Background(), cacheKey); err == nil {
 				return []byte(cached), nil
 			}
-			resp, err := upstreamGet(cadastreAPI + "/export/geojson?kg=" + kg + "&layers=" + layer)
-			if err != nil {
+			b, status := s.fetchCachedUpstream(cacheKey, cadastreAPI+cacheKey, exportTTL, compactOrRaw)
+			if status != 200 {
 				return nil, fmt.Errorf("data service error")
 			}
-			defer resp.Body.Close()
-			raw, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-			if err != nil {
-				return nil, fmt.Errorf("read error")
-			}
-			b := raw
-			if compacted, err := compactGeoJSON(raw); err == nil {
-				b = compacted
-			}
-			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
-				CacheKey: cacheKey, Data: string(b), ExpiresAt: time.Now().Add(1 * time.Hour),
-			})
 			return b, nil
 		})
 		if err != nil {
@@ -2140,6 +2186,11 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 		url := cadastreAPI + path
 		if query != "" {
 			url += "?" + query
+		}
+
+		// Static KG exports: ETag-revalidated, long-lived (see fetchCachedUpstream).
+		if strings.Contains(path, "/export/geojson") {
+			return s.fetchCachedUpstream(cacheKey, url, exportTTL, compactOrRaw)
 		}
 
 		resp, err := upstreamGet(url)

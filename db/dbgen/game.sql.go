@@ -370,8 +370,10 @@ func (q *Queries) DeleteCacheLike(ctx context.Context, cacheKey string) (int64, 
 
 const deleteExpiredCache = `-- name: DeleteExpiredCache :execrows
 DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP
+  AND (etag = '' OR expires_at <= datetime('now', '-30 days'))
 `
 
+// Expired rows with an ETag are kept up to 30 days as revalidation candidates.
 func (q *Queries) DeleteExpiredCache(ctx context.Context) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteExpiredCache)
 	if err != nil {
@@ -1225,6 +1227,23 @@ func (q *Queries) GetSessionTreasures(ctx context.Context, sessionID string) ([]
 	return items, nil
 }
 
+const getStaleCachedData = `-- name: GetStaleCachedData :one
+SELECT data, etag FROM api_cache WHERE cache_key = ? AND etag != ''
+`
+
+type GetStaleCachedDataRow struct {
+	Data string `json:"data"`
+	Etag string `json:"etag"`
+}
+
+// Body + etag regardless of expiry (for If-None-Match revalidation).
+func (q *Queries) GetStaleCachedData(ctx context.Context, cacheKey string) (GetStaleCachedDataRow, error) {
+	row := q.db.QueryRowContext(ctx, getStaleCachedData, cacheKey)
+	var i GetStaleCachedDataRow
+	err := row.Scan(&i.Data, &i.Etag)
+	return i, err
+}
+
 const hideChatMessage = `-- name: HideChatMessage :exec
 UPDATE chat_messages SET hidden = 1, flag = ? WHERE id = ?
 `
@@ -1406,6 +1425,28 @@ func (q *Queries) SetCachedData(ctx context.Context, arg SetCachedDataParams) er
 	return err
 }
 
+const setCachedDataEtag = `-- name: SetCachedDataEtag :exec
+INSERT OR REPLACE INTO api_cache (cache_key, data, etag, fetched_at, expires_at)
+VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+`
+
+type SetCachedDataEtagParams struct {
+	CacheKey  string    `json:"cache_key"`
+	Data      string    `json:"data"`
+	Etag      string    `json:"etag"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (q *Queries) SetCachedDataEtag(ctx context.Context, arg SetCachedDataEtagParams) error {
+	_, err := q.db.ExecContext(ctx, setCachedDataEtag,
+		arg.CacheKey,
+		arg.Data,
+		arg.Etag,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
 const setChatBan = `-- name: SetChatBan :exec
 UPDATE players SET chat_banned = 1 WHERE id = ?
 `
@@ -1454,6 +1495,20 @@ type SetSessionChatModeParams struct {
 
 func (q *Queries) SetSessionChatMode(ctx context.Context, arg SetSessionChatModeParams) error {
 	_, err := q.db.ExecContext(ctx, setSessionChatMode, arg.ChatMode, arg.ID)
+	return err
+}
+
+const touchCache = `-- name: TouchCache :exec
+UPDATE api_cache SET fetched_at = CURRENT_TIMESTAMP, expires_at = ? WHERE cache_key = ?
+`
+
+type TouchCacheParams struct {
+	ExpiresAt time.Time `json:"expires_at"`
+	CacheKey  string    `json:"cache_key"`
+}
+
+func (q *Queries) TouchCache(ctx context.Context, arg TouchCacheParams) error {
+	_, err := q.db.ExecContext(ctx, touchCache, arg.ExpiresAt, arg.CacheKey)
 	return err
 }
 
