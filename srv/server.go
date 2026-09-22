@@ -3008,28 +3008,68 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 			topTrees = append(topTrees, tt)
 		}
 	}
-	// Merge in the per-parcel harvested giants (tallest first), deduping trees that
-	// land on the same ~15m grid cell (KG-level and per-parcel lists overlap).
+	// Merge in the per-parcel harvested giants (tallest first), deduping trees
+	// that are really the same crown: a giant straddling a parcel boundary yields
+	// one apex per parcel (57 m + 50 m, 5 m apart), and the KG-level and
+	// per-parcel lists overlap. Real neighbour search (not a rounding grid, which
+	// misses pairs across cell borders): a tree is dropped when a taller accepted
+	// tree stands within max(12 m, 0.3·h) — roughly a giant's crown radius.
 	sort.Slice(harvested, func(i, j int) bool { return harvested[i].h > harvested[j].h })
-	seenTree := map[string]bool{}
-	gridKey := func(lon, lat float64) string {
-		return fmt.Sprintf("%.4f,%.4f", lon, lat)
+	gridKey := func(lon, lat float64) string { return fmt.Sprintf("%.4f,%.4f", lon, lat) } // still used for landmarks
+	type acc struct{ lon, lat, h float64 }
+	var accepted []acc
+	cells := map[[2]int][]int{}
+	const cellDeg = 0.0005 // ~40-55 m
+	cellOf := func(lon, lat float64) [2]int { return [2]int{int(math.Floor(lon / cellDeg)), int(math.Floor(lat / cellDeg))} }
+	isDup := func(lon, lat, h float64) bool {
+		r := math.Max(12, 0.3*h)
+		c := cellOf(lon, lat)
+		for dx := -1; dx <= 1; dx++ {
+			for dy := -1; dy <= 1; dy++ {
+				for _, i := range cells[[2]int{c[0] + dx, c[1] + dy}] {
+					a := accepted[i]
+					dLat := (lat - a.lat) * 111320
+					dLon := (lon - a.lon) * 111320 * math.Cos(lat*math.Pi/180)
+					if math.Hypot(dLon, dLat) < math.Max(r, math.Max(12, 0.3*a.h)) {
+						return true
+					}
+				}
+			}
+		}
+		return false
 	}
+	accept := func(lon, lat, h float64) {
+		accepted = append(accepted, acc{lon, lat, h})
+		c := cellOf(lon, lat)
+		cells[c] = append(cells[c], len(accepted)-1)
+	}
+	// KG-level list first (tallest first), self-deduped as well.
+	sort.Slice(topTrees, func(i, j int) bool {
+		hi, _ := topTrees[i]["height_m"].(float64)
+		hj, _ := topTrees[j]["height_m"].(float64)
+		return hi > hj
+	})
+	kept := topTrees[:0]
 	for _, t := range topTrees {
 		lon, _ := t["lon"].(float64)
 		lat, _ := t["lat"].(float64)
-		seenTree[gridKey(lon, lat)] = true
+		h, _ := t["height_m"].(float64)
+		if isDup(lon, lat, h) {
+			continue
+		}
+		accept(lon, lat, h)
+		kept = append(kept, t)
 	}
+	topTrees = kept
 	const maxGiants = 120
 	for _, g := range harvested {
 		if len(topTrees) >= maxGiants {
 			break
 		}
-		k := gridKey(g.lon, g.lat)
-		if seenTree[k] {
+		if isDup(g.lon, g.lat, g.h) {
 			continue
 		}
-		seenTree[k] = true
+		accept(g.lon, g.lat, g.h)
 		tt := map[string]any{
 			"height_m": math.Round(g.h*10) / 10,
 			"lon":      g.lon,

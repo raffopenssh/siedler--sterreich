@@ -2951,7 +2951,9 @@ function treeKey(t) { return t._k || (t._k = t.lon.toFixed(5) + ',' + t.lat.toFi
 function tallIndex() {
   if (_tallIdx && _tallIdxGen === G.lidarGen) return _tallIdx;
   const all = [];
-  for (const kg in G.topTrees) for (const t of (G.topTrees[kg] || [])) { treeKey(t); t._kg = kg; all.push(t); }
+  // Dedupe by key across KGs (a giant near a KG border can arrive from both).
+  const keys = new Set();
+  for (const kg in G.topTrees) for (const t of (G.topTrees[kg] || [])) { treeKey(t); t._kg = kg; if (keys.has(t._k)) continue; keys.add(t._k); all.push(t); }
   all.sort((a, b) => b.height_m - a.height_m);
   const cells = new Map();
   for (const t of all) {
@@ -3024,9 +3026,9 @@ function discoverTrees(list, stagger) {
 }
 /** Discovered / loaded giant counts (loaded KGs only). */
 function giantChronik() {
-  const all = allTallTrees(); let seen = 0;
-  for (const t of all) if (G.tallSeen.has(treeKey(t))) seen++;
-  return { seen, total: all.length };
+  const all = allTallTrees(), seenKeys = new Set();
+  for (const t of all) if (G.tallSeen.has(treeKey(t))) seenKeys.add(t._k);
+  return { seen: seenKeys.size, total: all.length };
 }
 
 // ---- Miraculous tree names: deterministic per tree (seeded by coordinates),
