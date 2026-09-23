@@ -209,15 +209,56 @@ const G = {
 };
 
 // ---- Helpers ----
-async function api(method, url, body) {
+async function api(method, url, body, apiOpts) {
   const opts = { method, headers: {'Content-Type':'application/json'} };
   // Authenticate as the current player: the server verifies this token
   // against player_id on every mutating endpoint.
   const tok = G.playerToken || getUrlParam('rejoin');
   if (tok) opts.headers['X-Player-Token'] = tok;
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(url, opts);
-  return r.json();
+  // 202 Accepted = the upstream data product (cadastre KG file / lidar GPKG)
+  // is still being pulled from the Zenodo mirror. Our server relays
+  // {status:"pending", retry_after_s, progress:{pct,eta_s}, kgs:[...]} plus a
+  // Retry-After header, and repeating the identical request converges. Wait
+  // as told (bounded) and re-GET; only GETs are idempotent enough for this.
+  const budget = (apiOpts && apiOpts.pendingBudgetMs != null) ? apiOpts.pendingBudgetMs : (method === 'GET' ? 45000 : 0);
+  const t0 = Date.now();
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url, opts);
+    if (r.status !== 202) return r.json();
+    let d = {};
+    try { d = await r.json(); } catch (e) {}
+    const ra = Math.min(Math.max(+(d.retry_after_s || r.headers.get('Retry-After') || 3), 1), 12) * 1000;
+    const elapsed = Date.now() - t0;
+    if (elapsed + ra > budget || attempt >= 8) {
+      // Out of patience: hand the pending body back, flagged, so callers can
+      // schedule their own retry later (fetchKGLayer, loadEnhancedForKGs…).
+      d.pending = true; d.status = d.status || 'pending';
+      return d;
+    }
+    pendingNotice(d, url);
+    await new Promise(res => setTimeout(res, ra));
+  }
+}
+
+/** Upstream Zenodo warming state seen by api() — drives the map-loading text. */
+let _pendingSeen = 0;
+function pendingNotice(d, url) {
+  _pendingSeen = Date.now();
+  G.pendingUpstream = { at: _pendingSeen, pct: d.progress?.pct, eta: d.progress?.eta_s, zenodo: d.zenodo, kgs: d.kgs || [] };
+  updateMapLoadingText();
+}
+function updateMapLoadingText() {
+  const el = document.getElementById('map-loading');
+  if (!el) return;
+  const p = G.pendingUpstream;
+  const fresh = p && Date.now() - p.at < 20000;
+  if (!fresh) { el.textContent = tr('⏳ Lade Gelände…'); return; }
+  let s = tr('⏳ Kataster wird vom Datenarchiv geholt…');
+  if (p.pct > 0) s += ' ' + Math.round(p.pct) + ' %';
+  if (p.eta > 0 && p.eta < 600) s += ' · ~' + Math.round(p.eta) + ' s';
+  if (p.zenodo && p.zenodo !== 'healthy') s += ' · ' + tr('Archiv langsam');
+  el.textContent = s;
 }
 const GET = url => api('GET', url);
 const POST = (url, body) => api('POST', url, body);
@@ -1524,6 +1565,11 @@ async function fetchKGLayer(kg, layer, pagesize) {
   const ps = pagesize || 500;
   while (true) {
     const data = await GET('/api/kg/'+kg+'?layer='+layer+'&page='+page+'&pagesize='+ps);
+    // Still pending after api()'s own wait budget (cold KG, slow Zenodo):
+    // throw so the caller can un-mark the KG and retry later, instead of
+    // silently recording "no landuse here" for the session.
+    if (data.pending) { const e = new Error('pending'); e.pending = true; e.retryAfter = data.retry_after_s || 10; throw e; }
+    if (data.error) throw new Error(data.error);
     if (data.features) for (const f of data.features) features.push(f);
     if (!data.has_more) break;
     page++;
@@ -1539,11 +1585,12 @@ async function fetchKGLayer(kg, layer, pagesize) {
  *  single heaviest payload (~7MB vs ~0.85MB parcels / ~2MB footprints), and srtm's
  *  per-parcel dominant_type land cover + OSM road/water lines already provide a
  *  richer, measured backdrop. This is the biggest load-time win. */
-function loadLanduseBackground(kg) {
+function loadLanduseBackground(kg, attempt) {
   if (G.enhancedKGs.has(kg)) return; // lidar dom + OSM cover the backdrop — skip the 7MB fetch
   if (!G.landuseKGs) G.landuseKGs = new Set();
   if (G.landuseKGs.has(kg)) return; // already streamed
   G.landuseKGs.add(kg);
+  attempt = attempt || 0;
   fetchKGLayer(kg, 'landuse').then(landuse => {
     let added = 0;
     for (const f of landuse) {
@@ -1552,7 +1599,17 @@ function loadLanduseBackground(kg) {
       }
     }
     if (added > 0) { render(); renderMini(); }
-  }).catch(e => console.error('landuse bg fetch failed:', kg, e));
+  }).catch(e => {
+    if (e && e.pending && attempt < 4) {
+      // Upstream is still pulling this KG from Zenodo; the download keeps
+      // running server-side, so just come back later (only if still relevant).
+      G.landuseKGs.delete(kg);
+      const wait = Math.min(Math.max(e.retryAfter, 5), 60) * 1000 * (attempt + 1);
+      setTimeout(() => { if (G.kgsLoaded.has(kg)) loadLanduseBackground(kg, attempt + 1); }, wait);
+      return;
+    }
+    console.error('landuse bg fetch failed:', kg, e);
+  });
 }
 
 /** Fast viewport polygon load. Pulls parcel + footprint geometry for JUST the
@@ -1575,8 +1632,11 @@ async function loadViewportGeometry(b, opts) {
   } catch(e) { console.error('viewport fetch failed', e); G.vpTiles.delete(tileKey); return { added:0, ready:false, truncated:false }; }
   finally { vpBusy(-1); }
   if (!data) { G.vpTiles.delete(tileKey); return { added:0, ready:false, truncated:false }; }
+  if (data.pending) { G.vpTiles.delete(tileKey); return { added:0, ready:false, truncated:false, retryAfter: data.retry_after_s }; }
   // If upstream wasn't fully warm yet, allow a later re-fetch of this tile.
-  if (data.ready === false) G.vpTiles.delete(tileKey);
+  // The server forwards upstream's Zenodo warming state (retry_after_s +
+  // per-KG pct/eta) so we can pace the retry and show progress.
+  if (data.ready === false) { G.vpTiles.delete(tileKey); if (data.warming) pendingNotice(data.warming, 'viewport'); }
   // Truncated means the tile hit the row limit: some geometry in this bbox was
   // dropped, so let a subdivided re-fetch cover it.
   if (data.truncated) G.vpTiles.delete(tileKey);
@@ -1606,7 +1666,7 @@ async function loadViewportGeometry(b, opts) {
     const { geometry, ...props } = it;
     G.buildingFootprints.push({ type:'Feature', properties: props, geometry });
   }
-  return { added: addedP, ready: data.ready !== false, truncated: !!data.truncated };
+  return { added: addedP, ready: data.ready !== false, truncated: !!data.truncated, retryAfter: data.retry_after_s };
 }
 
 // ---- Viewport tiling / retry ----
@@ -1620,7 +1680,7 @@ let _vpBusy = 0;
 function vpBusy(delta) {
   _vpBusy = Math.max(0, _vpBusy + delta);
   const el = document.getElementById('map-loading');
-  if (el) el.style.display = _vpBusy > 0 ? '' : 'none';
+  if (el) { el.style.display = _vpBusy > 0 ? '' : 'none'; if (_vpBusy > 0) updateMapLoadingText(); }
 }
 
 /** Split a bbox into tiles of at most maxSpan degrees, nearest-to-camera first,
@@ -1654,14 +1714,19 @@ async function loadTileResilient(t, depth) {
 
   if (!res.ready) {
     const tries = (_vpRetries.get(key) || 0);
-    if (tries < 4) {
+    // Upstream keeps downloading the cold KG between polls, so retries
+    // converge; a slow Zenodo mirror can take a while though, hence up to 8
+    // paced attempts. Pace = upstream's retry_after_s (server already waited
+    // ~7s itself), else a growing backoff.
+    if (tries < 8) {
       _vpRetries.set(key, tries + 1);
+      const wait = res.retryAfter > 0 ? Math.min(res.retryAfter, 15) * 1000 : 1500 * (tries + 1);
       setTimeout(() => {
         // Only retry while the tile is still (roughly) on screen.
         const v = viewBounds();
         if (t.e < v.w - 0.02 || t.w > v.e + 0.02 || t.n < v.s - 0.02 || t.s > v.n + 0.02) return;
         loadTileResilient(t, depth).then(a => { if (a > 0) { buildEZIndex(); loadEnhancedForKGs(); } });
-      }, 1500 * (tries + 1));
+      }, wait);
     }
   } else {
     _vpRetries.delete(key);
@@ -1822,6 +1887,10 @@ function waterFraction(pid) {
 async function fetchEnhancedKG(kg) {
   // 1. LiDAR slim KG data (terrain, buildings, top trees/objects — flags already applied server-side)
   GET('/api/lidar/kg/'+kg).then(d => {
+    if (d && d.pending) { // lidar product still warming upstream — try again later
+      setTimeout(() => fetchEnhancedKG(kg), Math.min(Math.max(d.retry_after_s || 10, 5), 60) * 1000);
+      return;
+    }
     if (!d || d.error) return;
     if (d.terrain) G.lidarKGTerrain[kg] = { emin: d.terrain.elevation_min_m, emax: d.terrain.elevation_max_m, tclass: d.terrain.terrain_class, product: d.product_version || 'v1' };
     for (const p of (d.parcels||[])) {

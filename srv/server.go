@@ -86,6 +86,12 @@ func (s *Server) cachedFetch(w http.ResponseWriter, cacheKey string, fetch func(
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", xc)
+	if res.status == http.StatusAccepted {
+		// Upstream product still coming from Zenodo: relay the normalised
+		// pending body + Retry-After so the client re-GETs (see upstream_pending.go).
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterOf(res.body)))
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if res.status != 200 {
 		w.WriteHeader(res.status)
 	}
@@ -343,18 +349,40 @@ func (s *Server) fetchCachedUpstream(cacheKey, url string, ttl time.Duration, tr
 	if haveStale == nil && stale.Etag != "" {
 		req.Header.Set("If-None-Match", stale.Etag)
 	}
-	resp, err := upstreamClient.Do(req)
-	if err != nil {
-		if haveStale == nil {
-			return []byte(stale.Data), 200 // upstream down → serve stale
+	// Cold KG on upstream → it must pull the file from Zenodo first. Ask it to
+	// block up to 30s itself (one round-trip instead of polling), then poll a
+	// little longer on 202. Total stays well under upstreamClient's 60s timeout.
+	req.URL.RawQuery = strings.TrimPrefix(withWait("?"+req.URL.RawQuery, 30), "?")
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		resp, err = upstreamClient.Do(req)
+		if err != nil {
+			if haveStale == nil {
+				return []byte(stale.Data), 200 // upstream down → serve stale
+			}
+			return jsonErrBody("data service error"), 502
 		}
-		return jsonErrBody("data service error"), 502
+		if resp.StatusCode != http.StatusAccepted || attempt >= 1 {
+			break
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		p := parsePending(resp.Header, b)
+		w := time.Duration(math.Min(math.Max(p.RetryAfter, 1), 8) * float64(time.Second))
+		time.Sleep(w)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotModified && haveStale == nil {
 		s.Q.TouchCache(ctx, dbgen.TouchCacheParams{ExpiresAt: time.Now().Add(ttl), CacheKey: cacheKey})
 		fmt.Printf("cache revalidated (304): %s\n", cacheKey)
 		return []byte(stale.Data), 200
+	}
+	if resp.StatusCode == http.StatusAccepted {
+		if haveStale == nil {
+			return []byte(stale.Data), 200 // static content: stale beats waiting
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return parsePending(resp.Header, b).body(), http.StatusAccepted
 	}
 	if resp.StatusCode != 200 {
 		return jsonErrBody("upstream error"), resp.StatusCode
@@ -1825,6 +1853,10 @@ func (s *Server) handleGetPlayerSessions(w http.ResponseWriter, r *http.Request)
 // handleKGData serves KG geojson data in pages to avoid proxy size limits.
 // GET /api/kg/{code}?layer=parcels&page=0&pagesize=200
 // Returns {features: [...], page, pagesize, total, hasMore}
+// sfPending marks a singleflight result that is an upstream 202 (normalised
+// pending body), as opposed to a real payload.
+type sfPending struct{ body []byte }
+
 func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 	kg := url.QueryEscape(r.PathValue("code"))
 	layer := url.QueryEscape(r.URL.Query().Get("layer"))
@@ -1849,6 +1881,9 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 				return []byte(cached), nil
 			}
 			b, status := s.fetchCachedUpstream(cacheKey, cadastreAPI+cacheKey, exportTTL, compactOrRaw)
+			if status == http.StatusAccepted {
+				return sfPending{b}, nil
+			}
 			if status != 200 {
 				return nil, fmt.Errorf("data service error")
 			}
@@ -1856,6 +1891,16 @@ func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			jsonErr(w, err.Error(), 502)
+			return
+		}
+		if p, ok := v.(sfPending); ok {
+			// KG file still coming from Zenodo upstream: tell the client to
+			// re-request this page after Retry-After (fetchKGLayer does).
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterOf(p.body)))
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusAccepted)
+			w.Write(p.body)
 			return
 		}
 		body = v.([]byte)
@@ -2052,20 +2097,34 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 // hangs: if still not ready we return the partial set with ready:false and the
 // client keeps polling.
 func (s *Server) buildViewportWarm(bboxQS, cacheKey string) ([]byte, int) {
-	out, status := s.buildViewport(bboxQS, cacheKey)
-	for attempt := 0; attempt < 2 && status == 200 && bytes.Contains(out, []byte(`"ready":false`)); attempt++ {
-		time.Sleep(2 * time.Second)
-		out, status = s.buildViewport(bboxQS, cacheKey)
+	const budget = 7 * time.Second
+	deadline := time.Now().Add(budget)
+	out, status, pend := s.buildViewport(bboxQS, cacheKey)
+	for status == 200 && pend != nil {
+		// Upstream tells us how long the Zenodo fetch needs (Retry-After /
+		// warming.retry_after_s); wait that long, capped by our budget.
+		wait := time.Duration(math.Min(math.Max(pend.RetryAfter, 1), 4) * float64(time.Second))
+		if remaining := time.Until(deadline); wait > remaining {
+			break
+		}
+		time.Sleep(wait)
+		out, status, pend = s.buildViewport(bboxQS, cacheKey)
 	}
 	return out, status
 }
 
 // buildViewport fetches parcels+footprints for a bbox, merges them and caches
 // the result (6h) when upstream reports the tile fully warm.
-func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
+//
+// The third return value is non-nil when upstream reported ready:false (or
+// answered 202): the normalised Zenodo warming state, so the caller can pace
+// its retry and the client can show progress.
+func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int, *pendingInfo) {
 	// Fetch both layers in parallel.
 	type res struct {
 		body []byte
+		hdr  http.Header
+		code int
 		err  error
 	}
 	fetch := func(path string) res {
@@ -2075,7 +2134,7 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 		}
 		defer resp.Body.Close()
 		b, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
-		return res{body: b, err: err}
+		return res{body: b, hdr: resp.Header, code: resp.StatusCode, err: err}
 	}
 	pCh := make(chan res, 1)
 	fCh := make(chan res, 1)
@@ -2083,7 +2142,24 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 	go func() { fCh <- fetch("/spatial/footprints") }()
 	pr, fr := <-pCh, <-fCh
 	if pr.err != nil || fr.err != nil {
-		return jsonErrBody("data service error"), 502
+		return jsonErrBody("data service error"), 502, nil
+	}
+	// Whole-result 202 (shouldn't happen for the R-tree viewport endpoints,
+	// which answer partial+ready:false, but the contract allows it).
+	if pr.code == http.StatusAccepted || fr.code == http.StatusAccepted {
+		src := pr
+		if pr.code != http.StatusAccepted {
+			src = fr
+		}
+		p := parsePending(src.hdr, src.body)
+		return p.body(), http.StatusAccepted, &p
+	}
+	if pr.code != 200 || fr.code != 200 {
+		code := pr.code
+		if code == 200 {
+			code = fr.code
+		}
+		return jsonErrBody("upstream error"), code, nil
 	}
 
 	// Extract the arrays + ready flags, round coords, drop props the renderer
@@ -2141,17 +2217,31 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int) {
 		}
 		b.Write(it)
 	}
-	fmt.Fprintf(&b, `],"ready":%v,"truncated":%v}`, pReady && fReady, pTrunc || fTrunc)
+	fmt.Fprintf(&b, `],"ready":%v,"truncated":%v`, pReady && fReady, pTrunc || fTrunc)
+	var pend *pendingInfo
+	if !(pReady && fReady) {
+		// Surface upstream's Zenodo warming state (retry_after_s, per-KG
+		// pct/eta, mirror health) so the client paces its re-fetch and can
+		// show "Kataster wird geladen… 42 %" instead of a blind spinner.
+		src, hdr := pr.body, pr.hdr
+		if pReady {
+			src, hdr = fr.body, fr.hdr
+		}
+		p := parsePending(hdr, src)
+		pend = &p
+		fmt.Fprintf(&b, `,"retry_after_s":%g,"warming":%s`, p.RetryAfter, p.body())
+	}
+	b.WriteByte('}')
 	out := b.Bytes()
 
 	// Only cache once upstream reports the tile fully warm, so we don't pin a
 	// half-loaded viewport for 6h.
-	if pReady && fReady {
+	if pend == nil {
 		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 			CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour),
 		})
 	}
-	return out, 200
+	return out, 200, pend
 }
 
 // waterParcelsComplete reads meta.water_parcels.complete from an
@@ -2233,6 +2323,12 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 				ExpiresAt: time.Now().Add(ttl),
 			})
 			return body, 200
+		}
+		if resp.StatusCode == http.StatusAccepted {
+			// KG product still coming from Zenodo upstream. Relay the
+			// normalised pending state (never cached; cachedFetch adds
+			// Retry-After) — the client re-GETs the same URL.
+			return parsePending(resp.Header, body).body(), http.StatusAccepted
 		}
 		// Don't pass upstream error bodies through — they can leak the
 		// upstream service identity. Generic error, preserve status.
@@ -2556,23 +2652,28 @@ func (s *Server) handleLidarProxy(w http.ResponseWriter, r *http.Request) {
 		if query != "" {
 			url += "?" + query
 		}
-		resp, err := upstreamGet(url)
+		// GPKG-backed KG endpoints (buildings/segments/infrastructure/layers)
+		// lazy-load a 10-900MB light GPKG from Zenodo on first touch and
+		// answer 202 + Retry-After meanwhile. Ask upstream to block up to
+		// 20s itself, poll a little more, then relay the pending state.
+		if strings.HasPrefix(path, "/kg/") && strings.Count(path, "/") >= 3 {
+			url = withWait(url, 15)
+		}
+		code, hdr, body, err := upstreamGetWait(url, 25*time.Second, 20<<20)
 		if err != nil {
 			return jsonErrBody("data service error"), 502
 		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
-		if err != nil {
-			return jsonErrBody("Read error"), 502
-		}
-		if resp.StatusCode == 200 {
+		if code == 200 {
 			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 				CacheKey: cacheKey, Data: string(body), ExpiresAt: time.Now().Add(1 * time.Hour),
 			})
 			return body, 200
 		}
+		if code == http.StatusAccepted {
+			return parsePending(hdr, body).body(), http.StatusAccepted
+		}
 		// Generic error body — never relay upstream error details.
-		return jsonErrBody("upstream error"), resp.StatusCode
+		return jsonErrBody("upstream error"), code
 	})
 }
 
@@ -2706,6 +2807,14 @@ func (s *Server) handleLidarKG(w http.ResponseWriter, r *http.Request) {
 	// buildLidarSlim is itself singleflight-wrapped, so concurrent requests
 	// for the same KG share one upstream fetch.
 	out, status := s.buildLidarSlim(r.Context(), kg)
+	if status == http.StatusAccepted {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterOf(out)))
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(status)
+		w.Write(out)
+		return
+	}
 	if status != 200 {
 		jsonErr(w, string(out), status)
 		return
@@ -2791,17 +2900,15 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 		fr.Body.Close()
 	}
 
-	resp, err := upstreamGet(lidarAPI + "/kg/" + kg)
+	code, hdr, raw, err := upstreamGetWait(lidarAPI+"/kg/"+kg, 15*time.Second, 30<<20)
 	if err != nil {
 		return jsonErrBody("data service error"), 502
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return []byte("KG not processed"), resp.StatusCode
+	if code == http.StatusAccepted {
+		return parsePending(hdr, raw).body(), http.StatusAccepted
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
-	if err != nil {
-		return []byte("Read error"), 502
+	if code != 200 {
+		return []byte("KG not processed"), code
 	}
 
 	var full map[string]any
@@ -3020,7 +3127,9 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 	var accepted []acc
 	cells := map[[2]int][]int{}
 	const cellDeg = 0.0005 // ~40-55 m
-	cellOf := func(lon, lat float64) [2]int { return [2]int{int(math.Floor(lon / cellDeg)), int(math.Floor(lat / cellDeg))} }
+	cellOf := func(lon, lat float64) [2]int {
+		return [2]int{int(math.Floor(lon / cellDeg)), int(math.Floor(lat / cellDeg))}
+	}
 	isDup := func(lon, lat, h float64) bool {
 		r := math.Max(12, 0.3*h)
 		c := cellOf(lon, lat)
@@ -3234,7 +3343,7 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 	if radius > 10000 {
 		clientTimeout = 30 * time.Second
 	}
-	client := &http.Client{Timeout: clientTimeout}
+	client := &http.Client{Timeout: clientTimeout, Transport: upstreamClient.Transport} // shared pool, custom timeout
 	resp, err := client.Get(cu)
 	if err != nil {
 		jsonErr(w, "data service error", 502)
@@ -3693,7 +3802,7 @@ func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniName s
 	if muniName == "" {
 		return
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: upstreamClient.Transport} // shared pool, custom timeout
 	// 1. Find KGs of the municipality
 	resp, err := client.Get(cadastreAPI + "/search/kg?gemeinde=" + url.QueryEscape(muniName) + "&limit=50")
 	if err != nil {

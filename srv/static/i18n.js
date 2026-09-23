@@ -455,6 +455,9 @@ const I18N_RX = [
   [/^Dein Chat wurde dauerhaft gesperrt\.$/, 'Your chat has been permanently disabled.'],
 
   // ---------- loading progress ----------
+  [/^⏳ Lade Gelände…$/, '⏳ Loading terrain…'],
+  [/^⏳ Kataster wird vom Datenarchiv geholt…$/, '⏳ Fetching cadastre from the data archive…'],
+  [/^Archiv langsam$/, 'archive slow'],
   [/^(\d+) Parzellen gefunden$/, '$1 parcels found'],
   [/^(\d+) Polygon-Geometrien, (\d+) Gebäude geladen$/, '$1 polygon geometries, $2 buildings loaded'],
   [/^(\d+) Parzellen, (\d+) Gebäude geladen$/, '$1 parcels, $2 buildings loaded'],
