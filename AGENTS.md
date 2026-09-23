@@ -331,6 +331,35 @@ Austrian land register folio grouping parcels under one ownership entry. A farm 
 - EZ index only contains parcels from loaded KGs (not full municipality EZ data from API)
 - No transaction wrapping on bulk EZ claim (individual parcel inserts)
 
+## Slow Zenodo / HTTP 202 (both upstreams) — `srv/upstream_pending.go`
+
+Both upstreams lazily pull per-KG products from the Zenodo mirror and **never
+hang on it**: an endpoint whose whole result depends on a cold file answers
+**HTTP 202 + `Retry-After`** with a progress block (cadastre:
+`{status:"pending", warming:{kgs[],zenodo{status},retry_after_s}}`; lidar
+GPKG-backed `/kg/X/{buildings,segments,…}`: `{status:"fetching", fetch{pct,
+eta_s}, retry_after_s}`); cadastre viewport/batch endpoints instead return
+200 + `ready:false` + the same `warming` block. Repeating the identical
+request converges. `?wait=<s>` (max 120) makes upstream block itself.
+
+Our handling — one rule everywhere:
+- Server: `parsePending()` normalises both shapes to
+  `{status:"pending", retry_after_s, progress{state,pct,eta_s}, kgs[], zenodo}`;
+  `upstreamGetWait()` polls a bounded budget honouring Retry-After;
+  `withWait()` adds `?wait=`. `/export/geojson` asks `wait=30` (+1 poll) and
+  serves a stale cached copy over a 202; `/api/kg` and every proxy
+  (`cachedFetch`, lidar-slim) relay a **202 + Retry-After** with the normalised
+  body and never cache it. `/api/viewport` waits ≤7s paced by upstream's
+  `retry_after_s` and forwards `retry_after_s` + `warming` on `ready:false`.
+- Client: `api()` retries any GET that gets a 202 after `retry_after_s`
+  (≤45s / 8 tries, `pendingBudgetMs` opt), updating `#map-loading` with
+  pct/ETA via `pendingNotice()`; past the budget it resolves the body with
+  `pending:true` so callers (`fetchKGLayer`→`loadLanduseBackground`,
+  `fetchEnhancedKG`, `loadViewportGeometry`) schedule their own later retry.
+  `loadTileResilient` paces on `res.retryAfter` (≤8 tries).
+- **Never treat 202 / `ready:false` / `pending:true` as "no data here"**, and
+  never cache such a response.
+
 ## Environment
 
 - **All upstream calls must use `upstreamGet` / `upstreamClient`** (shared pooled
