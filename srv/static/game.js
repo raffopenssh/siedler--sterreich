@@ -199,6 +199,7 @@ const G = {
   n2kSites: {},             // sitecode → {name, habitats, label, geom (GeoJSON), loaded}
   n2kVisible: true,         // layer toggle
   landPrices: {},           // parcel_id → price estimate object (lazy)
+  forestValues: {},         // parcel_id → /api/forest-value response (lazy, timber.go)
   osmProx: {},              // parcel_id → OSM proximity object (lazy, null = failed/loading)
   bldgInfo: {},             // footprint_id → building info (lazy, null = loading/failed)
   kgSummaries: {},          // kg_code → summary object (lazy)
@@ -1905,7 +1906,7 @@ async function fetchEnhancedKG(kg) {
         elev: p.elevation_m, elevMin: p.elevation_min_m, elevMax: p.elevation_max_m,
         slope: p.slope_mean_deg, aspect: p.aspect_dominant, tclass: p.terrain_class,
         dom: p.dominant_type, domTerrain: p.dom_terrain, forestFrac: p.forested_fraction,
-        fracs: p.fracs, kg: kg,
+        fracs: p.fracs, kg: kg, treeH: p.tree_h || null,
       };
     }
     for (const b of (d.buildings||[])) {
@@ -2220,7 +2221,7 @@ function renderPlayerList() {
     return `<div class="stat"><span style="color:${G.pcolors[p.id]}">■</span> ${esc(p.name)}${p.id===G.player.id?' (du)':''}<b>${p.coins}🪙</b></div>`;
   }).join('');
 }
-const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲',harvest:'🌾'};
+const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲',harvest:'🌾',timber:'🪓'};
 /** Any lidar-enhanced KG among the loaded ones? (giant trees only exist there) */
 function enhancedLoaded() {
   for (const kg of G.kgsLoaded) if (G.enhancedKGs.has(kg)) return true;
@@ -2362,6 +2363,23 @@ function questBriefing(c) {
       const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
       const f = DEV.parcelsNear(p => !owned.has(p.parcel_id) && isCropField(p) && fieldKind(simpleHash(p.parcel_id)) !== 3 && fieldStage(p, null).stage === 'ripe' && (p.area_sqm||0) > 800, 60)[0];
       if (f) brief.act = { label: tr('Reifen Acker zeigen'), run: async () => { const ff = DEV.find(f.parcel_id); if (!ff) return; const [lon, lat] = featureLonLat(ff); questPing(lon, lat, Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(ff), 850); } };
+    }
+  } else if (t === 'Holzknecht' || t === 'Waldhüter') {
+    const forests = myForests();
+    const ready = forests.filter(x => x.fs.stage === 'baumholz');
+    const growing = forests.filter(x => x.fs.stage !== 'baumholz').sort((a,b) => a.fs.readyInS - b.fs.readyInS)[0];
+    const verb = t === 'Holzknecht' ? '🪓 ' + tr('Holzernte') : '🌳 ' + tr('Naturwald');
+    if (ready.length) {
+      L(t === 'Holzknecht' ? '🪓' : '🌳', tr('Jetzt!'), tr('Öffne eine deiner Waldparzellen und tipp auf') + ` <b>${verb}</b>. ` + (t === 'Holzknecht' ? tr('Der Erlös richtet sich nach dem echten Holzvorrat und den aktuellen Holzpreisen.') : tr('Der Wald bleibt dann für immer außer Nutzung — je älter der Bestand, desto mehr ⚡.')) + (left > 1 ? `\n${tr('Noch')} <b>${left}</b> ${tr('fehlen.')}` : ''));
+      brief.act = { label: tr('Zum Wald'), run: () => { const o = ready[0]; questPing(o.ll[0], o.ll[1], Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(o.f), 850); } };
+    } else if (growing) {
+      L('🌱', tr('Geduld'), tr('Dein Wald wächst nach: Schlag → Jungwuchs → Stangenholz. Hiebsreif in') + ` <b>${fmtMin(growing.fs.readyInS)}</b>.`);
+      brief.act = { label: tr('Zum Wald'), run: () => questPing(growing.ll[0], growing.ll[1], Math.max(G.cam.zoom, 17)) };
+    } else {
+      L('🌲', tr('So geht’s'), tr('Kauf dir eine Waldparzelle (Nutzung „Wald“, dunkelgrün). Wald ist billig — und steht voller Holz.'));
+      const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
+      const f = DEV.parcelsNear(p => !owned.has(p.parcel_id) && extractLuCode('', p) === '56' && (p.area_sqm||0) > 1500, 60)[0];
+      if (f) brief.act = { label: tr('Wald zeigen'), run: async () => { const ff = DEV.find(f.parcel_id); if (!ff) return; const [lon, lat] = featureLonLat(ff); questPing(lon, lat, Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(ff), 850); } };
     }
   } else if (t === 'Baumriese') {
     if (!G.tallUnlocked) {
@@ -2511,7 +2529,7 @@ function handleEvent(d) {
     case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,''); loadClaimed().then(()=>render()); break;
     case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
-    case 'parcel_harvested': if (d.player !== G.player?.name) toast('🌾 '+d.player+' erntet '+d.coins+'🪙',''); loadClaimed().then(()=>render()); break;
+    case 'parcel_harvested': if (d.player !== G.player?.name) toast((d.forest ? '🪓 ' : '🌾 ')+d.player+' erntet '+d.coins+'🪙',''); loadClaimed().then(()=>render()); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed':
       if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); Herald.completed(d.title); loadChallenges(); updateStatsFromServer(); }
@@ -2665,6 +2683,7 @@ function render() {
 
   // ---- Living nature reserves (waving grass, herbs, fauna) ----
   drawNatureReserves(ctx, claimMap);
+  drawForestOverlay(ctx, claimMap);
 
   // ---- Tallest-tree + landmark markers (enhanced mode) ----
   drawTopLandmarks(ctx);
@@ -4121,11 +4140,14 @@ function drawParcelPoly(ctx, f, claimMap) {
   const hash = simpleHash(parcelId || '');
   const isBiodiversity = claim?.converted_to === 'biodiversity';
   const isForest = claim?.converted_to === 'forest';
+  const isWild = claim?.converted_to === 'wildforest';
+  const isSchlag = terrain === TERRAIN.schlag || terrain === TERRAIN.regrow;
   const isWater = terrain === TERRAIN.water;
   ctx.fillStyle = terrain[Math.abs(hash) % terrain.length];
   // More transparent when real landuse polys provide terrain backdrop
   // Biodiversity parcels get higher opacity for vibrancy
   ctx.globalAlpha = isWater ? 1
+    : isSchlag ? 0.9
     : isBiodiversity
     ? (G.landusePolys.length > 0 ? 0.55 : 0.95)
     : (G.landusePolys.length > 0 ? 0.35 : 0.85);
@@ -4181,6 +4203,13 @@ function drawParcelPoly(ctx, f, claimMap) {
     }
   }
 
+  // Clear-cut / regrowing stand: rutted brown ground (Rückegassen) — stumps,
+  // slash and the returning trees live in drawForestOverlay.
+  if (isSchlag && G.cam.zoom >= 15 && (maxX - minX) > 18 && (maxY - minY) > 12) drawFieldPattern(ctx, rings, hash, 'schlag');
+  // Naturwald: dark mossy border, no glow (the canopy itself is the overlay)
+  if (isWild) {
+    ctx.save(); ctx.strokeStyle = '#1a6a2a'; ctx.lineWidth = 3; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+  }
   // Biodiversity: soft green glow + wild-meadow ground mottling (sprites live in
   // the animated overlay, see drawNatureReserves)
   if (isBiodiversity) {
@@ -4333,7 +4362,13 @@ function extractLuCode(lu, p) {
 
 /** Get terrain colors from landuse_summary, returns the dominant terrain color array */
 function getParcelTerrain(p, claim) {
+  if (claim?.converted_to === 'wildforest') return TERRAIN.wildforest;
   if (claim?.converted_to) return TERRAIN.bio;
+  if (claim?.harvested_at && claimIsForest(p, claim)) {
+    const st = forestStage(claim).stage;
+    if (st === 'schlag') return TERRAIN.schlag;
+    if (st === 'jungwuchs' || st === 'stangenholz') return TERRAIN.regrow;
+  }
   // OSM water ∩ parcel (feedback #16): water-dominant parcels are water, full stop.
   const wf = waterFraction(p.parcel_id);
   if (wf != null && wf >= 0.5) return TERRAIN.water;
@@ -4558,11 +4593,24 @@ const _fieldPatCache = {};
 function fieldPattern(ctx, kind, k) {
   const key = kind + ':' + k;
   if (_fieldPatCache[key]) return _fieldPatCache[key];
-  const P = kind === 2 ? 8 : kind === 3 ? 20 : kind === 4 ? 10 : kind === 5 ? 6 : kind === 6 ? 48 : 16;   // period in px at k=1
+  const P = kind === 2 ? 8 : kind === 3 ? 20 : kind === 4 ? 10 : kind === 5 ? 6 : kind === 6 || kind === 7 ? 48 : 16;   // period in px at k=1
   const c = document.createElement('canvas'); c.width = Math.round(P * k); c.height = Math.round(P * k);
   const g = c.getContext('2d');
   g.scale(k, k);
-  if (kind === 6) {
+  if (kind === 7) {
+    // clear-cut: churned brown soil, twin skidder ruts (Rückegasse), sawdust
+    // and needle litter flecks, darker damp hollows
+    let h = 0x7a3f11c9;
+    const rnd = () => { h = hashMix(h + 0x9e3779b9); return (h & 0xffff) / 0xffff; };
+    for (let i = 0; i < 10; i++) {
+      g.fillStyle = rnd() < 0.5 ? `rgba(40,25,10,${0.08 + rnd() * 0.1})` : `rgba(200,170,110,${0.06 + rnd() * 0.06})`;
+      const cx = rnd() * P, cy = rnd() * P, rx = 3 + rnd() * 8, ry = 2 + rnd() * 5;
+      for (const [ox, oy] of [[0, 0], [P, 0], [-P, 0], [0, P], [0, -P]]) { g.beginPath(); g.ellipse(cx + ox, cy + oy, rx, ry, rnd() * Math.PI, 0, Math.PI * 2); g.fill(); }
+    }
+    g.fillStyle = 'rgba(45,28,10,0.45)'; g.fillRect(14, 0, 2, P); g.fillRect(20, 0, 2, P);      // ruts
+    g.fillStyle = 'rgba(45,28,10,0.18)'; g.fillRect(16, 0, 4, P);
+    for (let i = 0; i < 30; i++) { g.fillStyle = rnd() < 0.5 ? 'rgba(225,200,140,0.5)' : 'rgba(50,90,40,0.4)'; g.fillRect(Math.floor(rnd() * P), Math.floor(rnd() * P), 1, 1); }
+  } else if (kind === 6) {
     // wild meadow: irregular tussock blotches (darker, taller grass), sun-bleached
     // patches, bare-soil specks — no rows, nothing straight
     let h = 0x2545f491;
@@ -4625,7 +4673,8 @@ function drawFieldPattern(ctx, rings, hash, stage) {
   const z = G.cam.zoom;
   let k = z >= 18 ? 2 : z >= 16.5 ? 1.5 : z >= 15.5 ? 1 : 0.7;
   if (stage === 'wild') k = Math.min(k, 1);   // tussock blotches stay ~5 m wide, never balloon
-  const pk = stage === 'wild' ? 6 : stage === 'meadow' ? 3 : stage === 'ploughed' ? 2 : stage === 'growing' ? 4 : stage === 'ripe' ? 5 : 0;
+  if (stage === 'schlag') k = Math.min(k, 1);
+  const pk = stage === 'schlag' ? 7 : stage === 'wild' ? 6 : stage === 'meadow' ? 3 : stage === 'ploughed' ? 2 : stage === 'growing' ? 4 : stage === 'ripe' ? 5 : 0;
   const {pat, P} = fieldPattern(ctx, pk, k);
   // Tracks run parallel to the edge: the pattern's stripes are vertical, so
   // rotate by ang (stripe axis = y → edge direction) with a stable phase.
@@ -5485,6 +5534,400 @@ function drawNatureReserves(ctx, claimMap) {
   else if (NATURE._cost < 4 && NATURE.quality < 1) NATURE.quality = Math.min(1, NATURE.quality * 1.03);
 }
 
+// ============================================================================
+// FOREST PLOTS — harvest cycle (Holzernte / Kahlschlag) + living overlays for
+// clear-cuts and Naturwald (wild forest). Shared contract with timber.go.
+// ============================================================================
+const FOREST = { schlagMin: 40, jungMin: 90, stangenMin: 150, fullMin: 510, scenes: new Map() };
+
+/** Is this claim/parcel a forest stand? NS 56, or lidar tree cover ≥ 50 % on a
+ *  non-crop parcel. Pass the feature when available (lidar lookup). */
+function claimIsForest(p, claim) {
+  if (claim?.converted_to === 'wildforest') return true;
+  const lu = extractLuCode('', p);
+  if (lu === '56') return true;
+  if (lu === '48') return false;
+  const lp = G.lidarParcels[p.parcel_id];
+  const t = lp?.fracs?.tree ?? lp?.forestFrac;
+  return t != null && t >= 0.5;
+}
+function isForestParcel(f, claim) { return claimIsForest(f.properties || f, claim); }
+
+/** Stage of a (harvested) forest stand. Mirrors forestPhase() in timber.go. */
+function forestStage(claim, now = Date.now()) {
+  const ha = claim?.harvested_at ? Date.parse(claim.harvested_at) : NaN;
+  if (!claim || isNaN(ha)) return { stage: 'baumholz', t: 1, factor: 1, min: Infinity, nextInS: 0 };
+  const min = (now - ha) / 60000, t = Math.min(1, min / FOREST.stangenMin);
+  if (min < FOREST.schlagMin) return { stage: 'schlag', t, factor: 0, min, nextInS: (FOREST.schlagMin - min) * 60, readyInS: (FOREST.stangenMin - min) * 60 };
+  if (min < FOREST.jungMin) return { stage: 'jungwuchs', t, factor: 0, min, nextInS: (FOREST.jungMin - min) * 60, readyInS: (FOREST.stangenMin - min) * 60 };
+  if (min < FOREST.stangenMin) return { stage: 'stangenholz', t, factor: 0, min, nextInS: (FOREST.stangenMin - min) * 60, readyInS: (FOREST.stangenMin - min) * 60 };
+  const factor = Math.max(0.5, Math.min(1, 0.5 + 0.5 * (min - FOREST.stangenMin) / (FOREST.fullMin - FOREST.stangenMin)));
+  return { stage: 'baumholz', t: 1, factor, min, nextInS: 0, readyInS: 0 };
+}
+function forestStageLabel(fs) {
+  switch (fs.stage) {
+    case 'schlag': return '🪓 ' + tr('Kahlschlag') + ' · ' + tr('Jungwuchs in') + ' ' + fmtMin(fs.nextInS);
+    case 'jungwuchs': return '🌱 ' + tr('Jungwuchs') + ' · ' + tr('Stangenholz in') + ' ' + fmtMin(fs.nextInS);
+    case 'stangenholz': return '🌲 ' + tr('Stangenholz') + ' · ' + tr('erntereif in') + ' ' + fmtMin(fs.nextInS);
+  }
+  return '🌳 ' + tr('Baumholz') + (fs.factor < 1 ? ' · ' + Math.round(fs.factor * 100) + ' % ' + tr('Wert') : ' · ' + tr('hiebsreif'));
+}
+
+/** Lazy timber estimate per parcel (server: /api/forest-value, timber.go). */
+async function fetchForestValue(f) {
+  const p = f.properties, pid = p.parcel_id;
+  if (pid in G.forestValues) return G.forestValues[pid];
+  G.forestValues[pid] = null;
+  try {
+    const d = await GET('/api/forest-value?parcel_id=' + encodeURIComponent(pid) + '&kg=' + encodeURIComponent(p.kg_code || pid.split('-')[0]) +
+      '&area=' + (p.area_sqm || 0) + '&lu=' + encodeURIComponent(extractLuCode('', p)) + '&session_id=' + encodeURIComponent(G.session?.id || ''));
+    G.forestValues[pid] = (d && !d.error && d.estimate) ? d : null;
+  } catch (e) { G.forestValues[pid] = null; }
+  return G.forestValues[pid];
+}
+function fmtEur(v) { return v >= 1e6 ? (v / 1e6).toFixed(2) + ' Mio €' : Math.round(v).toLocaleString('de-AT') + ' €'; }
+
+/** Popup rows for a forest stand (called from renderEnhancedPopupRows). */
+function forestPopupRows(fv, claim) {
+  const e = fv?.estimate;
+  if (!e || !e.is_forest) return [];
+  const rows = [];
+  const src = e.source === 'v3' ? tr('Einzelbaum-Inventur (ALS)') : e.source === 'lidar' ? tr('ALS-Kronenhöhe') : tr('Nutzungsart');
+  let stock = '~' + Math.round(e.vfm).toLocaleString('de-AT') + ' Vfm';
+  if (e.vfm_per_ha) stock += ' <span style="color:var(--text-dim)">(' + e.vfm_per_ha + '/ha · Ø ' + e.h_mean_m + ' m' + (e.n_trees ? ' · ' + e.n_trees + ' ' + tr('Bäume') : '') + ')</span>';
+  rows.push(['🪵 ' + tr('Holzvorrat'), stock]);
+  const sp = e.species || {};
+  const mix = [['spruce_fir', tr('Fichte/Tanne')], ['larch', tr('Lärche')], ['pine', tr('Kiefer')], ['broadleaf', tr('Laubholz')]]
+    .filter(([k]) => (sp[k] || 0) >= 0.08).sort((a, b) => sp[b[0]] - sp[a[0]]).map(([k, n]) => n + ' ' + Math.round(sp[k] * 100) + '%').join(' · ');
+  if (mix) rows.push(['🌲 ' + tr('Bestand'), mix + ' <span style="color:var(--text-dim)">· ' + src + '</span>']);
+  const pr = e.prices || {};
+  const fs = forestStage(claim);
+  const eur = e.net_eur * (claim ? fs.factor : 1);
+  rows.push(['💶 ' + tr('Holzerlös'), '<b style="color:var(--gold)">≈ ' + fmtEur(eur) + '</b> <span style="color:var(--text-dim)">' + tr('netto') + ' · ' + Math.round(e.efm) + ' Efm · ' +
+    tr('Fichte') + ' ' + Math.round(pr.spruce_eur_efm || 0) + ' €/Efm' + (pr.date ? ' (' + (pr.live ? pr.state + ' ' + pr.date : tr('Richtwert')) + ')' : '') + '</span>']);
+  rows.push(['🌍 CO₂', '~' + Math.round(e.co2_t).toLocaleString('de-AT') + ' t ' + tr('im Holz gespeichert')]);
+  return rows;
+}
+
+// ---- terrain palettes for the stand cycle ----
+TERRAIN.schlag = ['#7a6040', '#826848', '#725838', '#8a7050', '#6a5030'];
+TERRAIN.regrow = ['#6e7a3c', '#768244', '#667236', '#7e8a4c', '#5e6a30'];
+TERRAIN.wildforest = ['#173f17', '#1b451b', '#153b15', '#1e4a1e', '#123612'];
+
+// ---- scene construction ----
+// item kinds (forest-specific; NK.* kinds are reused via drawNatureItem)
+const FK = { TREE: 100, STUMP: 101, SLASH: 102, POLTER: 103, ROOTPLATE: 104, BLUEBERRY: 105, THORN: 106, HERB: 107 };
+// species: 0 spruce 1 fir 2 larch 3 beech 4 oak 5 birch 6 rowan 7 maple
+const F_SPECIES_LOW = [0, 1, 3, 3, 4, 5, 7, 3, 0, 6], F_SPECIES_MID = [0, 0, 1, 3, 2, 5, 6, 0, 1, 3], F_SPECIES_HIGH = [0, 0, 2, 2, 6, 1, 0, 2, 0, 5];
+const F_PIONEER = [5, 6, 0, 5, 2, 6];   // birch, rowan, spruce, larch on a clear-cut
+
+function forestScene(f, mode) {
+  const p = f.properties, id = p.parcel_id, key = id + ':' + mode;
+  let sc = FOREST.scenes.get(key);
+  if (sc) return sc;
+  if (FOREST.scenes.size > 200) FOREST.scenes.clear();
+  const geom = f.geometry, rings = geomAllRings(geom), b = geoBounds(geom);
+  const lat0 = (b.n + b.s) / 2, mLon = 111320 * Math.cos(lat0 * Math.PI / 180), mLat = 110574;
+  const wM = (b.e - b.w) * mLon, hM = (b.n - b.s) * mLat;
+  const area = p.area_sqm || wM * hM * 0.6;
+  const sp = Math.max(2.2, Math.sqrt(area / 2200));
+  const hash = simpleHash(id);
+  const lp = G.lidarParcels[id];
+  const elev = lp?.elev ?? 600, hMean = lp?.treeH?.mean ?? 20;
+  const table = elev > 1200 ? F_SPECIES_HIGH : elev > 750 ? F_SPECIES_MID : F_SPECIES_LOW;
+  const veteranBias = hMean > 26 ? 0.15 : hMean < 14 ? -0.2 : 0;
+  const segs = [];
+  for (const r of rings) for (let i = 0; i < r.length - 1; i++) segs.push([(r[i][0] - b.w) * mLon, (r[i][1] - b.s) * mLat, (r[i + 1][0] - b.w) * mLon, (r[i + 1][1] - b.s) * mLat]);
+  const edgeDist = (x, y) => { let d = Infinity; for (const s of segs) { const q = segDist2(x, y, s[0], s[1], s[2], s[3]); if (q < d) d = q; } return Math.sqrt(d); };
+  const items = [];
+  let polterN = 0, snagN = 0;
+  const cols = Math.ceil(wM / sp), rows = Math.ceil(hM / sp);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const m = hashMix(hash + r * 7919 + c * 104729), m2 = hashMix(m + 0x51ed27);
+    const x = (c + 0.5 + ((m & 255) / 255 - 0.5) * 0.9) * sp, y = (r + 0.5 + (((m >>> 8) & 255) / 255 - 0.5) * 0.9) * sp;
+    const lon = b.w + x / mLon, lat = b.s + y / mLat;
+    if (!pipRings(lon, lat, rings)) continue;
+    const n = vnoise(x / 12, y / 12, hash);                     // 12 m stand-structure clumps
+    const rr = (m >>> 16) % 100, pr = ((m >>> 20) & 1023) / 1023, v = (m >>> 26) & 63;
+    const ed = edgeDist(x, y);
+    const it = { lon, lat, v, ph: (m & 1023) / 1023 * Math.PI * 2, pr, ed, n, k: -1, size: 0, spc: table[v % table.length], bend: 0, birth: 0 };
+    if (mode === 'wild') {
+      if (ed < 3) {                                             // Waldsaum / Waldmantel: thorny
+        if (rr < 28) it.k = NK.BRAMBLE; else if (rr < 46) it.k = FK.THORN; else if (rr < 62) { it.k = FK.TREE; it.size = 0; }
+        else if (rr < 78) { it.k = FK.TREE; it.size = 1; } else if (rr < 90) it.k = NK.FERN; else it.k = FK.BLUEBERRY;
+      } else if (n > 0.62 + veteranBias * -1) {                 // old growth
+        if (rr < 50) { it.k = FK.TREE; it.size = 3; } else if (rr < 72) { it.k = FK.TREE; it.size = 2; }
+        else if (rr < 77 && snagN < 6) { it.k = NK.SNAG; snagN++; } else if (rr < 84) it.k = NK.LOG; else if (rr < 88) it.k = FK.ROOTPLATE;
+        else if (rr < 94) it.k = NK.FERN; else if (rr < 97) it.k = NK.MUSHROOM; else it.k = FK.BLUEBERRY;
+      } else if (n < 0.34) {                                    // gap: windthrow + regeneration
+        if (rr < 24) { it.k = FK.TREE; it.size = 0; } else if (rr < 44) { it.k = FK.TREE; it.size = 1; }
+        else if (rr < 54) it.k = NK.BRAMBLE; else if (rr < 61) it.k = NK.LOG; else if (rr < 66) it.k = FK.ROOTPLATE; else if (rr < 72) it.k = FK.THORN;
+        else if (rr < 84) it.k = NK.FERN; else if (rr < 90) it.k = FK.BLUEBERRY; else if (rr < 94) it.k = FK.HERB; else it.k = NK.MUSHROOM;
+      } else {                                                  // mixed, all age classes
+        if (rr < 34) { it.k = FK.TREE; it.size = 2; } else if (rr < 50) { it.k = FK.TREE; it.size = 1; } else if (rr < 58 + veteranBias * 40) { it.k = FK.TREE; it.size = 3; }
+        else if (rr < 64) { it.k = FK.TREE; it.size = 0; } else if (rr < 72) it.k = NK.FERN; else if (rr < 76) it.k = NK.LOG; else if (rr < 78 && snagN < 6) { it.k = NK.SNAG; snagN++; }
+        else if (rr < 84) it.k = FK.BLUEBERRY; else if (rr < 88) it.k = NK.MUSHROOM; else if (rr < 91) it.k = NK.STONES; else if (rr < 93) it.k = NK.ANTHILL; else it.k = NK.FERN;
+      }
+      // pioneer species in gaps and along the edge
+      if (it.k === FK.TREE && it.size <= 1 && (n < 0.34 || ed < 3) && v % 3 === 0) it.spc = F_PIONEER[v % F_PIONEER.length];
+      if (it.k === FK.TREE && it.size === 3) it.bend = 0.6; else if (it.k === FK.TREE) it.bend = it.size === 0 ? 1.2 : 0.8;
+    } else {                                                    // clear-cut
+      if (rr < 52) it.k = FK.STUMP; else if (rr < 60) it.k = FK.SLASH; else if (rr < 63) it.k = NK.LOG;
+      else if (rr < 65 && ed > 2) { it.k = FK.TREE; it.size = 3; it.bend = 2.6; it.spc = v % 4 === 0 ? 2 : v % 4 === 1 ? 3 : 0; }   // Überhälter (~2 %), wind-bent
+      else if (rr < 70 && polterN < 2 && ed > 2 && ed < 9) { it.k = FK.POLTER; polterN++; }
+      else if (rr < 84) it.k = FK.STUMP; else if (rr < 90) it.k = NK.GRASS; else it.k = -1;
+      if (it.k === NK.GRASS) it.s2 = 0;
+      // regrowth: pops in with stand age (birth = cycle fraction 0..1)
+      const rr2 = (m2 >>> 16) % 100, pr2 = ((m2 >>> 20) & 1023) / 1023;
+      if (it.k === -1 || rr2 < 45) {
+        const g = { lon: lon + ((m2 & 255) / 255 - 0.5) * sp * 0.6 / mLon, lat: lat + (((m2 >>> 8) & 255) / 255 - 0.5) * sp * 0.6 / mLat, v: (m2 >>> 26) & 63, ph: it.ph, pr: pr2, ed, n, k: -1, size: 0, bend: 1.2, spc: F_PIONEER[(m2 >>> 3) % F_PIONEER.length], birth: 0 };
+        if (rr2 < 38) { g.k = FK.TREE; g.birth = 0.28 + (rr2 / 38) * 0.5; }
+        else if (rr2 < 55) { g.k = NK.BRAMBLE; g.birth = 0.3 + ((rr2 - 38) / 17) * 0.4; }
+        else if (rr2 < 75) { g.k = FK.HERB; g.birth = 0.15 + ((rr2 - 55) / 20) * 0.4; }     // Schlagflora: Fingerhut, Weidenröschen
+        else if (rr2 < 90) { g.k = NK.GRASS; g.s2 = 1; g.birth = 0.1 + ((rr2 - 75) / 15) * 0.5; }
+        if (g.k !== -1) items.push(g);
+      }
+      if (it.k === -1) continue;
+    }
+    // priority: trees + stumps uniform; ground cover thins first; landmarks stay
+    if (it.k === NK.SNAG || it.k === FK.POLTER || it.k === FK.ROOTPLATE || it.k === NK.LOG) it.pr *= 0.4;
+    else if (it.k === NK.FERN || it.k === FK.BLUEBERRY || it.k === NK.MUSHROOM || it.k === NK.STONES || it.k === NK.ANTHILL || it.k === NK.GRASS || it.k === FK.HERB) it.pr = 0.3 + it.pr * 0.7;
+    else if (it.k === FK.TREE && it.size === 3) it.pr *= 0.7;
+    items.push(it);
+  }
+  items.sort((a, c) => c.lat - a.lat);
+  const snags = items.filter(it => it.k === NK.SNAG), stumps = items.filter(it => it.k === FK.STUMP), veterans = items.filter(it => it.k === FK.TREE && it.size === 3);
+  sc = { items, hash, area, sp, b, mLon, mLat, wM, hM, snags, stumps, veterans, mode };
+  FOREST.scenes.set(key, sc);
+  return sc;
+}
+
+// ---- sprites (pixel units × u) ----
+const F_PAL = {
+  0: { d: '#174a22', m: '#1f5c2c', l: '#2e7a3a', trunk: '#4a3018' },   // spruce
+  1: { d: '#1c5030', m: '#266a3c', l: '#3a8a50', trunk: '#5a4a38' },   // fir
+  2: { d: '#4a7a2a', m: '#6aa040', l: '#9ac860', trunk: '#6a4a28' },   // larch
+  3: { d: '#2a6a22', m: '#3e8a2c', l: '#6ab04a', trunk: '#6a6058' },   // beech
+  4: { d: '#245a1c', m: '#367a28', l: '#5a9a3a', trunk: '#4a3a20' },   // oak
+  5: { d: '#4a8a2c', m: '#6ab04a', l: '#a8dc70', trunk: '#e8e8e0' },   // birch
+  6: { d: '#2e6a28', m: '#4a8a34', l: '#7ab84c', trunk: '#6a5a40' },   // rowan
+  7: { d: '#3a7a28', m: '#5a9a3a', l: '#9ad060', trunk: '#5a4a30' },   // maple
+};
+/** Tree: species 0-7, size 0 sapling / 1 young / 2 mature / 3 veteran; lean = trunk-top wind offset (px units). */
+function fTree(px, spc, size, lean, v) {
+  const P = F_PAL[spc] || F_PAL[0];
+  const conifer = spc <= 2;
+  const trunkH = [4, 8, 14, 22][size], R = conifer ? [2, 4, 6, 9][size] : [2, 4, 6, 10][size], crownH = conifer ? [6, 12, 20, 32][size] : [4, 8, 12, 20][size];
+  const o1 = Math.round(lean * 0.35), o2 = Math.round(lean);
+  px(-R, 0, 2 * R + 1, 1, 'rgba(0,0,0,0.25)');
+  // trunk in 3 segments (bends toward the tip)
+  const tw = size >= 2 ? 2 : 1, h1 = Math.max(1, Math.round(trunkH * 0.4)), h2 = Math.max(1, Math.round(trunkH * 0.3)), h3 = Math.max(1, trunkH - h1 - h2);
+  px(0, -h1, tw, h1, P.trunk); px(o1, -h1 - h2, tw, h2, P.trunk); px(o2, -trunkH, tw, h3, P.trunk);
+  if (spc === 5) { px(0, -h1 + 1, 1, 1, '#303030'); if (size >= 2) px(o1, -h1 - 1, 1, 1, '#303030'); }   // birch bark
+  else if (size >= 2) px(tw - 1, -h1, 1, h1, 'rgba(0,0,0,0.3)');
+  const cx = o2 + (tw >> 1), top = -trunkH - crownH;
+  if (conifer) {
+    // stacked tiers, widening downward; larch airy (gaps between tiers)
+    const tiers = size === 0 ? 3 : size === 1 ? 4 : size === 2 ? 6 : 8, th = crownH / tiers;
+    for (let i = 0; i < tiers; i++) {
+      const y0 = Math.round(top + i * th), w = Math.max(0, Math.round(R * (i + 1) / tiers));
+      const hh = spc === 2 ? Math.max(1, Math.round(th * 0.6)) : Math.max(1, Math.round(th));
+      px(cx - w, y0, 2 * w + 1, hh, i % 2 ? P.d : P.m);
+      px(cx - w, y0, w, 1, P.l);                                  // lit left edge
+      if (spc === 2 && size >= 2) px(cx + 1, y0, 1, hh, P.trunk); // larch: stem shows through
+    }
+    px(cx, top - 1, 1, 2, P.l);
+    if (spc === 1 && size >= 2) px(cx - 1, top, 3, 1, P.l);       // fir: flat light top
+    if (spc === 0 && size >= 2 && v % 3 === 0) { px(cx - R + 1, top + crownH - 4, 1, 2, '#6a3a20'); px(cx + R - 2, top + crownH - 7, 1, 2, '#6a3a20'); }  // cones
+  } else {
+    // rounded crown: rows from a circle, lit upper-left, shaded lower-right
+    const cy = top + crownH / 2, ry = crownH / 2, rx = R + (spc === 4 ? 1 : 0);
+    for (let dy = -ry; dy <= ry; dy++) {
+      const w = Math.floor(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
+      if (w < 0) continue;
+      const y0 = Math.round(cy + dy);
+      px(cx - w, y0, 2 * w + 1, 1, dy > ry * 0.35 ? P.d : P.m);
+      if (dy < -ry * 0.2 && w > 1) px(cx - w + 1, y0, Math.max(1, w - 1), 1, P.l);
+      if (spc === 4 && (dy + v) % 3 === 0) px(cx + w - 1 - (v % 2), y0, 1, 1, P.l);   // oak: ragged
+    }
+    if (spc === 6 && size >= 1) { px(cx - 1, Math.round(cy - 1), 1, 1, '#d03020'); px(cx + 2, Math.round(cy + 1), 1, 1, '#d03020'); px(cx, Math.round(cy + 2), 1, 1, '#d03020'); }  // rowan berries
+    if (spc === 5 && size >= 2) for (let i = 0; i < 4; i++) px(cx - rx + 1 + ((v + i * 5) % (2 * rx - 1)), Math.round(top + 1 + ((v * 3 + i * 7) % crownH)), 1, 1, 'rgba(255,255,255,0.25)');   // birch: airy
+    if (size === 3 && v % 4 === 0) px(cx - rx - 1, Math.round(cy + ry * 0.3), 1, 1, '#2a2a2a');   // a bird in the veteran
+  }
+}
+function fStump(px, v) {
+  const big = v % 3 === 0, w = big ? 7 : 5, h = big ? 3 : 2, L = -(w >> 1);
+  px(L - 1, 0, w + 2, 1, 'rgba(0,0,0,0.25)');
+  px(L, -h, w, h, '#6a4a2a'); px(L + w - 1, -h, 1, h, '#4a3018'); px(L, -h, 1, h, '#8a6a40');
+  px(L, -h - 1, w, 1, '#c8a870'); px(L + 1, -h - 1, w - 2, 1, '#e0c890'); px(L + (w >> 1), -h - 1, 1, 1, '#a08050');   // cut face + ring + heart
+  if (v % 4 === 1) px(L + w, -1, 2, 1, '#d8c090');                                            // sawdust
+  if (v % 5 === 2) { px(L - 1, -1, 1, 1, '#3e8a2c'); px(L + w, -2, 1, 2, '#3e8a2c'); }        // moss
+  if (v % 7 === 3) px(L + 1, -h - 2, 1, 1, '#c8b080');                                        // fungus
+}
+function fSlash(px, v) {
+  px(-4, 0, 9, 1, 'rgba(0,0,0,0.18)');
+  px(-4, -2, 9, 2, '#5a4020'); px(-3, -3, 7, 1, '#6a4a28'); px(-1, -4, 3, 1, '#6a4a28');
+  px(-6, -2, 3, 1, '#4a3018'); px(3, -4, 3, 1, '#4a3018'); px(-2, -5, 1, 2, '#4a3018');
+  if (v % 2) { px(-1, -3, 2, 1, '#3a6a2a'); px(2, -2, 2, 1, '#3a6a2a'); } else px(0, -4, 2, 1, '#8a6a30');   // needles / dry twigs
+}
+function fPolter(px, v) {
+  // stacked logs seen end-on: 4 / 3 / 2 rows, cream cut faces with growth rings
+  px(-8, 0, 17, 1, 'rgba(0,0,0,0.3)');
+  const log = (x, y) => { px(x, y, 3, 3, '#a07840'); px(x + 1, y + 1, 1, 1, '#e8c888'); px(x, y, 1, 1, '#c8a060'); px(x + 2, y + 2, 1, 1, '#7a5830'); };
+  for (let i = 0; i < 4; i++) log(-7 + i * 4, -3);
+  for (let i = 0; i < 3; i++) log(-5 + i * 4, -6);
+  for (let i = 0; i < 2; i++) log(-3 + i * 4, -9);
+  px(-8, -2, 1, 3, '#4a3018'); px(8, -2, 1, 3, '#4a3018');   // stakes
+  if (v % 2) { px(4, -11, 1, 1, '#2a2a2a'); px(3, -12, 1, 1, '#2a2a2a'); px(5, -12, 1, 1, '#2a2a2a'); }   // crow
+}
+function fRootplate(px, v) {
+  // tipped-over root plate + fallen trunk (Windwurf)
+  px(-5, 0, 18, 1, 'rgba(0,0,0,0.22)');
+  px(-5, -7, 7, 7, '#5a3a20'); px(-4, -8, 5, 1, '#5a3a20'); px(-5, -6, 1, 5, '#7a5a38'); px(-4, -5, 2, 2, '#3a2010');
+  px(-7, -6, 2, 1, '#6a4a28'); px(-6, -9, 1, 2, '#6a4a28'); px(2, -9, 1, 2, '#6a4a28'); px(3, -6, 2, 1, '#6a4a28');   // roots
+  px(2, -3, 11, 3, '#8a6a48'); px(2, -3, 11, 1, '#a88a60'); px(2, -1, 11, 1, '#5a4028');                                // trunk
+  if (v % 2) { px(5, -4, 2, 1, '#3e8a2c'); px(9, -4, 1, 1, '#3e8a2c'); }                                                // moss
+}
+function fBlueberry(px, v) {
+  px(-3, -2, 7, 2, '#2e6a2e'); px(-2, -3, 5, 1, '#3a7a3a'); px(-3, -2, 1, 1, '#4a8a4a');
+  px(-2 + (v % 3), -3, 1, 1, '#3a3a8a'); px(1, -2, 1, 1, '#3a3a8a'); if (v % 2) px(-3, -1, 1, 1, '#4a4aa0');
+}
+function fThorn(px, v) {
+  px(-5, 0, 11, 1, 'rgba(0,0,0,0.2)');
+  px(-5, -4, 11, 4, '#3a5a28'); px(-4, -6, 9, 2, '#466a30'); px(-2, -7, 5, 1, '#466a30'); px(-4, -6, 3, 1, '#5a7e3a');
+  px(-6, -5, 1, 1, '#8a8a70'); px(5, -6, 1, 1, '#8a8a70'); px(-3, -8, 1, 1, '#8a8a70'); px(2, -8, 1, 1, '#8a8a70');   // thorns
+  if (v % 2) { px(-2, -5, 1, 1, '#d03020'); px(2, -3, 1, 1, '#d03020'); } else { px(-1, -4, 1, 1, '#2a2a6a'); px(3, -5, 1, 1, '#2a2a6a'); }   // haws / sloes
+}
+function fHerb(px, v, w) {
+  // Schlagflora: foxglove (pink spike) or fireweed (magenta spike)
+  const o = Math.round(w * 0.8), col = v % 2 ? '#d060a0' : '#c04080', pale = v % 2 ? '#f0a0d0' : '#e080b0';
+  px(0, -4, 1, 4, '#3e8a2c'); px(o, -8, 1, 4, '#3e8a2c'); px(-2, -2, 2, 1, '#3e8a2c'); px(1, -3, 2, 1, '#3e8a2c');
+  px(o - 1, -9, 3, 1, col); px(o - 1, -11, 3, 2, col); px(o, -12, 1, 1, pale); px(o - 1, -10, 1, 1, pale);
+}
+function drawForestItem(ctx, it, x, y, u, w, t, grow) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  switch (it.k) {
+    case FK.TREE: {
+      let size = it.size;
+      if (grow != null) size = grow < 0.4 ? 0 : 1;              // regrowth on a clear-cut
+      fTree(px, it.spc, size, w * it.bend, it.v); break;
+    }
+    case FK.STUMP: fStump(px, it.v); break;
+    case FK.SLASH: fSlash(px, it.v); break;
+    case FK.POLTER: fPolter(px, it.v); break;
+    case FK.ROOTPLATE: fRootplate(px, it.v); break;
+    case FK.BLUEBERRY: fBlueberry(px, it.v); break;
+    case FK.THORN: fThorn(px, it.v); break;
+    case FK.HERB: fHerb(px, it.v, w); break;
+    default: drawNatureItem(ctx, it, x, y, u, w, t);
+  }
+}
+
+// ---- fauna ----
+function fDeer(ctx, x, y, u, t, dir) {
+  const px = wildPx(ctx, Math.round(x), Math.round(y), u), d = dir, B = '#8a5a30', D = '#5a3a1a';
+  px(-4, 0, 9, 1, 'rgba(0,0,0,0.2)');
+  px(-3, -6, 7, 3, B); px(-3, -4, 1, 1, D);
+  const st = Math.floor(t * 6) % 2;
+  px(-3 + st, -3, 1, 3, D); px(2 - st, -3, 1, 3, D); px(-2, -3, 1, 2, D); px(3, -3, 1, 2, D);
+  px(3 * d, -9, 2, 3, B); px(4 * d, -10, 2, 2, B); px(4 * d, -11, 1, 1, D); px(3 * d + 1, -10, 1, 1, '#1a1008');
+  px(-4 * d, -6, 1, 1, '#f0e8d8');                                  // tail
+}
+function fWoodpecker(px, t, ph) {
+  const peck = Math.sin(t * 18 + ph) > 0.3 ? 1 : 0;
+  px(2, -16, 2, 3, '#202020'); px(2, -14, 1, 1, '#f0f0f0'); px(3, -17, 1, 1, '#d02020'); px(3 + peck, -16, 1, 1, '#202020'); px(2, -13, 1, 1, '#d02020');
+}
+function fJay(ctx, x, y, u, t, i) {
+  const px = wildPx(ctx, Math.round(x), Math.round(y), u), fl = Math.sin(t * 9 + i) > 0 ? -1 : 1;
+  px(-1, 0, 3, 1, '#c8a080'); px(-3, fl, 2, 1, '#4a80c0'); px(2, fl, 2, 1, '#4a80c0'); px(1, -1, 1, 1, '#202020');
+}
+function drawForestFauna(ctx, sc, u, t, lvl, sx1, sy1, sx2, sy2) {
+  if (lvl < 1) return;
+  // woodpecker on a snag
+  for (const sn of sc.snags) if (Math.sin(t * 0.09 + sn.ph) > 0) { const [x, y] = toScreen(sn.lon, sn.lat); fWoodpecker(wildPx(ctx, Math.round(x), Math.round(y), u), t, sn.ph); }
+  // crows on stumps of a fresh clear-cut
+  if (sc.mode === 'schlag') for (let i = 0; i < Math.min(3, sc.stumps.length); i++) {
+    const s = sc.stumps[(sc.hash + i * 41) % sc.stumps.length];
+    if (Math.sin(t * 0.2 + i * 2) < 0.4) continue;
+    const [x, y] = toScreen(s.lon, s.lat), px = wildPx(ctx, Math.round(x), Math.round(y), u);
+    px(-1, -5, 3, 1, '#202020'); px(0, -6, 1, 1, '#202020'); px(1 + (Math.sin(t * 5 + i) > 0.5 ? 1 : 0), -5, 1, 1, '#404040');
+  }
+  if (lvl === 2 && sc.area > 1200) {
+    // a deer crosses every ~60 s (edge → edge), a jay flits over the canopy
+    const cyc = (t + (sc.hash % 60)) % 60;
+    if (cyc < 7) { const ph = cyc / 7, dir = sc.hash & 1 ? 1 : -1; fDeer(ctx, sx1 + (sx2 - sx1) * (dir > 0 ? ph : 1 - ph), sy1 + (sy2 - sy1) * (0.3 + 0.4 * ((sc.hash >>> 5) % 100) / 100), u, t, dir); }
+    const jp = (t * 0.07 + (sc.hash % 100) / 100) % 1;
+    fJay(ctx, sx1 + (sx2 - sx1) * jp, sy1 + (sy2 - sy1) * (0.25 + 0.3 * Math.sin(jp * 5)) - 26 * u, u, t, sc.hash & 7);
+  }
+}
+
+/** Living overlay for Naturwald + clear-cut stands. Drawn after drawNatureReserves. */
+function drawForestOverlay(ctx, claimMap) {
+  const zoom = G.cam.zoom;
+  if (zoom < 15 || !G.parcelPolys.length) return;
+  const t0 = performance.now();
+  const u = zoom > 19 ? 3 : zoom > 17.5 ? 2 : 1, lvl = natureAnimLevel(), t = lvl ? Date.now() / 1000 : 0;
+  const W = gc.width, H = gc.height, cell = 9 * u, now = Date.now();
+  ctx.save();
+  for (const f of G.parcelPolys) {
+    const claim = claimMap[f.properties.parcel_id];
+    if (!claim || !isAreaGeom(f.geometry)) continue;
+    let mode = null, fs = null;
+    if (claim.converted_to === 'wildforest') mode = 'wild';
+    else if (!claim.converted_to && claim.harvested_at && claimIsForest(f.properties, claim)) { fs = forestStage(claim, now); if (fs.stage !== 'baumholz') mode = 'schlag'; }
+    if (!mode) continue;
+    const b = geoBounds(f.geometry);
+    const [sx1, sy1] = toScreen(b.w, b.n), [sx2, sy2] = toScreen(b.e, b.s);
+    if (sx2 < -40 || sx1 > W + 40 || sy2 < -40 || sy1 > H + 40) continue;
+    if ((sx2 - sx1) < 8 || (sy2 - sy1) < 6) continue;
+    NATURE.onScreen++;
+    const sc = forestScene(f, mode);
+    const pxPerM = mapScale() / sc.mLon;
+    const frac = Math.min(1, (sc.sp * pxPerM / cell) ** 2) * NATURE.quality * (lvl === 1 ? 0.7 : 1);
+    for (const it of sc.items) {
+      if (it.pr > frac) continue;
+      let grow = null;
+      if (fs) { if (it.birth) { if (fs.t < it.birth) continue; grow = (fs.t - it.birth) / Math.max(0.05, 1 - it.birth); if (it.k !== FK.TREE) grow = null; } }
+      const [x, y] = toScreen(it.lon, it.lat);
+      if (x < -30 || x > W + 30 || y < -60 || y > H + 30) continue;
+      const w = lvl ? windAt(x, y, t) * 2.2 : 0;
+      drawForestItem(ctx, it, x, y, u, w, t, grow);
+    }
+    drawForestFauna(ctx, sc, u, t, lvl, Math.max(sx1, 0), Math.max(sy1, 0), Math.min(sx2, W), Math.min(sy2, H));
+  }
+  ctx.restore();
+  const cost = performance.now() - t0;
+  NATURE._cost = NATURE._cost * 0.8 + cost * 0.2;
+  if (NATURE._cost > 9 && NATURE.quality > 0.3) NATURE.quality = Math.max(0.3, NATURE.quality * 0.9);
+}
+
+/** My forest stands (for quest briefings). */
+function myForests() {
+  const out = [];
+  for (const c of G.claimed || []) {
+    if (c.player_id !== G.player?.id || c.converted_to) continue;
+    const f = polyById(c.parcel_id);
+    if (!f || !claimIsForest(f.properties, c)) continue;
+    out.push({ c, f, ll: featureLonLat(f), fs: forestStage(c) });
+  }
+  return out;
+}
+
+window.doHarvestForest = async function() {
+  if (!G.sel) return;
+  const p = G.sel.properties;
+  const res = await POST('/api/harvest-forest', { session_id: G.session.id, player_id: G.player.id, parcel_id: p.parcel_id });
+  if (res.error) { toast(res.error, 'err'); return; }
+  const [lon, lat] = featureLonLat(G.sel);
+  spawnCollectFX({ lon, lat }, '+' + res.coins + ' 🪙', TREASURE_RARITY.coins);
+  toast('🪓 ' + tr('Holz geerntet') + ': ' + Math.round(res.efm) + ' Efm → +' + res.coins + '🪙 +' + res.xp + '⚡', 'ok');
+  G.player = res.player; updateStats();
+  FOREST.scenes.delete(p.parcel_id + ':schlag');
+  delete G.forestValues[p.parcel_id];
+  await loadClaimed(); render(); showParcelPopup(G.sel, G.selFp); loadChallenges();
+};
+
 function drawForestSprites(ctx, claimMap) {
   // Draw tree sprites on forest, reforested, orchard and scrub parcels
   // Determine tree style per parcel: 'forest' | 'reforested' | 'orchard' | 'krummholz'
@@ -5494,6 +5937,14 @@ function drawForestSprites(ctx, claimMap) {
   function getTreeStyle(f) {
     const claim = claimMap[f.properties.parcel_id];
     if (claim?.converted_to === 'forest') return 'reforested';
+    // Naturwald: the living overlay draws the stand at zoom ≥ 15; below that
+    // fall back to the plain forest sprites so it never reads as bare ground.
+    if (claim?.converted_to === 'wildforest') return G.cam.zoom < 15 ? 'forest' : null;
+    if (claim && !claim.converted_to && claim.harvested_at && claimIsForest(f.properties, claim)) {
+      const fs = forestStage(claim);
+      if (fs.stage !== 'baumholz') return null;            // stumps / regrowth → drawForestOverlay
+      if (fs.factor < 1) return 'young';                    // regrown, not yet full value
+    }
     const t = getParcelTerrain(f.properties, claim);
     const veg = parcelVeg(f);
     // Scrub-dominant (low woody cover, little tall canopy) → krummholz sprites,
@@ -5554,6 +6005,11 @@ function drawForestSprites(ctx, claimMap) {
       // Krummholz: dense low scrub
       treeCount = Math.min(20, Math.max(3, Math.floor(area / 250)));
       variantFn = (i) => 2;
+    } else if (style === 'young') {
+      // Regrown stand after a harvest: even-aged young trees, birch pioneers
+      treeCount = Math.min(30, Math.max(4, Math.floor(area / 220)));
+      const rv = [3, 5, 6, 3, 7, 5, 3, 6];
+      variantFn = (i) => rv[(hash + i) % rv.length];
     } else if (style === 'reforested') {
       // Reforested: dense mix of saplings, young firs, birch — vibrant new growth
       treeCount = Math.min(28, Math.max(4, Math.floor(area / 200)));
@@ -7479,7 +7935,12 @@ function showParcelPopup(f, tappedFp) {
   const fieldEl = document.getElementById('pp-field'), fieldL = document.getElementById('pp-field-l');
   if (isCropField(p)) {
     fieldEl.style.display = fieldL.style.display = '';
+    fieldL.textContent = tr('Feld');
     fieldEl.textContent = fieldStageLabel(fieldStage(p, claim));
+  } else if (claim && isForestParcel(G.sel, claim) && (claim.harvested_at || claim.converted_to === 'wildforest')) {
+    fieldEl.style.display = fieldL.style.display = '';
+    fieldL.textContent = tr('Wald');
+    fieldEl.textContent = claim.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') + ' · ' + tr('außer Nutzung') : forestStageLabel(forestStage(claim));
   } else { fieldEl.style.display = fieldL.style.display = 'none'; }
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
@@ -7498,10 +7959,21 @@ function showParcelPopup(f, tappedFp) {
       const fs = fieldStage(p, claim);
       if (fs.stage === 'ripe') html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🌾 Ernten (+${harvestYield(area)}🪙)</button>`;
     }
-    html += `
+    if (isForestParcel(G.sel, claim)) {
+      // Forest stand: harvest the timber (coins now, stand regrows) or set it
+      // aside as Naturwald (XP, permanent). Values come from /api/forest-value.
+      const fs = forestStage(claim), fv = G.forestValues[pid], e = fv?.estimate;
+      const coinsNow = e ? Math.max(5, Math.round(e.coins * fs.factor)) : null;
+      if (fs.stage === 'baumholz') html += `<button class="btn btn-gold btn-small" onclick="doHarvestForest()">🪓 ${tr('Holzernte')} (${coinsNow != null ? '+' + coinsNow + '🪙' : '…'})</button>`;
+      else html += `<span style="font:16px VT323;color:var(--text-dim);width:100%">${forestStageLabel(fs)}</span>`;
+      html += `<button class="btn btn-primary btn-small" onclick="doConvert('wildforest')" ${fs.stage !== 'baumholz' ? 'disabled title="' + tr('Der Wald muss erst nachwachsen') + '"' : ''}>🌳 ${tr('Naturwald')} (+${e ? e.wild_xp : '…'}⚡)</button>`;
+      if (!(pid in G.forestValues)) fetchForestValue(G.sel).then(() => { if (G.sel && G.sel.properties.parcel_id === pid) showParcelPopup(G.sel, G.selFp); });
+    } else {
+      html += `
       <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')">🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')}</button>
-      <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>
-      <button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
+      <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>`;
+    }
+    html += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
     // Show incoming offers for this parcel
     const incomingOffers = (G.offers||[]).filter(o => o.parcel_id === pid && o.seller_id === G.player.id && o.status === 'pending');
     if (incomingOffers.length > 0) {
@@ -7518,7 +7990,8 @@ function showParcelPopup(f, tappedFp) {
     }
     act.innerHTML = html;
   } else if (claim.player_id === G.player.id) {
-    act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${claim.converted_to === 'biodiversity' && isCropField(p) ? tr('Naturschutz') + ' · ' + tr('Brache') : claim.converted_to}</span>`;
+    const convLabel = claim.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') : claim.converted_to === 'biodiversity' ? (isCropField(p) ? tr('Naturschutz') + ' · ' + tr('Brache') : tr('Naturschutz')) : claim.converted_to === 'forest' ? tr('Aufforstung') : claim.converted_to;
+    act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${convLabel}</span>`;
   } else {
     // Someone else's parcel — offer to buy
     const myOffer = (G.offers||[]).find(o => o.parcel_id === pid && o.buyer_id === G.player.id && o.status === 'pending');
@@ -7792,6 +8265,13 @@ function renderEnhancedPopupRows(pid, gamePrice) {
       const bonus = Math.min(300, tt.count*40 + Math.floor(tt.maxH));
       rows.push(['🌲 Riesenbaum', tt.count + '× (max ' + tt.maxH + 'm) — <b style="color:var(--gold)">+' + bonus + '⚡ Bonus</b>']);
     }
+  }
+
+  // Timber stock + harvest value for forest stands (lazy; timber.go)
+  if (G.sel && isForestParcel(G.sel, G.claimed?.find(c => c.parcel_id === pid))) {
+    const claim = G.claimed?.find(c => c.parcel_id === pid);
+    if (pid in G.forestValues) { if (G.forestValues[pid]) for (const r of forestPopupRows(G.forestValues[pid], claim)) rows.push(r); }
+    else fetchForestValue(G.sel).then(() => { if (G.sel && G.sel.properties.parcel_id === pid) showParcelPopup(G.sel, G.selFp); });   // re-render rows + action buttons
   }
 
   // Natura 2000: is parcel inside a loaded site polygon?
@@ -8304,7 +8784,8 @@ window.doConvert = async function(to) {
     parcel_id:G.sel.properties.parcel_id, convert_to:to,
   });
   if (res.error) { toast(res.error,'err'); return; }
-  toast('🌿 Umgewandelt! +'+res.xp_reward+'⚡','ok');
+  if (to === 'wildforest') { FOREST.scenes.delete(G.sel.properties.parcel_id + ':wild'); toast('🌳 ' + tr('Naturwald') + '! ~' + Math.round(res.co2_t || 0) + ' t CO₂ ' + tr('bleiben im Wald') + ' · +' + res.xp_reward + '⚡', 'ok'); }
+  else toast('🌿 Umgewandelt! +'+res.xp_reward+'⚡','ok');
   G.player = res.player; updateStats();
   await loadClaimed(); await loadBio(); render(); showParcelPopup(G.sel); loadChallenges();
 };

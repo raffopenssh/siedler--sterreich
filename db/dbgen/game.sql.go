@@ -1005,7 +1005,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GameSession, error
 
 const getSessionBiodiversityPercent = `-- name: GetSessionBiodiversityPercent :one
 SELECT
-    COALESCE(SUM(CASE WHEN converted_to = 'biodiversity' THEN area_sqm ELSE 0 END), 0) as bio_area,
+    COALESCE(SUM(CASE WHEN converted_to IN ('biodiversity','wildforest') THEN area_sqm ELSE 0 END), 0) as bio_area,
     COALESCE(SUM(area_sqm), 0) as total_area
 FROM parcel_claims WHERE session_id = ?
 `

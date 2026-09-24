@@ -206,6 +206,8 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/claim-ez", s.handleClaimEZ)
 	mux.HandleFunc("POST /api/convert-parcel", s.handleConvertParcel)
 	mux.HandleFunc("POST /api/harvest-parcel", s.handleHarvestParcel)
+	mux.HandleFunc("POST /api/harvest-forest", s.handleHarvestForest)
+	mux.HandleFunc("GET /api/forest-value", s.handleForestValue)
 	mux.HandleFunc("POST /api/claim-treasure", s.handleClaimTreasure)
 	mux.HandleFunc("POST /api/complete-challenge", s.handleCompleteChallenge)
 	mux.HandleFunc("POST /api/sell-parcel", s.handleSellParcel)
@@ -1085,17 +1087,45 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if claim.ConvertedTo != nil && *claim.ConvertedTo != "" {
+		jsonErr(w, "Schon umgewandelt", 400)
+		return
+	}
+	// Award XP for conversion
+	xpReward := int64(50)
+	resp := map[string]any{"success": true}
+	switch req.ConvertTo {
+	case "biodiversity":
+		xpReward = 100
+	case "wildforest":
+		// Naturwald / Außernutzungstellung: only on forest, only on a grown
+		// stand; XP scales with the standing stock given up (timber.go).
+		lu := ""
+		if claim.Landuse != nil {
+			lu = *claim.Landuse
+		}
+		est := s.estimateTimber(r.Context(), claim.KgCode, req.ParcelID, claim.AreaSqm, lu, false)
+		if !est.IsForest {
+			jsonErr(w, "Das ist kein Wald", 400)
+			return
+		}
+		if stage, _, _ := forestPhase(claim.HarvestedAt, time.Now()); stage != "baumholz" {
+			jsonErr(w, "Der Wald muss erst nachwachsen", 409)
+			return
+		}
+		xpReward = est.WildXP
+		resp["vfm"] = est.Vfm
+		resp["co2_t"] = est.CO2t
+	case "forest":
+	default:
+		jsonErr(w, "unknown conversion", 400)
+		return
+	}
 	convertTo := req.ConvertTo
 	s.Q.ConvertParcel(r.Context(), dbgen.ConvertParcelParams{
 		ConvertedTo: &convertTo,
 		ID:          claim.ID,
 	})
-
-	// Award XP for conversion
-	xpReward := int64(50)
-	if req.ConvertTo == "biodiversity" {
-		xpReward = 100
-	}
 	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
 		Xp: xpReward,
 		ID: req.PlayerID,
@@ -1110,7 +1140,24 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 		"player":     player.Name,
 	})
 
-	jsonResp(w, map[string]any{"success": true, "xp_reward": xpReward, "player": player, "quests": quests})
+	resp["xp_reward"], resp["player"], resp["quests"] = xpReward, player, quests
+	jsonResp(w, resp)
+}
+
+// treeHeights extracts {mean,max} of the tree class from a v2 parcel's
+// height_distribution; nil when the parcel carries no trees.
+func treeHeights(pd map[string]any) map[string]any {
+	hd, _ := pd["height_distribution"].(map[string]any)
+	tr, _ := hd["tree"].(map[string]any)
+	if tr == nil {
+		return nil
+	}
+	mean, _ := tr["mean"].(float64)
+	max, _ := tr["max"].(float64)
+	if mean <= 0 {
+		return nil
+	}
+	return map[string]any{"mean": math.Round(mean*10) / 10, "max": math.Round(max*10) / 10}
 }
 
 // handleHarvestParcel: harvest an owned Acker during its ripe window (see
@@ -2609,6 +2656,8 @@ func (s *Server) backfillChallenges(ctx context.Context, sessionID, playerID str
 	}{
 		{"species", "Artenforscher", "Entdecke eine seltene Art der Roten Liste", 250, 150},
 		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
+		{"timber", "Holzknecht", "Schlägere 2 Waldparzellen", 250, 100},
+		{"restore", "Waldhüter", "Stelle einen Wald außer Nutzung (Naturwald)", 350, 200},
 	}
 	for _, c := range add {
 		var have int64
@@ -2635,6 +2684,8 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 		{"explore", "Landvermesser", "Kaufe 5 Parzellen", 300, 150},
 		{"restore", "Waldmeister", "Wandle 3 Parzellen in Wald oder Naturschutz um", 500, 250},
 		{"harvest", "Erntedank", "Ernte 3 reife Äcker", 300, 150},
+		{"timber", "Holzknecht", "Schlägere 2 Waldparzellen", 250, 100},
+		{"restore", "Waldhüter", "Stelle einen Wald außer Nutzung (Naturwald)", 350, 200},
 		// Only achievable in lidar-enhanced KGs; the client hides it until one is loaded.
 		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
 	}
@@ -3059,6 +3110,9 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 					"dom_terrain":       correctedDomTerrain(pd),
 					"forested_fraction": pd["forested_fraction"],
 					"ndsm_max_m":        pd["ndsm_max_m"],
+					// Tree canopy height stats (height_distribution.tree) — feeds the
+					// timber estimate (timber.go) and the wild-forest age classes.
+					"tree_h": treeHeights(pd),
 					// Compact land-cover composition vector from area_summary:
 					// {type: fraction} rounded to 2 decimals, tiny slivers dropped.
 					// This 1m-resolution "what is actually ON the parcel" mix is the
@@ -4221,7 +4275,7 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 
 // questProgress returns the player's counters relevant to the built-in quests.
 type questCounters struct {
-	claims, converted, treasures, species, tallTrees, harvests int64
+	claims, converted, treasures, species, tallTrees, harvests, timber, wildforest int64
 }
 
 func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) (q questCounters) {
@@ -4231,6 +4285,10 @@ func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) 
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=?", sessionID, playerID).Scan(&q.treasures)
 	s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(harvests),0) FROM parcel_claims WHERE session_id=? AND player_id=?", sessionID, playerID).Scan(&q.harvests)
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=? AND treasure_type IN ('species','n2k_species')", sessionID, playerID).Scan(&q.species)
+	s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(harvests),0) FROM parcel_claims WHERE session_id=? AND player_id=? AND landuse='56'", sessionID, playerID).Scan(&q.timber)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND converted_to='wildforest'", sessionID, playerID).Scan(&q.wildforest)
+	// Erntedank counts field harvests only
+	q.harvests -= q.timber
 	return
 }
 
@@ -4255,6 +4313,10 @@ func questProgressFor(title string, q questCounters) (int64, int64) {
 		have, goal = q.treasures, 1
 	case "Erntedank":
 		have, goal = q.harvests, 3
+	case "Holzknecht":
+		have, goal = q.timber, 2
+	case "Waldhüter":
+		have, goal = q.wildforest, 1
 	default:
 		return 0, 1
 	}
@@ -4284,6 +4346,10 @@ func questSatisfied(title string, q questCounters) bool {
 		return treasures >= 1
 	case "Erntedank":
 		return q.harvests >= 3
+	case "Holzknecht":
+		return q.timber >= 2
+	case "Waldhüter":
+		return q.wildforest >= 1
 	}
 	return false
 }
