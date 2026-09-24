@@ -173,7 +173,7 @@ var aheadItems = []aheadItem{
 		Spec: "fast=1 skips rings + municipality zonal stats: returns input, plot{forest_share_2000_pct, loss_ha_by_year, loss_total, net_flux_tco2e_ha, gross_emissions, gross_removals}, municipality_codes[] only. Target ≤2 s for ≤5 ha, ≥4 concurrent, cache keyed by geometry hash (24 h). Full mode unchanged.",
 		Why:  "10-60 s single-threaded is unusable in-game; the plot part is a 30 m raster read.",
 		Check: &aheadCheck{Method: "POST", Path: "/api/plot-context?fast=1", Body: fxPoly, Headers: map[string]string{"Content-Type": "application/json"},
-			Status: []int{200}, MaxMs: 4000, Has: []string{"plot"}}},
+			Status: []int{200}, MaxMs: 3000, Has: []string{"plot", "fast"}}},
 	{ID: "HOLZ-4", Prio: "P2", Services: []string{"holz"}, Title: "GET /api/stands?west&south&east&north — Waldkarte stand layer (API-only)",
 		Spec:  "{stands:[{id, type: nadel|laub|misch, conifer_share?, age_class?, crown_cover_pct?, geometry}], as_of, source, ready, truncated}. ≤300 ms; limit 2000; license carried.",
 		Why:   "Replaces our elevation-based species guess → real Holzernte prices and Naturwald rendering.",
