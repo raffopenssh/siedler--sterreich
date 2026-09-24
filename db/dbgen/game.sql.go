@@ -484,7 +484,7 @@ func (q *Queries) GetOfferByID(ctx context.Context, id int64) (ParcelOffer, erro
 }
 
 const getParcelClaim = `-- name: GetParcelClaim :one
-SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez, tall_trees FROM parcel_claims WHERE session_id = ? AND parcel_id = ?
+SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez, tall_trees, harvested_at, harvests FROM parcel_claims WHERE session_id = ? AND parcel_id = ?
 `
 
 type GetParcelClaimParams struct {
@@ -509,6 +509,8 @@ func (q *Queries) GetParcelClaim(ctx context.Context, arg GetParcelClaimParams) 
 		&i.ClaimedAt,
 		&i.Ez,
 		&i.TallTrees,
+		&i.HarvestedAt,
+		&i.Harvests,
 	)
 	return i, err
 }
@@ -835,7 +837,7 @@ func (q *Queries) GetPlayerChallenges(ctx context.Context, arg GetPlayerChalleng
 }
 
 const getPlayerParcels = `-- name: GetPlayerParcels :many
-SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez, tall_trees FROM parcel_claims WHERE session_id = ? AND player_id = ?
+SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez, tall_trees, harvested_at, harvests FROM parcel_claims WHERE session_id = ? AND player_id = ?
 `
 
 type GetPlayerParcelsParams struct {
@@ -866,6 +868,8 @@ func (q *Queries) GetPlayerParcels(ctx context.Context, arg GetPlayerParcelsPara
 			&i.ClaimedAt,
 			&i.Ez,
 			&i.TallTrees,
+			&i.HarvestedAt,
+			&i.Harvests,
 		); err != nil {
 			return nil, err
 		}
@@ -1102,7 +1106,7 @@ func (q *Queries) GetSessionOffers(ctx context.Context, sessionID string) ([]Get
 }
 
 const getSessionParcels = `-- name: GetSessionParcels :many
-SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez, tall_trees FROM parcel_claims WHERE session_id = ?
+SELECT id, session_id, player_id, parcel_id, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez, tall_trees, harvested_at, harvests FROM parcel_claims WHERE session_id = ?
 `
 
 func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]ParcelClaim, error) {
@@ -1128,6 +1132,8 @@ func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]Pa
 			&i.ClaimedAt,
 			&i.Ez,
 			&i.TallTrees,
+			&i.HarvestedAt,
+			&i.Harvests,
 		); err != nil {
 			return nil, err
 		}
@@ -1242,6 +1248,15 @@ func (q *Queries) GetStaleCachedData(ctx context.Context, cacheKey string) (GetS
 	var i GetStaleCachedDataRow
 	err := row.Scan(&i.Data, &i.Etag)
 	return i, err
+}
+
+const harvestParcel = `-- name: HarvestParcel :exec
+UPDATE parcel_claims SET harvested_at = CURRENT_TIMESTAMP, harvests = harvests + 1 WHERE id = ?
+`
+
+func (q *Queries) HarvestParcel(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, harvestParcel, id)
+	return err
 }
 
 const hideChatMessage = `-- name: HideChatMessage :exec

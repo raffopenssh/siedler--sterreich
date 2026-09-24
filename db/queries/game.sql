@@ -240,3 +240,6 @@ DELETE FROM safety_events WHERE created_at < datetime('now', '-180 days');
 
 -- name: DeleteCacheLike :execrows
 DELETE FROM api_cache WHERE cache_key LIKE ?;
+
+-- name: HarvestParcel :exec
+UPDATE parcel_claims SET harvested_at = CURRENT_TIMESTAMP, harvests = harvests + 1 WHERE id = ?;

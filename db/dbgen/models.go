@@ -62,19 +62,21 @@ type Migration struct {
 }
 
 type ParcelClaim struct {
-	ID            int64     `json:"id"`
-	SessionID     string    `json:"session_id"`
-	PlayerID      string    `json:"player_id"`
-	ParcelID      string    `json:"parcel_id"`
-	KgCode        string    `json:"kg_code"`
-	Gnr           string    `json:"gnr"`
-	AreaSqm       float64   `json:"area_sqm"`
-	Landuse       *string   `json:"landuse"`
-	ConvertedTo   *string   `json:"converted_to"`
-	PurchasePrice int64     `json:"purchase_price"`
-	ClaimedAt     time.Time `json:"claimed_at"`
-	Ez            string    `json:"ez"`
-	TallTrees     int64     `json:"tall_trees"`
+	ID            int64      `json:"id"`
+	SessionID     string     `json:"session_id"`
+	PlayerID      string     `json:"player_id"`
+	ParcelID      string     `json:"parcel_id"`
+	KgCode        string     `json:"kg_code"`
+	Gnr           string     `json:"gnr"`
+	AreaSqm       float64    `json:"area_sqm"`
+	Landuse       *string    `json:"landuse"`
+	ConvertedTo   *string    `json:"converted_to"`
+	PurchasePrice int64      `json:"purchase_price"`
+	ClaimedAt     time.Time  `json:"claimed_at"`
+	Ez            string     `json:"ez"`
+	TallTrees     int64      `json:"tall_trees"`
+	HarvestedAt   *time.Time `json:"harvested_at"`
+	Harvests      int64      `json:"harvests"`
 }
 
 type ParcelOffer struct {

@@ -2220,7 +2220,7 @@ function renderPlayerList() {
     return `<div class="stat"><span style="color:${G.pcolors[p.id]}">■</span> ${esc(p.name)}${p.id===G.player.id?' (du)':''}<b>${p.coins}🪙</b></div>`;
   }).join('');
 }
-const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲'};
+const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲',harvest:'🌾'};
 /** Any lidar-enhanced KG among the loaded ones? (giant trees only exist there) */
 function enhancedLoaded() {
   for (const kg of G.kgsLoaded) if (G.enhancedKGs.has(kg)) return true;
@@ -2249,6 +2249,15 @@ function renderQuests() {
 // ---- Quest briefings: what to do, where, and a one-tap action that moves the
 // game along (fly to the nearest treasure, open an owned parcel to convert, …).
 /** Owned, still-unconverted parcels of the player, nearest to camera first. */
+/** O(1) parcel polygon lookup; index rebuilt lazily when G.parcelPolys grows. */
+let _polyIdx = null, _polyIdxN = -1;
+function polyById(id) {
+  if (!_polyIdx || _polyIdxN !== G.parcelPolys.length) {
+    _polyIdx = {}; for (const f of G.parcelPolys) _polyIdx[f.properties.parcel_id] = f;
+    _polyIdxN = G.parcelPolys.length;
+  }
+  return _polyIdx[id] || null;
+}
 function myUnconvertedClaims() {
   return (G.claimed||[]).filter(c => c.player_id === G.player?.id && !c.converted_to)
     .map(c => { const f = G.parcelPolys.find(p => p.properties.parcel_id === c.parcel_id); const ll = f ? featureLonLat(f) : null; return {c, f, ll}; })
@@ -2291,6 +2300,17 @@ function drawQuestPing(ctx) {
 }
 
 /** Build the briefing lines + action for a quest. */
+/** My unconverted crop fields with their stage + position. */
+function myFields() {
+  const out = [];
+  for (const c of G.claimed || []) {
+    if (c.player_id !== G.player?.id || c.converted_to || c.landuse !== '48') continue;
+    const f = polyById(c.parcel_id);
+    if (!f) continue;
+    out.push({c, f, ll: featureLonLat(f), fs: fieldStage(f.properties, c)});
+  }
+  return out;
+}
 function questBriefing(c) {
   const t = c.title, goal = c.goal || 1, have = Math.min(c.progress || 0, goal);
   const rw = `<span class="rw">+${c.reward_coins}🪙 +${c.reward_xp}⚡</span>`;
@@ -2326,6 +2346,22 @@ function questBriefing(c) {
       brief.act = { label: tr('Meine Parzelle öffnen'), run: () => { const o = mine[0]; questPing(o.ll[0], o.ll[1], Math.max(G.cam.zoom, 17.5)); setTimeout(() => showParcelPopup(o.f), 850); } };
     } else {
       L('🌿', tr('So geht’s'), tr('Dafür brauchst du zuerst Land: Kauf eine Parzelle, öffne sie dann noch einmal und wandle sie um.'));
+    }
+  } else if (t === 'Erntedank') {
+    const fields = myFields();
+    const ripe = fields.filter(x => x.fs.stage === 'ripe');
+    const soon = fields.filter(x => x.fs.stage !== 'ripe' && x.fs.stage !== 'meadow').sort((a,b) => a.fs.ripeInS - b.fs.ripeInS)[0];
+    if (ripe.length) {
+      L('🌾', tr('Jetzt!'), tr('Ein Acker von dir ist reif — die 🌾-Marker zeigen ihn. Tipp drauf und ernte, bevor die Bauern es tun.') + (left > 1 ? `\n${tr('Noch')} <b>${left}</b> ${tr('Ernten fehlen.')}` : ''));
+      brief.act = { label: tr('Zum reifen Acker'), run: () => { const o = ripe[0]; questPing(o.ll[0], o.ll[1], Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(o.f), 850); } };
+    } else if (soon) {
+      L('🌱', tr('Geduld'), tr('Äcker reifen alle 40 Minuten, jeder zu seiner Zeit. Dein nächster ist in') + ` <b>${fmtMin(soon.fs.ripeInS)}</b> ` + tr('reif — dann erscheint ein 🌾-Marker.'));
+      brief.act = { label: tr('Zum Acker'), run: () => questPing(soon.ll[0], soon.ll[1], Math.max(G.cam.zoom, 17)) };
+    } else {
+      L('🌾', tr('So geht’s'), tr('Kauf dir einen Acker (Nutzung „Äcker/Wiesen/Weiden“). Goldene Felder sind gerade reif — ein Kauf zur Erntezeit zahlt sich sofort aus.'));
+      const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
+      const f = DEV.parcelsNear(p => !owned.has(p.parcel_id) && isCropField(p) && fieldKind(simpleHash(p.parcel_id)) !== 3 && fieldStage(p, null).stage === 'ripe' && (p.area_sqm||0) > 800, 60)[0];
+      if (f) brief.act = { label: tr('Reifen Acker zeigen'), run: async () => { const ff = DEV.find(f.parcel_id); if (!ff) return; const [lon, lat] = featureLonLat(ff); questPing(lon, lat, Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(ff), 850); } };
     }
   } else if (t === 'Baumriese') {
     if (!G.tallUnlocked) {
@@ -2475,6 +2511,7 @@ function handleEvent(d) {
     case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,''); loadClaimed().then(()=>render()); break;
     case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
+    case 'parcel_harvested': if (d.player !== G.player?.name) toast('🌾 '+d.player+' erntet '+d.coins+'🪙',''); loadClaimed().then(()=>render()); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed':
       if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); Herald.completed(d.title); loadChallenges(); updateStatsFromServer(); }
@@ -2640,6 +2677,7 @@ function render() {
   // ---- Treasures ----
   _treasuresOnScreen = 0;
   for (const t of G.treasures) drawTreasure(ctx, t);
+  drawRipeMarkers(ctx, claimMap);
   drawCollectFX(ctx);
   if (G.n2kVisible) drawN2KOverlay(ctx, true);
 
@@ -4096,8 +4134,13 @@ function drawParcelPoly(ctx, f, claimMap) {
   // Worked-field texture (harvest tracks / furrows / mowing swaths) aligned to
   // the parcel's longest edge — see drawFieldPattern.
   if (G.cam.zoom >= 15 && !isWater && !isBiodiversity && !isForest && (maxX - minX) > 18 && (maxY - minY) > 12 &&
-      (terrain === TERRAIN.farm || extractLuCode('', p) === '48')) {
-    drawFieldPattern(ctx, rings, hash);
+      (terrain === TERRAIN.farm || isCropField(p))) {
+    const fs = fieldStage(p, claim);
+    // stage tint under the texture: fresh soil / young green / golden grain
+    const tint = fs.stage === 'ploughed' ? 'rgba(95,62,28,0.45)' : fs.stage === 'growing' ? 'rgba(90,165,55,0.35)'
+      : fs.stage === 'ripe' ? 'rgba(235,190,60,0.40)' : null;
+    if (tint) { ctx.fillStyle = tint; ctx.fill(); }
+    drawFieldPattern(ctx, rings, hash, fs.stage);
   }
 
   // Enhanced mode: Lambert hillshade from lidar slope + aspect (fixed NW sun),
@@ -4464,7 +4507,8 @@ function drawLanduseSprites(ctx, claimMap) {
     let spriteType = null;
 
     // Determine sprite type from landuse
-    if (luCode === '48') spriteType = 'crops';        // Äcker/Wiesen/Weiden
+    if (claim?.converted_to === 'biodiversity') spriteType = 'wildflower';   // Brache / Naturschutz
+    else if (luCode === '48') spriteType = 'crops';        // Äcker/Wiesen/Weiden
     else if (luCode === '52') spriteType = 'garden';   // Gärten
     else if (luCode === '53') spriteType = 'vineyard'; // Weingärten
     else if (luCode === '54' || luCode === '96') spriteType = 'meadow'; // Alpen, Freizeit
@@ -4481,7 +4525,9 @@ function drawLanduseSprites(ctx, claimMap) {
       // grass), laid out on a slightly staggered lattice so they read as rows
       // instead of random clutter. Lattice spacing in *screen* px so density is
       // constant across zoom; a parcel-stable phase keeps rows from jumping.
-      const kind = fieldKind(hash);                // 0,1 sheaves · 2 haystacks · 3 grass
+      const fs = fieldStage(p, claim);
+      if (fs.stage === 'ploughed' || fs.stage === 'growing' || fs.stage === 'ripe') continue; // texture carries the stage
+      const kind = fs.kind;                        // 0,1 sheaves · 2 haystacks · 3 grass
       const sp = kind === 2 ? 46 : 30;
       const w = sx2 - sx1, h = sy2 - sy1;
       const cols = Math.min(10, Math.max(1, Math.floor(w / sp)));
@@ -4530,16 +4576,70 @@ function drawLanduseSprites(ctx, claimMap) {
 // (kind, zoom bucket) is cached; per parcel we only rotate it along the longest
 // edge (tracks follow the field, not the screen) with a parcel-stable phase.
 // Cost: one clip + one fill per field parcel.
-function fieldKind(hash) { return Math.abs(hash) % 4; }   // 0,1 harvest · 2 ploughed · 3 meadow
+function fieldKind(hash) { return Math.abs(hash) % 4; }   // 0,1,2 crop field (cycle) · 3 meadow (static)
+
+// ---- Field crop cycle (contract shared with srv/fieldcycle.go) ----
+// Every Acker runs ploughed → growing → ripe → stubble on a 40-min real-time
+// cycle, phase-shifted by the parcel hash so neighbours ripen at different
+// times (~¼ of all fields are ripe at any moment). NPC farmers harvest at the
+// end of the ripe window — unless the owner does it first, which is the only
+// thing ever stored (claim.harvested_at). Converted fields lie fallow (Brache).
+const FIELD_CYCLE_S = 40 * 60, FIELD_GROW_AT = 0.30, FIELD_RIPE_AT = 0.60, FIELD_STUBBLE_AT = 0.85;
+/** Avalanche mix so sequential GNRs don't share a phase (mirrors hashMix in fieldcycle.go). */
+function hashMix(h) { h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0; return (h ^ (h >>> 16)) >>> 0; }
+function isCropField(p) { return extractLuCode('', p) === '48'; }
+function harvestYield(areaSqm) { return Math.max(5, Math.min(300, Math.round(areaSqm * 0.012))); }
+/** @returns {{kind,stage,t,ripeInS,harvested,mine}} stage ∈ fallow|meadow|ploughed|growing|ripe|stubble */
+function fieldStage(p, claim, now = Date.now()) {
+  const hash = simpleHash(p.parcel_id || '');
+  const kind = fieldKind(hash);
+  const mine = !!claim && claim.player_id === G.player?.id;
+  if (claim?.converted_to) return {kind, stage: 'fallow', t: 0, ripeInS: 0, harvested: false, mine};
+  if (kind === 3) return {kind, stage: 'meadow', t: 0, ripeInS: 0, harvested: false, mine};
+  const sec = now / 1000;
+  const t = ((sec + (hashMix(hash) % FIELD_CYCLE_S)) % FIELD_CYCLE_S) / FIELD_CYCLE_S;
+  const cycleStart = sec - t * FIELD_CYCLE_S;
+  const harvested = !!claim?.harvested_at && Date.parse(claim.harvested_at) / 1000 >= cycleStart;
+  let stage = t < FIELD_GROW_AT ? 'ploughed' : t < FIELD_RIPE_AT ? 'growing' : t < FIELD_STUBBLE_AT ? 'ripe' : 'stubble';
+  if (harvested) stage = 'stubble';
+  const ripeT = (t >= FIELD_STUBBLE_AT || harvested ? 1 : 0) + FIELD_RIPE_AT;
+  const ripeInS = stage === 'ripe' ? 0 : Math.round((ripeT - t) * FIELD_CYCLE_S);
+  const ripeLeftS = stage === 'ripe' ? Math.round((FIELD_STUBBLE_AT - t) * FIELD_CYCLE_S) : 0;
+  return {kind, stage, t, ripeInS, ripeLeftS, harvested, mine};
+}
+function fmtMin(sec) { const m = Math.max(1, Math.ceil(sec / 60)); return m + ' min'; }
+function fieldStageLabel(fs) {
+  switch (fs.stage) {
+    case 'fallow':   return '🌼 ' + tr('Brache');
+    case 'meadow':   return '🐄 ' + tr('Weide');
+    case 'ploughed': return '🚜 ' + tr('Gepflügt') + ' · ' + tr('reif in') + ' ' + fmtMin(fs.ripeInS);
+    case 'growing':  return '🌱 ' + tr('Wächst') + ' · ' + tr('reif in') + ' ' + fmtMin(fs.ripeInS);
+    case 'ripe':     return '🌾 ' + tr('Reif!') + ' · ' + tr('noch') + ' ' + fmtMin(fs.ripeLeftS);
+    case 'stubble':  return (fs.harvested ? '✅ ' + tr('Geerntet') : '🌾 ' + tr('Abgeerntet')) + ' · ' + tr('nächste Ernte in') + ' ' + fmtMin(fs.ripeInS);
+  }
+  return '';
+}
 const _fieldPatCache = {};
 function fieldPattern(ctx, kind, k) {
   const key = kind + ':' + k;
   if (_fieldPatCache[key]) return _fieldPatCache[key];
-  const P = kind === 2 ? 8 : kind === 3 ? 20 : 16;          // period in px at k=1
+  const P = kind === 2 ? 8 : kind === 3 ? 20 : kind === 4 ? 10 : kind === 5 ? 6 : 16;   // period in px at k=1
   const c = document.createElement('canvas'); c.width = Math.round(P * k); c.height = Math.round(P * k);
   const g = c.getContext('2d');
   g.scale(k, k);
-  if (kind === 3) {
+  if (kind === 4) {
+    // growing: dark soil rows with a line of young green shoots
+    g.fillStyle = 'rgba(70,45,15,0.30)'; g.fillRect(0, 0, 4, P);
+    g.fillStyle = 'rgba(120,200,70,0.70)'; g.fillRect(4, 0, 2, P);
+    g.fillStyle = 'rgba(60,140,40,0.55)'; g.fillRect(6, 0, 1, P);
+    g.fillStyle = 'rgba(190,240,120,0.55)'; for (let y = 1; y < P; y += 3) g.fillRect(4, y, 1, 1);
+  } else if (kind === 5) {
+    // ripe standing grain: dense golden stalks, umber gaps, pale ear tips
+    g.fillStyle = 'rgba(232,190,70,0.55)'; g.fillRect(0, 0, P, P);
+    g.fillStyle = 'rgba(120,85,25,0.45)'; g.fillRect(0, 0, 1, P); g.fillRect(3, 0, 1, P);
+    g.fillStyle = 'rgba(255,235,150,0.75)'; g.fillRect(1, 0, 1, P); g.fillRect(4, 0, 1, P);
+    g.fillStyle = 'rgba(255,250,200,0.8)'; for (let y = 0; y < P; y += 2) g.fillRect(4 + (y % 4 ? 0 : -3), y, 1, 1);
+  } else if (kind === 3) {
     // mown meadow: light / dark swath, thin darker seam
     g.fillStyle = 'rgba(255,255,210,0.16)'; g.fillRect(0, 0, P / 2, P);
     g.fillStyle = 'rgba(0,30,0,0.17)'; g.fillRect(P / 2, 0, P / 2, P);
@@ -4562,7 +4662,7 @@ function fieldPattern(ctx, kind, k) {
   _fieldPatCache[key] = {pat, P: P * k};
   return _fieldPatCache[key];
 }
-function drawFieldPattern(ctx, rings, hash) {
+function drawFieldPattern(ctx, rings, hash, stage) {
   const ring = rings[0];
   if (!ring || ring.length < 3) return;
   // longest edge → track direction
@@ -4575,7 +4675,8 @@ function drawFieldPattern(ctx, rings, hash) {
   const ang = Math.atan2(ring[bi + 1][1] - ring[bi][1], ring[bi + 1][0] - ring[bi][0]);
   const z = G.cam.zoom;
   const k = z >= 18 ? 2 : z >= 16.5 ? 1.5 : z >= 15.5 ? 1 : 0.7;
-  const {pat, P} = fieldPattern(ctx, fieldKind(hash), k);
+  const pk = stage === 'meadow' ? 3 : stage === 'ploughed' ? 2 : stage === 'growing' ? 4 : stage === 'ripe' ? 5 : 0;
+  const {pat, P} = fieldPattern(ctx, pk, k);
   // Tracks run parallel to the edge: the pattern's stripes are vertical, so
   // rotate by ang (stripe axis = y → edge direction) with a stable phase.
   const m = new DOMMatrix().translate(ring[bi][0], ring[bi][1]).rotate(ang * 180 / Math.PI + 90).translate((Math.abs(hash) % 97) / 97 * P, 0);
@@ -5246,6 +5347,54 @@ function treasureScale() {
 }
 function treasureHitRadius() { return Math.max(isCoarsePointer() ? 26 : 22, 15 * treasureScale()); }
 let _treasuresOnScreen = 0;
+let _ripeOnScreen = 0;
+
+// "Ernten!" markers over the player's own ripe fields: a bobbing sheaf on a
+// dithered gold ring (same visual grammar as treasures) with a pixel arrow.
+// Only own, unharvested, ripe crop fields — NPC fields work themselves.
+function drawRipeMarkers(ctx, claimMap) {
+  _ripeOnScreen = 0;
+  if (!G.player || G.cam.zoom < 14) return;
+  const now = Date.now();
+  for (const c of G.claimed) {
+    if (c.player_id !== G.player.id || c.converted_to || c.landuse !== '48') continue;
+    const f = polyById(c.parcel_id);
+    const fs = fieldStage({parcel_id: c.parcel_id, landuse_summary: '48'}, c, now);
+    if (fs.stage !== 'ripe') continue;
+    const ll = f ? featureLonLat(f) : null;
+    if (!ll) continue;
+    const [x, y] = toScreen(ll[0], ll[1]);
+    if (x < -40 || x > gc.width + 40 || y < -40 || y > gc.height + 40) continue;
+    _ripeOnScreen++;
+    const s = Math.min(1.8, treasureScale());
+    const bob = Math.sin(now / 600 + simpleHash(c.parcel_id) % 7) * 2.5 * s;
+    ctx.save();
+    // dithered ground ring
+    const R = 13 * s;
+    ctx.fillStyle = 'rgba(255,210,74,0.85)';
+    for (let a = 0; a < 40; a++) {
+      if (a % 2) continue;
+      const ang = a / 40 * Math.PI * 2;
+      ctx.fillRect(Math.round(x + Math.cos(ang) * R) - 1, Math.round(y + Math.sin(ang) * R * 0.5) - 1, 2, 2);
+    }
+    ctx.save(); ctx.translate(0, bob - 4 * s); ctx.scale(s, s); ctx.translate(x / s, y / s);
+    drawCropSprite(ctx, 0, 0, 'sheaf', simpleHash(c.parcel_id));
+    ctx.restore();
+    // bouncing pixel arrow
+    const ay = y - 24 * s + bob * 1.4;
+    ctx.fillStyle = '#ffd24a';
+    ctx.fillRect(Math.round(x) - 1, Math.round(ay) - 6, 2, 5);
+    ctx.fillRect(Math.round(x) - 3, Math.round(ay) - 2, 6, 2);
+    ctx.fillRect(Math.round(x) - 1, Math.round(ay), 2, 2);
+    if (G.cam.zoom >= 15.5) {
+      ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      const label = tr('Ernten!');
+      ctx.fillStyle = '#000'; ctx.fillText(label, Math.round(x) + 1, Math.round(ay) - 8);
+      ctx.fillStyle = '#ffd24a'; ctx.fillText(label, Math.round(x), Math.round(ay) - 9);
+    }
+    ctx.restore();
+  }
+}
 function treasurePhase(t) { return ((t.id || 0) * 0.73) % (Math.PI * 2); }
 
 function drawTreasure(ctx, t) {
@@ -6830,6 +6979,11 @@ function showParcelPopup(f, tappedFp) {
   }
   document.getElementById('pp-density').textContent = densityLabel;
   document.getElementById('pp-owner').textContent = owner ? owner.name : 'Frei';
+  const fieldEl = document.getElementById('pp-field'), fieldL = document.getElementById('pp-field-l');
+  if (isCropField(p)) {
+    fieldEl.style.display = fieldL.style.display = '';
+    fieldEl.textContent = fieldStageLabel(fieldStage(p, claim));
+  } else { fieldEl.style.display = fieldL.style.display = 'none'; }
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
   renderBuildingRows(tappedFp);
@@ -6841,9 +6995,14 @@ function showParcelPopup(f, tappedFp) {
   if (!claim) {
     act.innerHTML = `<button class="btn btn-primary btn-small" onclick="doClaim()">🏴 Kaufen (${price}🪙)</button>`;
   } else if (claim.player_id === G.player.id && !claim.converted_to) {
-    // My parcel — show convert/sell + any incoming offers
-    let html = `
-      <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')">🌿 Naturschutz</button>
+    // My parcel — show harvest/convert/sell + any incoming offers
+    let html = '';
+    if (isCropField(p)) {
+      const fs = fieldStage(p, claim);
+      if (fs.stage === 'ripe') html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🌾 Ernten (+${harvestYield(area)}🪙)</button>`;
+    }
+    html += `
+      <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')">🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')}</button>
       <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>
       <button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
     // Show incoming offers for this parcel
@@ -6862,7 +7021,7 @@ function showParcelPopup(f, tappedFp) {
     }
     act.innerHTML = html;
   } else if (claim.player_id === G.player.id) {
-    act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${claim.converted_to}</span>`;
+    act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${claim.converted_to === 'biodiversity' && isCropField(p) ? tr('Naturschutz') + ' · ' + tr('Brache') : claim.converted_to}</span>`;
   } else {
     // Someone else's parcel — offer to buy
     const myOffer = (G.offers||[]).find(o => o.parcel_id === pid && o.buyer_id === G.player.id && o.status === 'pending');
@@ -7626,6 +7785,19 @@ window.doClaim = async function() {
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
   Herald.hint('first_claim');
+  if (isCropField(p) && fieldKind(simpleHash(p.parcel_id)) !== 3) Herald.hint('first_field');
+};
+
+window.doHarvest = async function() {
+  if (!G.sel) return;
+  const p = G.sel.properties;
+  const res = await POST('/api/harvest-parcel', {session_id:G.session.id, player_id:G.player.id, parcel_id:p.parcel_id});
+  if (res.error) { toast(res.error,'err'); return; }
+  const [lon, lat] = featureLonLat(G.sel);
+  spawnCollectFX({lon, lat}, '+' + res.coins + ' 🪙', TREASURE_RARITY.coins);
+  toast('🌾 ' + tr('Geerntet') + ': +' + res.coins + '🪙 +' + res.xp + '⚡','ok');
+  G.player = res.player; updateStats();
+  await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
 };
 
 window.doConvert = async function(to) {
@@ -7854,7 +8026,7 @@ function resetPopupPosition(id) {
 (function treasureAnimLoop() {
   requestAnimationFrame(treasureAnimLoop);
   if (!document.getElementById('screen-game').classList.contains('active')) return;
-  if (!(_treasuresOnScreen > 0 || G.fx.length)) return;
+  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length)) return;
   const now = performance.now();
   const step = isCoarsePointer() ? 50 : 40;
   if (now - (treasureAnimLoop._last || 0) < step) return;
@@ -7862,6 +8034,16 @@ function resetPopupPosition(id) {
   treasureAnimLoop._last = now;
   render();
 })();
+// Field-cycle countdown in the open parcel popup + button appearing when ripe
+setInterval(() => {
+  if (!G.sel || !document.getElementById('parcel-popup').classList.contains('open')) return;
+  const p = G.sel.properties; if (!isCropField(p)) return;
+  const claim = G.claimed.find(c => c.parcel_id === p.parcel_id);
+  const fs = fieldStage(p, claim);
+  const el = document.getElementById('pp-field'); if (el) el.textContent = fieldStageLabel(fs);
+  const hasBtn = !!document.querySelector('#pp-actions [onclick="doHarvest()"]');
+  if (fs.mine && !claim.converted_to && (fs.stage === 'ripe') !== hasBtn) showParcelPopup(G.sel, G.selFp);
+}, 5000);
 // Sparkle animation for treasures, top-tree sway + GPS pulse
 setInterval(() => {
   if (document.getElementById('screen-game').classList.contains('active') &&
@@ -8195,6 +8377,7 @@ const Herald = {
     if (this.mode === 'intro' && this.el.classList.contains('show')) return; // don't interrupt the intro
     const H = {
       first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Mach es noch einmal auf und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das bringt XP und zählt zum 30 %-Ziel.') },
+      first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 40 Minuten — jeder zu seiner Zeit. Ist deiner golden, zeigt ein 🌾-Marker: ernten bringt Münzen. Wartest du zu lang, ernten die Bauern. Oder lass ihn als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen — das zählt zum Naturschutz.') },
       trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen dir, wo sie stehen. Kauf dir eine Parzelle mit so einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
       enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Da gibt’s echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz, dann siehst du sie.') },
     };

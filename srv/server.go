@@ -205,6 +205,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/claim-parcel", s.handleClaimParcel)
 	mux.HandleFunc("POST /api/claim-ez", s.handleClaimEZ)
 	mux.HandleFunc("POST /api/convert-parcel", s.handleConvertParcel)
+	mux.HandleFunc("POST /api/harvest-parcel", s.handleHarvestParcel)
 	mux.HandleFunc("POST /api/claim-treasure", s.handleClaimTreasure)
 	mux.HandleFunc("POST /api/complete-challenge", s.handleCompleteChallenge)
 	mux.HandleFunc("POST /api/sell-parcel", s.handleSellParcel)
@@ -1110,6 +1111,71 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 	})
 
 	jsonResp(w, map[string]any{"success": true, "xp_reward": xpReward, "player": player, "quests": quests})
+}
+
+// handleHarvestParcel: harvest an owned Acker during its ripe window (see
+// fieldcycle.go). Idempotent per cycle — a second harvest in the same cycle
+// is rejected, and once the ripe window closes the NPC farmers took it.
+func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"session_id"`
+		PlayerID  string `json:"player_id"`
+		ParcelID  string `json:"parcel_id"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		jsonErr(w, "invalid request", 400)
+		return
+	}
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	claim, err := s.Q.GetParcelClaim(r.Context(), dbgen.GetParcelClaimParams{SessionID: req.SessionID, ParcelID: req.ParcelID})
+	if err != nil {
+		jsonErr(w, "Parcel not found", 404)
+		return
+	}
+	if claim.PlayerID != req.PlayerID {
+		jsonErr(w, "Not your parcel", 403)
+		return
+	}
+	if claim.ConvertedTo != nil && *claim.ConvertedTo != "" {
+		jsonErr(w, "Diese Parzelle wird nicht mehr bewirtschaftet", 400)
+		return
+	}
+	if claim.Landuse == nil || *claim.Landuse != "48" {
+		jsonErr(w, "Das ist kein Acker", 400)
+		return
+	}
+	now := time.Now()
+	fp := fieldPhaseAt(req.ParcelID, now)
+	if fp.Stage == "meadow" {
+		jsonErr(w, "Eine Weide erntet man nicht — die Kühe machen das", 400)
+		return
+	}
+	if fp.Stage != "ripe" {
+		jsonErr(w, "Das Feld ist noch nicht reif", 409)
+		return
+	}
+	if claim.HarvestedAt != nil && !claim.HarvestedAt.Before(fp.CycleStart) {
+		jsonErr(w, "Schon geerntet — das Feld muss erst wieder wachsen", 409)
+		return
+	}
+	coins := harvestYield(claim.AreaSqm)
+	xp := 10 + coins/5
+	ctx := r.Context()
+	s.Q.HarvestParcel(ctx, claim.ID)
+	s.Q.UpdatePlayerCoins(ctx, dbgen.UpdatePlayerCoinsParams{Coins: coins, ID: req.PlayerID})
+	s.Q.UpdatePlayerXP(ctx, dbgen.UpdatePlayerXPParams{Xp: xp, ID: req.PlayerID})
+	quests := s.autoCompleteChallenges(ctx, req.SessionID, req.PlayerID)
+	player, _ := s.Q.GetPlayerByID(ctx, req.PlayerID)
+	s.broadcast(req.SessionID, map[string]any{
+		"type": "parcel_harvested", "parcel_id": req.ParcelID, "player": player.Name, "coins": coins,
+	})
+	jsonResp(w, map[string]any{
+		"success": true, "coins": coins, "xp": xp, "player": player, "quests": quests,
+		"harvested_at": now, "next_ripe_at": fp.RipeAt.Add(fieldCycle),
+	})
 }
 
 func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
@@ -2568,6 +2634,7 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 		{"species", "Artenforscher", "Entdecke eine seltene Art der Roten Liste", 250, 150},
 		{"explore", "Landvermesser", "Kaufe 5 Parzellen", 300, 150},
 		{"restore", "Waldmeister", "Wandle 3 Parzellen in Wald oder Naturschutz um", 500, 250},
+		{"harvest", "Erntedank", "Ernte 3 reife Äcker", 300, 150},
 		// Only achievable in lidar-enhanced KGs; the client hides it until one is loaded.
 		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
 	}
@@ -4154,7 +4221,7 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 
 // questProgress returns the player's counters relevant to the built-in quests.
 type questCounters struct {
-	claims, converted, treasures, species, tallTrees int64
+	claims, converted, treasures, species, tallTrees, harvests int64
 }
 
 func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) (q questCounters) {
@@ -4162,6 +4229,7 @@ func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) 
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND converted_to IS NOT NULL AND converted_to<>''", sessionID, playerID).Scan(&q.converted)
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND tall_trees>0", sessionID, playerID).Scan(&q.tallTrees)
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=?", sessionID, playerID).Scan(&q.treasures)
+	s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(harvests),0) FROM parcel_claims WHERE session_id=? AND player_id=?", sessionID, playerID).Scan(&q.harvests)
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=? AND treasure_type IN ('species','n2k_species')", sessionID, playerID).Scan(&q.species)
 	return
 }
@@ -4185,6 +4253,8 @@ func questProgressFor(title string, q questCounters) (int64, int64) {
 		have, goal = q.converted, 3
 	case "Schatzsucher":
 		have, goal = q.treasures, 1
+	case "Erntedank":
+		have, goal = q.harvests, 3
 	default:
 		return 0, 1
 	}
@@ -4212,6 +4282,8 @@ func questSatisfied(title string, q questCounters) bool {
 		return converted >= 3
 	case "Schatzsucher":
 		return treasures >= 1
+	case "Erntedank":
+		return q.harvests >= 3
 	}
 	return false
 }
