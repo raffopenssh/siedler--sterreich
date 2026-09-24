@@ -2613,7 +2613,6 @@ function drawBaseLayers(ctx, W, H, claimMap) {
   drawOSMLines(ctx, 'water');
 
   // ---- Draw parcel polygons (from export/geojson KG data) ----
-  G._biodivDrawn = false;
   if (G.parcelPolys.length > 0) {
     for (const f of G.parcelPolys) {
       drawParcelPoly(ctx, f, claimMap);
@@ -2654,8 +2653,7 @@ function render() {
   // ---- Static base layer (cached) ----
   const sig = baseSignature(W, H);
   const now = performance.now();
-  // Biodiversity parcels carry subtle butterfly/sparkle animation → refresh faster.
-  const maxAge = G._biodivDrawn ? 250 : 1000;
+  const maxAge = 1000;
   if (!_base || _baseSig !== sig || now - _baseAt > maxAge) {
     if (!_base || _base.width !== W || _base.height !== H) {
       _base = document.createElement('canvas'); _base.width = W; _base.height = H;
@@ -2664,6 +2662,9 @@ function render() {
     _baseSig = sig; _baseAt = now;
   }
   ctx.drawImage(_base, 0, 0);
+
+  // ---- Living nature reserves (waving grass, herbs, fauna) ----
+  drawNatureReserves(ctx, claimMap);
 
   // ---- Tallest-tree + landmark markers (enhanced mode) ----
   drawTopLandmarks(ctx);
@@ -4180,12 +4181,12 @@ function drawParcelPoly(ctx, f, claimMap) {
     }
   }
 
-  // Biodiversity: soft green glow overlay
+  // Biodiversity: soft green glow + wild-meadow ground mottling (sprites live in
+  // the animated overlay, see drawNatureReserves)
   if (isBiodiversity) {
-    G._biodivDrawn = true;
-    const pulse = 0.12 + Math.sin(Date.now() / 2000 + Math.abs(hash) * 0.1) * 0.04;
-    ctx.fillStyle = `rgba(60,200,80,${pulse})`;
+    ctx.fillStyle = 'rgba(60,200,80,0.12)';
     ctx.fill();
+    if (G.cam.zoom >= 15 && (maxX - minX) > 18 && (maxY - minY) > 12) drawFieldPattern(ctx, rings, hash, 'wild');
   }
 
   // Border - thin dark line like terrain boundaries in Settlers
@@ -4213,37 +4214,7 @@ function drawParcelPoly(ctx, f, claimMap) {
   ctx.lineWidth = claim ? 2 : 0.5;
   ctx.stroke();
 
-  // Biodiversity: extra wildflower/butterfly sprites and sparkle particles
-  if (isBiodiversity && (maxX - minX) > 6 && (maxY - minY) > 6) {
-    const zoom = G.cam.zoom;
-    const absHash = Math.abs(hash);
-    // Animated sparkle particles (nature magic / healing) — visible at any zoom
-    const sparkCount = Math.min(5, Math.max(2, Math.floor((maxX-minX)*(maxY-minY) / 800)));
-    for (let i = 0; i < sparkCount; i++) {
-      const phase = (Date.now() / 1500 + absHash * 0.3 + i * 1.7) % 1.0; // 0..1 cycle
-      const t = ((absHash + i * 8831) % 10000) / 10000;
-      const sx = minX + (maxX - minX) * (0.15 + t * 0.7);
-      const baseY = maxY - (maxY - minY) * 0.15;
-      const sy = baseY - phase * (maxY - minY) * 0.8;
-      const sparkAlpha = phase < 0.2 ? phase / 0.2 : phase > 0.8 ? (1 - phase) / 0.2 : 1.0;
-      const sparkSize = 1.0 + Math.sin(Date.now() / 300 + i) * 0.4;
-      ctx.fillStyle = `rgba(200,255,180,${(sparkAlpha * 0.7).toFixed(2)})`;
-      ctx.beginPath();
-      ctx.arc(sx + Math.sin(Date.now() / 700 + i * 2) * 2, sy, sparkSize, 0, Math.PI*2);
-      ctx.fill();
-      // Sparkle cross
-      ctx.strokeStyle = `rgba(220,255,200,${(sparkAlpha * 0.5).toFixed(2)})`;
-      ctx.lineWidth = 0.4;
-      ctx.beginPath();
-      ctx.moveTo(sx - sparkSize*1.5, sy);
-      ctx.lineTo(sx + sparkSize*1.5, sy);
-      ctx.moveTo(sx, sy - sparkSize*1.5);
-      ctx.lineTo(sx, sy + sparkSize*1.5);
-      ctx.stroke();
-    }
-  }
-
-  // Draw building sprites on parcels with building landuse (only if no real footprints loaded)
+    // Draw building sprites on parcels with building landuse (only if no real footprints loaded)
   const parsed = parseLanduseSummary(p.landuse_summary);
   if (G.buildingFootprints.length === 0 && parsed.buildingCount > 0 && (maxX - minX) > 8 && (maxY - minY) > 8) {
     const pxArea = (maxX - minX) * (maxY - minY);
@@ -4482,7 +4453,7 @@ function drawLanduseSprites(ctx, claimMap) {
     else if (claim?.converted_to === 'biodiversity') spriteType = 'wildflower';
     else continue;
 
-    if (spriteType === 'wildflower') { drawNatureParcel(ctx, p, b, coords, sx1, sy1, sx2, sy2, hash); continue; }
+    if (spriteType === 'wildflower') continue;   // living overlay: drawNatureReserves()
     if (spriteType === 'crops') {
       // Settlers-style fields: one motif per parcel (wheat sheaves / haystacks /
       // grass), laid out on a slightly staggered lattice so they read as rows
@@ -4587,11 +4558,25 @@ const _fieldPatCache = {};
 function fieldPattern(ctx, kind, k) {
   const key = kind + ':' + k;
   if (_fieldPatCache[key]) return _fieldPatCache[key];
-  const P = kind === 2 ? 8 : kind === 3 ? 20 : kind === 4 ? 10 : kind === 5 ? 6 : 16;   // period in px at k=1
+  const P = kind === 2 ? 8 : kind === 3 ? 20 : kind === 4 ? 10 : kind === 5 ? 6 : kind === 6 ? 48 : 16;   // period in px at k=1
   const c = document.createElement('canvas'); c.width = Math.round(P * k); c.height = Math.round(P * k);
   const g = c.getContext('2d');
   g.scale(k, k);
-  if (kind === 4) {
+  if (kind === 6) {
+    // wild meadow: irregular tussock blotches (darker, taller grass), sun-bleached
+    // patches, bare-soil specks — no rows, nothing straight
+    let h = 0x2545f491;
+    const rnd = () => { h = hashMix(h + 0x9e3779b9); return (h & 0xffff) / 0xffff; };
+    for (let i = 0; i < 14; i++) {
+      const dark = rnd() < 0.6;
+      g.fillStyle = dark ? `rgba(10,50,10,${0.07 + rnd() * 0.09})` : `rgba(230,220,140,${0.06 + rnd() * 0.06})`;
+      const cx = rnd() * P, cy = rnd() * P, rx = 3 + rnd() * 9, ry = 2 + rnd() * 6;
+      for (const [ox, oy] of [[0, 0], [P, 0], [-P, 0], [0, P], [0, -P]]) {   // wrap so the tile tiles seamlessly
+        g.beginPath(); g.ellipse(cx + ox, cy + oy, rx, ry, rnd() * Math.PI, 0, Math.PI * 2); g.fill();
+      }
+    }
+    for (let i = 0; i < 26; i++) { g.fillStyle = rnd() < 0.5 ? 'rgba(90,60,20,0.35)' : 'rgba(200,240,150,0.35)'; g.fillRect(Math.floor(rnd() * P), Math.floor(rnd() * P), 1, 1); }
+  } else if (kind === 4) {
     // growing: dark soil rows with a line of young green shoots
     g.fillStyle = 'rgba(70,45,15,0.30)'; g.fillRect(0, 0, 4, P);
     g.fillStyle = 'rgba(120,200,70,0.70)'; g.fillRect(4, 0, 2, P);
@@ -4638,8 +4623,9 @@ function drawFieldPattern(ctx, rings, hash, stage) {
   }
   const ang = Math.atan2(ring[bi + 1][1] - ring[bi][1], ring[bi + 1][0] - ring[bi][0]);
   const z = G.cam.zoom;
-  const k = z >= 18 ? 2 : z >= 16.5 ? 1.5 : z >= 15.5 ? 1 : 0.7;
-  const pk = stage === 'meadow' ? 3 : stage === 'ploughed' ? 2 : stage === 'growing' ? 4 : stage === 'ripe' ? 5 : 0;
+  let k = z >= 18 ? 2 : z >= 16.5 ? 1.5 : z >= 15.5 ? 1 : 0.7;
+  if (stage === 'wild') k = Math.min(k, 1);   // tussock blotches stay ~5 m wide, never balloon
+  const pk = stage === 'wild' ? 6 : stage === 'meadow' ? 3 : stage === 'ploughed' ? 2 : stage === 'growing' ? 4 : stage === 'ripe' ? 5 : 0;
   const {pat, P} = fieldPattern(ctx, pk, k);
   // Tracks run parallel to the edge: the pattern's stripes are vertical, so
   // rotate by ang (stripe axis = y → edge direction) with a stable phase.
@@ -5147,47 +5133,356 @@ function drawWildButterfly(ctx, cx, cy, u, seed) {
   px(-2, 3, 5, 1, 'rgba(0,0,0,0.12)');  // ground shadow
 }
 
-function drawNatureParcel(ctx, p, b, coords, sx1, sy1, sx2, sy2, hash) {
-  G._biodivDrawn = true;
-  const u = G.cam.zoom > 17.5 ? 2 : 1;
-  const sp = 24 * u;
-  const w = sx2 - sx1, h = sy2 - sy1;
-  const cols = Math.min(14, Math.max(1, Math.floor(w / sp)));
-  const rows = Math.min(14, Math.max(1, Math.floor(h / sp)));
-  const fA = WILD_FLOWERS[hash % WILD_FLOWERS.length];
-  const fB = WILD_FLOWERS[(hash >>> 3) % WILD_FLOWERS.length];
-  const pts = [];
-  for (let r = 0; r < rows && pts.length < 90; r++) for (let c = 0; c < cols && pts.length < 90; c++) {
-    const m = hashMix(hash + r * 131 + c * 17);
-    const fx = (c + 0.5 + (r % 2) * 0.5 + ((m & 15) / 15 - 0.5) * 0.5) / cols;
-    const fy = (r + 0.5 + (((m >> 4) & 15) / 15 - 0.5) * 0.5) / rows;
-    if (fx > 1 || fy > 1) continue;
-    const lon = b.w + (b.e - b.w) * fx, lat = b.n - (b.n - b.s) * fy;
-    if (!pipRings(lon, lat, coords)) continue;
-    const [sx, sy] = toScreen(lon, lat);
-    pts.push({sx, sy, m});
+// ================= LIVING NATURE RESERVES (Naturschutz / Brache) =================
+// A converted parcel is a *succession meadow*, not a lawn with sprites: the
+// Saum (edge band) grows thorny bramble, hawthorn and young trees; the interior
+// has clumps of tall herbs (thistle, umbellifer, mullein, teasel, nettle),
+// open short-grass patches with molehills and anthills, ponds, dead snags,
+// stone piles, logs, beehives. Everything sways in a travelling wind field,
+// fauna moves (butterflies, bees, dragonflies, swallows, a hare now and then).
+//
+// Architecture: drawn as a separate overlay above the cached base layer (like
+// treasures) so animation never forces a full base redraw. Per parcel we build
+// a *scene* once (geo-space, hash-stable): jittered sampling + clump noise +
+// distance-to-edge → item kind; each item has a priority so density stays
+// constant in screen px across zoom (LOD without flicker). Device gating:
+// natureAnimLevel() 0 = static (prefers-reduced-motion), 1 = light
+// (phones: 15 fps, 60% density, fewer fauna), 2 = full (25 fps); plus a
+// self-tuning quality knob if a frame gets expensive.
+const NATURE = { scenes: new Map(), onScreen: 0, quality: 1, _cost: 0 };
+
+function natureAnimLevel() { const b = giantAnimBudget(); return b === 1 ? 0 : b <= 6 ? 1 : 2; }
+/** Wind field: two travelling gust waves + flutter; -1..1. (x,y screen px, t seconds) */
+function windAt(x, y, t) {
+  return 0.55 * Math.sin(t * 1.1 + x * 0.010 - y * 0.005) + 0.30 * Math.sin(t * 2.3 + x * 0.028 + y * 0.017) + 0.15 * Math.sin(t * 4.3 + x * 0.06);
+}
+/** Smooth value noise 0..1 on a unit lattice. */
+function vnoise(x, y, seed) {
+  const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+  const h = (i, j) => (hashMix(seed + i * 374761393 + j * 668265263) & 0xffff) / 0xffff;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = h(xi, yi) + (h(xi + 1, yi) - h(xi, yi)) * sx, b = h(xi, yi + 1) + (h(xi + 1, yi + 1) - h(xi, yi + 1)) * sx;
+  return a + (b - a) * sy;
+}
+function segDist2(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
+  let t = ((px - ax) * dx + (py - ay) * dy) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const ex = ax + t * dx - px, ey = ay + t * dy - py; return ex * ex + ey * ey;
+}
+// Item kinds. Structural ones surface at low zoom (priority scaled down).
+const NK = { GRASS: 0, FLOWER: 1, THISTLE: 2, UMBEL: 3, MULLEIN: 4, TEASEL: 5, NETTLE: 6, BRAMBLE: 7, SAPLING: 8, FERN: 9,
+  ANTHILL: 10, MOLEHILL: 11, MUSHROOM: 12, BUSH: 13, LOG: 14, STONES: 15, HIVES: 16, POND: 17, SNAG: 18, NESTBOX: 19 };
+const NK_STRUCT = new Set([NK.BRAMBLE, NK.SAPLING, NK.BUSH, NK.LOG, NK.STONES, NK.HIVES, NK.POND, NK.SNAG, NK.NESTBOX, NK.ANTHILL]);
+
+function natureScene(f) {
+  const p = f.properties, id = p.parcel_id;
+  let sc = NATURE.scenes.get(id);
+  if (sc) return sc;
+  if (NATURE.scenes.size > 300) NATURE.scenes.clear();
+  const geom = f.geometry, rings = geomAllRings(geom), b = geoBounds(geom);
+  const lat0 = (b.n + b.s) / 2, mLon = 111320 * Math.cos(lat0 * Math.PI / 180), mLat = 110574;
+  const wM = (b.e - b.w) * mLon, hM = (b.n - b.s) * mLat;
+  const area = p.area_sqm || wM * hM * 0.6;
+  const sp = Math.max(1.5, Math.sqrt(area / 2600));           // ≤ ~2600 candidates
+  const hash = simpleHash(id);
+  const segs = [];
+  for (const r of rings) for (let i = 0; i < r.length - 1; i++) segs.push([(r[i][0] - b.w) * mLon, (r[i][1] - b.s) * mLat, (r[i + 1][0] - b.w) * mLon, (r[i + 1][1] - b.s) * mLat]);
+  const edgeDist = (x, y) => { let d = Infinity; for (const s of segs) { const q = segDist2(x, y, s[0], s[1], s[2], s[3]); if (q < d) d = q; } return Math.sqrt(d); };
+  const items = [];
+  let pondN = 0, snagN = 0, hiveN = 0, pondCand = null;
+  const cols = Math.ceil(wM / sp), rows = Math.ceil(hM / sp);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const m = hashMix(hash + r * 7919 + c * 104729);
+    const x = (c + 0.5 + ((m & 255) / 255 - 0.5) * 0.9) * sp, y = (r + 0.5 + (((m >>> 8) & 255) / 255 - 0.5) * 0.9) * sp;
+    const lon = b.w + x / mLon, lat = b.s + y / mLat;
+    if (!pipRings(lon, lat, rings)) continue;
+    const n = vnoise(x / 9, y / 9, hash);                       // clump noise (9 m features)
+    const rr = (m >>> 16) % 100, pr = ((m >>> 20) & 1023) / 1023, v = (m >>> 26) & 63;
+    const ed = edgeDist(x, y);
+    let k, s2 = 0;
+    if (ed < 3.5) {                                             // Saum: thorny, woody
+      k = rr < 20 ? NK.BRAMBLE : rr < 34 ? NK.SAPLING : rr < 44 ? NK.THISTLE : rr < 52 ? NK.BUSH : NK.GRASS; s2 = 2;
+    } else if (n > 0.62) {                                      // tall-herb clump
+      k = rr < 28 ? NK.FLOWER : rr < 42 ? NK.UMBEL : rr < 52 ? NK.MULLEIN : rr < 60 ? NK.TEASEL : rr < 69 ? NK.THISTLE : rr < 78 ? NK.NETTLE : rr < 84 ? NK.SAPLING : NK.GRASS; s2 = 2;
+    } else if (n < 0.32) {                                      // open, grazed-short
+      k = rr < 56 ? NK.GRASS : rr < 76 ? NK.FLOWER : rr < 81 ? NK.MOLEHILL : rr < 85 ? NK.ANTHILL : rr < 88 ? NK.STONES : rr < 91 ? NK.MUSHROOM : NK.GRASS; s2 = rr >= 91 ? 1 : 0;
+    } else {
+      k = rr < 48 ? NK.GRASS : rr < 68 ? NK.FLOWER : rr < 74 ? NK.THISTLE : rr < 78 ? NK.UMBEL : rr < 82 ? (n > 0.5 ? NK.FERN : NK.NETTLE) : rr < 84 ? NK.LOG : NK.GRASS; s2 = rr >= 84 ? 2 : 1;
+    }
+    // rare landmarks
+    if (rr === 98 && snagN < 2 && ed > 2) { k = NK.SNAG; snagN++; }
+    else if (rr === 97 && hiveN < 1 && ed < 10 && ed > 3) { k = NK.HIVES; hiveN++; }
+    else if (rr === 99 && pondN < 1 && area > 2500 && ed > 7 && n < 0.4) { k = NK.POND; pondN++; }
+    if (k === NK.SAPLING && v % 21 === 0 && ed > 3) k = NK.NESTBOX;
+    if (!pondCand || ed > pondCand.ed) pondCand = { i: items.length, ed };
+    items.push({ lon, lat, k, v, s2, ph: (m & 1023) / 1023 * Math.PI * 2, pr: NK_STRUCT.has(k) ? pr * 0.25 : k === NK.POND ? 0 : pr, ed, n });
   }
-  // Painter's order: top → bottom so taller elements overlap correctly.
-  pts.sort((a, b2) => a.sy - b2.sy);
-  // Structure elements only once the meadow has some room; small parcels stay pure flowers.
-  const structures = pts.length >= 4;
-  for (const q of pts) {
-    const roll = (q.m >>> 8) % 100;
-    if (structures && roll < 7) drawWildBush(ctx, q.sx, q.sy, u, q.m);
-    else if (structures && roll < 11) drawWildLog(ctx, q.sx, q.sy, u, q.m);
-    else if (structures && roll < 14) drawWildStones(ctx, q.sx, q.sy, u, q.m);
-    else if (structures && roll < 17) drawBeehive(ctx, q.sx, q.sy, u, q.m >>> 4);
-    else if (structures && roll < 19) drawWildPond(ctx, q.sx, q.sy, u, q.m >>> 4);
-    else if (structures && roll < 21) drawNestBox(ctx, q.sx, q.sy, u, q.m >>> 4);
-    else if (structures && roll < 24) drawDeadTree(ctx, q.sx, q.sy, u, q.m >>> 4, roll >= 22);
-    else drawWildTuft(ctx, q.sx, q.sy, u, roll < 62 ? fA : fB, q.m >>> 12);
+  if (!pondN && area > 4000 && hash % 3 === 0 && pondCand && pondCand.ed > 7) { const it = items[pondCand.i]; it.k = NK.POND; it.pr = 0; pondN = 1; }
+  items.sort((a, c) => c.lat - a.lat);                          // painter's order (north first)
+  const pond = items.find(it => it.k === NK.POND);
+  const flowers = items.filter(it => it.k === NK.FLOWER || it.k === NK.THISTLE || it.k === NK.UMBEL);
+  const snags = items.filter(it => it.k === NK.SNAG);
+  sc = { items, hash, area, sp, b, mLon, mLat, pond, flowers, snags, wM, hM };
+  NATURE.scenes.set(id, sc);
+  return sc;
+}
+
+// ---- sprites (pixel units × u; w = wind bend at tip in pixel units, may be fractional) ----
+/** Swaying blade: 3 stacked segments, bend grows quadratically toward the tip. */
+function nBlade(px, x, h, w, c, tip) {
+  const h1 = Math.max(1, Math.round(h * 0.4)), h2 = Math.max(1, Math.round(h * 0.3)), h3 = Math.max(1, h - h1 - h2);
+  const o2 = Math.round(w * 0.3), o3 = Math.round(w);
+  px(x, -h1, 1, h1, c); px(x + o2, -h1 - h2, 1, h2, c); px(x + o3, -h, 1, h3, c);
+  if (tip) px(x + o3, -h, 1, 1, tip);
+}
+const N_GRASS = ['#3e8a2c', '#4c9c36', '#5aac42', '#468f30', '#6ab04a'], N_DRY = ['#b8a860', '#c8b870', '#a89850'];
+function nGrass(px, v, s2, w, ph, t) {
+  const g = N_GRASS[v % 5];
+  const blades = s2 === 0 ? 3 : s2 === 1 ? 4 : 6;
+  const base = s2 === 0 ? 3 : s2 === 1 ? 6 : 10;
+  px(-blades, 0, blades * 2 + 1, 1, 'rgba(0,0,0,0.18)');
+  for (let i = 0; i < blades; i++) {
+    const x = (i - (blades - 1) / 2) * 2 + ((v >> i) & 1);
+    const h = base + ((v >> (i % 6)) & 3) + (s2 === 2 ? (i % 2) * 2 : 0);
+    const dry = s2 === 2 && ((v + i) % 3 === 0);
+    // per-blade phase → blades don't move in lockstep
+    const wb = w * (0.7 + h / 16) * (1 + 0.2 * Math.sin(t * 5 + ph + i));
+    nBlade(px, x, h, wb, dry ? N_DRY[i % 3] : g, dry ? '#e8d890' : '#8ccc5a');
   }
-  // Butterflies: one per ~7 tufts, at least one when there is any room.
-  const nB = Math.min(7, Math.max(pts.length ? 1 : 0, Math.floor(pts.length / 7)));
-  for (let i = 0; i < nB; i++) {
-    const q = pts[(hash + i * 5) % pts.length];
-    drawWildButterfly(ctx, q.sx, q.sy, u, ((q.m >>> 16) + i) >>> 0);
+}
+function nFlower(px, v, w, ph, t) {
+  const f = WILD_FLOWERS[v % WILD_FLOWERS.length], g = N_GRASS[(v >> 2) % 5];
+  px(-3, 0, 7, 1, 'rgba(0,0,0,0.18)');
+  for (let i = 0; i < 4; i++) nBlade(px, (i - 1.5) * 2, 4 + ((v >> i) & 3), w * 0.8, g, '#8ccc5a');
+  const n = 2 + (v & 1);
+  for (let i = 0; i < n; i++) {
+    const sx = [-2, 1, 3][(i + (v >> 3)) % 3], h = 8 + ((v >> i) & 3);
+    const wb = w * (1 + 0.15 * Math.sin(t * 4 + ph + i));
+    nBlade(px, sx, h - 3, wb, '#3a7a28');
+    wildBlossom(px, sx + Math.round(wb), -h, f, i === 0);
   }
+}
+function nThistle(px, v, w) {
+  px(-3, 0, 7, 1, 'rgba(0,0,0,0.18)');
+  const h = 10 + (v & 3), o = Math.round(w);
+  nBlade(px, 0, h, w, '#4a8a3a');
+  // spiny grey-green leaves (jagged)
+  for (const [dy, s] of [[-2, 1], [-5, -1], [-3, -1], [-6, 1]]) { px(s * 1, dy, 2, 1, '#6a9a60'); px(s * 3, dy - 1, 1, 1, '#6a9a60'); }
+  px(o - 1, -h - 1, 3, 2, '#5a8a40'); px(o - 1, -h - 1, 1, 1, '#8ab070');           // bulb
+  px(o - 1, -h - 3, 3, 2, '#a050c0'); px(o, -h - 4, 1, 1, '#d090e0'); px(o - 2, -h - 3, 1, 1, '#d090e0'); px(o + 2, -h - 3, 1, 1, '#d090e0');
+}
+function nUmbel(px, v, w) {
+  px(-3, 0, 7, 1, 'rgba(0,0,0,0.18)');
+  const h = 12 + (v & 3), o = Math.round(w);
+  nBlade(px, 0, h, w, '#4c8c34');
+  px(-3, -3, 2, 1, '#4c8c34'); px(2, -5, 2, 1, '#4c8c34'); px(-2, -4, 1, 1, '#4c8c34');     // feathery leaves
+  px(o - 1, -h - 1, 3, 1, '#7aa860'); px(o - 2, -h - 2, 1, 1, '#7aa860'); px(o + 2, -h - 2, 1, 1, '#7aa860');   // rays
+  px(o - 3, -h - 3, 7, 1, '#f4f4ec'); px(o - 2, -h - 4, 5, 1, '#f4f4ec'); px(o - 1, -h - 2, 3, 1, '#e8e8e0');   // umbrella
+  if (v & 1) px(o, -h - 3, 1, 1, '#c04040');                                                  // Wilde Möhre dot
+}
+function nMullein(px, v, w) {
+  px(-4, 0, 9, 1, 'rgba(0,0,0,0.2)');
+  const h = 12 + (v & 3), o = Math.round(w * 0.6);
+  px(-4, -1, 3, 1, '#8ab088'); px(2, -1, 3, 1, '#8ab088'); px(-3, -2, 2, 1, '#a0c0a0'); px(2, -2, 2, 1, '#a0c0a0');   // woolly basal leaves
+  px(0, -h + 6, 1, h - 6, '#6a9a60');
+  px(o, -h, 2, 7, '#e8c020'); px(o, -h, 1, 1, '#f8e060');
+  for (let i = 0; i < 7; i += 2) px(o + (i % 4 ? 1 : 0), -h + i, 1, 1, '#f8e880');
+  px(o - 1, -h + 2, 1, 1, '#c8a010'); px(o + 2, -h + 4, 1, 1, '#c8a010');
+}
+function nTeasel(px, v, w) {
+  px(-2, 0, 5, 1, 'rgba(0,0,0,0.18)');
+  const h = 11 + (v & 3), o = Math.round(w * 0.7);
+  nBlade(px, 0, h, w * 0.7, '#7a8a50');
+  px(-3, -4, 3, 1, '#7a8a50'); px(1, -4, 3, 1, '#7a8a50');            // paired leaves (cup)
+  px(o - 1, -h - 4, 3, 5, '#9a8a68'); px(o, -h - 5, 1, 1, '#9a8a68'); px(o, -h - 1, 1, 1, '#8a7a58');
+  px(o - 1, -h - 2, 3, 1, '#a070b0');                                 // purple flower band
+  px(o - 2, -h - 3, 1, 1, '#c8b890'); px(o + 2, -h - 3, 1, 1, '#c8b890'); px(o - 2, -h - 1, 1, 1, '#c8b890'); px(o + 2, -h - 1, 1, 1, '#c8b890');   // spines
+}
+function nNettle(px, v, w) {
+  px(-3, 0, 7, 1, 'rgba(0,0,0,0.2)');
+  const o = Math.round(w * 0.5), D = '#2e6a24', L = '#3e8a30';
+  px(0, -8, 1, 8, D);
+  for (let i = 0; i < 3; i++) { const dy = -3 - i * 2, s = i % 2 ? 1 : -1; px(s * 1 + (i > 0 ? o : 0), dy, 2, 1, L); px(s * 3 + (i > 0 ? o : 0), dy - 1, 1, 1, L); px(s * 2 + (i > 0 ? o : 0), dy + 1, 1, 1, D); }
+  px(o - 1, -9, 3, 1, L); px(o, -10, 1, 1, L);
+  px(o - 2, -7, 1, 2, '#c8d8b0'); px(o + 2, -6, 1, 2, '#c8d8b0');   // hanging flower strands
+}
+function nBramble(px, v) {
+  px(-6, 0, 13, 1, 'rgba(0,0,0,0.22)');
+  px(-5, -3, 11, 3, '#2a5a20'); px(-6, -1, 13, 1, '#2a5a20'); px(-3, -4, 7, 1, '#2a5a20');
+  px(-4, -3, 2, 1, '#4a8a3a'); px(1, -4, 2, 1, '#4a8a3a'); px(3, -2, 1, 1, '#4a8a3a');
+  // arching canes with thorns
+  const C = '#7a3030';
+  px(-6, -4, 1, 1, C); px(-5, -5, 2, 1, C); px(-3, -6, 3, 1, C); px(0, -5, 2, 1, C); px(2, -4, 1, 1, C);
+  px(3, -5, 1, 1, C); px(4, -6, 2, 1, C); px(6, -5, 1, 1, C); px(7, -3, 1, 2, C);
+  px(-4, -6, 1, 1, '#d0c0a0'); px(1, -6, 1, 1, '#d0c0a0'); px(5, -7, 1, 1, '#d0c0a0');   // thorns
+  const berries = v % 3 === 0 ? '#181020' : '#c02040';                                    // ripe / unripe
+  px(-2, -5, 1, 1, berries); px(-1, -4, 1, 1, berries); px(4, -4, 1, 1, berries); px(-4, -2, 1, 1, berries);
+}
+function nSapling(px, v, w) {
+  const kind = v % 3, o = Math.round(w * 0.6);
+  px(-3, 0, 7, 1, 'rgba(0,0,0,0.22)');
+  if (kind === 0) {           // birch: white trunk, airy light crown
+    px(0, -12, 1, 12, '#e8e8e0'); px(0, -9, 1, 1, '#303030'); px(0, -4, 1, 1, '#303030'); px(0, -7, 1, 1, '#909090');
+    px(o - 2, -15, 5, 3, '#8ccc5a'); px(o - 3, -13, 7, 2, '#8ccc5a'); px(o - 1, -16, 3, 1, '#8ccc5a');
+    px(o - 2, -14, 1, 1, '#b8e880'); px(o + 1, -15, 1, 1, '#b8e880'); px(o - 3, -12, 2, 1, '#5aac42'); px(o + 2, -12, 2, 1, '#5aac42');
+  } else if (kind === 1) {    // oak: brown trunk, dense round crown
+    px(0, -8, 1, 8, '#5a3a1a'); px(-1, -1, 3, 1, '#4a2a10');
+    px(o - 3, -13, 7, 4, '#2e7a2a'); px(o - 2, -14, 5, 1, '#2e7a2a'); px(o - 4, -11, 9, 2, '#2e7a2a'); px(o - 3, -9, 7, 1, '#2e7a2a');
+    px(o - 2, -13, 2, 1, '#5aac42'); px(o + 1, -12, 2, 1, '#5aac42'); px(o - 3, -10, 1, 1, '#1e5a1a'); px(o + 2, -9, 2, 1, '#1e5a1a');
+  } else {                    // young spruce: layered triangle
+    px(0, -3, 1, 3, '#5a3a1a');
+    px(o - 4, -5, 9, 2, '#1e6a2a'); px(o - 3, -7, 7, 2, '#246e30'); px(o - 2, -9, 5, 2, '#2a7a36'); px(o - 1, -11, 3, 2, '#2a7a36'); px(o, -12, 1, 1, '#2a7a36');
+    px(o - 4, -5, 2, 1, '#3a9a48'); px(o - 2, -9, 1, 1, '#3a9a48'); px(o, -12, 1, 1, '#8ccc5a'); px(o + 1, -7, 2, 1, '#164a1e');
+  }
+}
+function nFern(px, v, w) {
+  px(-4, 0, 9, 1, 'rgba(0,0,0,0.18)');
+  const o = Math.round(w * 0.5);
+  for (let i = 0; i < 4; i++) {
+    const s = i % 2 ? 1 : -1, len = 4 + (i >> 1);
+    for (let j = 0; j < len; j++) { px(s * j + (j > 2 ? o : 0), -1 - j - (i >> 1), 1, 1, '#3e8a2c'); if (j % 2) px(s * j + s + (j > 2 ? o : 0), -1 - j - (i >> 1), 1, 1, '#5aac42'); }
+  }
+  px(0, -2, 1, 2, '#2e6a24');
+}
+function nAnthill(px, v, t) {
+  px(-4, 1, 9, 1, 'rgba(0,0,0,0.2)');
+  px(-4, -1, 9, 2, '#7a5a30'); px(-3, -3, 7, 2, '#8a6a38'); px(-1, -4, 3, 1, '#9a7a44');
+  px(-2, -2, 1, 1, '#c0a060'); px(1, -3, 1, 1, '#c0a060'); px(3, -1, 1, 1, '#5a3a18');
+  for (let i = 0; i < 3; i++) { const a = t * 1.5 + i * 2.1 + v; px(Math.round(Math.cos(a) * (3 + i)), Math.round(-1 + Math.sin(a) * 1.5 - i * 0.6), 1, 1, '#2a1a10'); }
+}
+function nMolehill(px) { px(-3, 0, 7, 1, 'rgba(0,0,0,0.2)'); px(-3, -1, 7, 1, '#5a3a20'); px(-2, -2, 5, 1, '#6a4a28'); px(-1, -3, 2, 1, '#7a5a30'); px(1, -1, 1, 1, '#3a2010'); }
+function nMushroom(px, v) {
+  px(-3, 1, 7, 1, 'rgba(0,0,0,0.18)');
+  const cap = v % 3 === 0 ? '#d83020' : v % 3 === 1 ? '#c89040' : '#e8d8b0';
+  px(-2, -1, 1, 2, '#f0e8d0'); px(-3, -2, 3, 1, cap); px(-2, -3, 1, 1, cap);
+  px(2, -1, 1, 2, '#f0e8d0'); px(1, -3, 3, 1, cap); px(2, -4, 1, 1, cap);
+  if (v % 3 === 0) { px(-2, -2, 1, 1, '#f8f0e0'); px(2, -3, 1, 1, '#f8f0e0'); }
+}
+function drawNatureItem(ctx, it, x, y, u, w, t) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  switch (it.k) {
+    case NK.GRASS: nGrass(px, it.v, it.s2, w, it.ph, t); break;
+    case NK.FLOWER: nFlower(px, it.v, w, it.ph, t); break;
+    case NK.THISTLE: nThistle(px, it.v, w); break;
+    case NK.UMBEL: nUmbel(px, it.v, w * 1.2); break;
+    case NK.MULLEIN: nMullein(px, it.v, w); break;
+    case NK.TEASEL: nTeasel(px, it.v, w); break;
+    case NK.NETTLE: nNettle(px, it.v, w); break;
+    case NK.BRAMBLE: nBramble(px, it.v); break;
+    case NK.SAPLING: nSapling(px, it.v, w); break;
+    case NK.FERN: nFern(px, it.v, w); break;
+    case NK.ANTHILL: nAnthill(px, it.v, t); break;
+    case NK.MOLEHILL: nMolehill(px); break;
+    case NK.MUSHROOM: nMushroom(px, it.v); break;
+    case NK.BUSH: drawWildBush(ctx, x, y, u, it.v); break;
+    case NK.LOG: drawWildLog(ctx, x, y, u, it.v); break;
+    case NK.STONES: drawWildStones(ctx, x, y, u, it.v); break;
+    case NK.HIVES: { const n = 2 + (it.v & 1); for (let j = 0; j < n; j++) drawBeehive(ctx, x + (j - (n - 1) / 2) * 13 * u, y + (j % 2) * 2 * u, u, it.v + j * 7); break; }
+    case NK.POND: drawWildPond(ctx, x, y, u, it.v); break;
+    case NK.SNAG: drawDeadTree(ctx, x, y, u, it.v, it.v % 3 === 0); break;
+    case NK.NESTBOX: drawNestBox(ctx, x, y, u, it.v); break;
+  }
+}
+
+// ---- fauna ----
+function nBee(px, bx, by, t, i) {
+  px(bx, by, 1, 1, '#f0c020'); px(bx + 1, by, 1, 1, '#201810'); if (Math.sin(t * 40 + i) > 0) px(bx, by - 1, 2, 1, 'rgba(255,255,255,0.6)');
+}
+function nDragonfly(ctx, x, y, u, t, seed) {
+  const bx = Math.round(x + Math.sin(t * 0.9 + seed) * 12 * u + Math.sin(t * 3.1) * 3 * u), by = Math.round(y - 10 * u + Math.cos(t * 1.4 + seed) * 4 * u);
+  const px = wildPx(ctx, bx, by, u), open = Math.sin(t * 30) > 0;
+  px(-1, 0, 6, 1, '#20a0c0'); px(4, 0, 1, 1, '#106080');
+  if (open) { px(-3, -1, 3, 1, 'rgba(220,240,255,0.7)'); px(-3, 1, 3, 1, 'rgba(220,240,255,0.7)'); px(1, -1, 3, 1, 'rgba(220,240,255,0.7)'); px(1, 1, 3, 1, 'rgba(220,240,255,0.7)'); }
+  else { px(-2, -1, 6, 1, 'rgba(220,240,255,0.5)'); }
+}
+function nSwallow(ctx, x, y, u, t, i) {
+  const px = wildPx(ctx, Math.round(x), Math.round(y), u), flap = Math.sin(t * 9 + i) > 0;
+  px(-1, 0, 3, 1, '#202838'); px(2, 0, 1, 1, '#f0f0f0');
+  if (flap) { px(-4, -1, 3, 1, '#202838'); px(2, -1, 3, 1, '#202838'); } else { px(-4, 1, 3, 1, '#202838'); px(2, 1, 3, 1, '#202838'); }
+  px(-3, 0, 1, 1, '#202838'); px(-4, 1, 1, 1, '#202838');   // forked tail
+}
+function nHare(ctx, x, y, u, t, dir) {
+  const px = wildPx(ctx, Math.round(x), Math.round(y), u), hop = Math.abs(Math.sin(t * 6)), d = dir;
+  const dy = -Math.round(hop * 3);
+  px(-3, 1, 7, 1, 'rgba(0,0,0,0.2)');
+  px(-3, dy - 3, 6, 3, '#9a7a58'); px(-3, dy - 4, 4, 1, '#9a7a58'); px(d * 3, dy - 4, 2, 2, '#9a7a58');   // body, head
+  px(d * 3, dy - 7, 1, 3, '#9a7a58'); px(d * 4, dy - 7, 1, 3, '#b89a78');                                  // ears
+  px(d * 4, dy - 4, 1, 1, '#201810'); px(-d * 3, dy - 3, 1, 1, '#f0f0f0');                                  // eye, tail
+  px(-2, dy, 1, 1, '#7a5a38'); px(1, dy, 1, 1, '#7a5a38');
+}
+function drawNatureFauna(ctx, sc, u, t, lvl, sx1, sy1, sx2, sy2, frac) {
+  const shown = sc.items.length * Math.min(1, frac);
+  if (lvl >= 1) {
+    // butterflies wander between flower clumps
+    const nB = Math.min(lvl === 1 ? 4 : 8, Math.max(1, Math.floor(shown / 70)));
+    for (let i = 0; i < nB && sc.flowers.length; i++) {
+      const a = sc.flowers[(sc.hash + i * 37) % sc.flowers.length];
+      const [x, y] = toScreen(a.lon, a.lat);
+      drawWildButterfly(ctx, x, y, u, (sc.hash >>> 3) + i * 11);
+    }
+    // bees at flowers
+    const beeN = Math.min(lvl === 1 ? 3 : 8, Math.floor(shown / 90));
+    for (let i = 0; i < beeN && sc.flowers.length; i++) {
+      const a = sc.flowers[(sc.hash + 13 + i * 53) % sc.flowers.length];
+      const [x, y] = toScreen(a.lon, a.lat);
+      const px = wildPx(ctx, Math.round(x), Math.round(y), u);
+      nBee(px, Math.round(Math.sin(t * 2.2 + i) * 5), Math.round(-9 + Math.cos(t * 3.1 + i * 1.3) * 3), t, i);
+    }
+    if (sc.pond && lvl === 2) { const [x, y] = toScreen(sc.pond.lon, sc.pond.lat); nDragonfly(ctx, x, y, u, t, sc.hash & 63); }
+    // crow on a snag
+    for (const sn of sc.snags) if (Math.sin(t * 0.13 + sn.ph) > 0.2) { const [x, y] = toScreen(sn.lon, sn.lat); const px = wildPx(ctx, Math.round(x), Math.round(y), u); px(-3, -23, 3, 1, '#202020'); px(-2, -24, 1, 1, '#202020'); px(-4, -24, 1, 1, '#202020'); }
+    // swallows over larger meadows
+    if (sc.area > 3000 && lvl === 2) {
+      const n = 2 + (sc.hash & 1);
+      for (let i = 0; i < n; i++) {
+        const ph = ((t * 0.09 + i * 0.37 + (sc.hash % 100) / 100) % 1);
+        const x = sx1 + (sx2 - sx1) * ph, y = sy1 + (sy2 - sy1) * (0.3 + 0.4 * Math.sin(ph * 6 + i)) - 30 * u;
+        nSwallow(ctx, x, y, u, t, i);
+      }
+    }
+    // a hare crosses every ~45 s
+    if (sc.area > 1500) {
+      const cyc = (t + (sc.hash % 45)) % 45;
+      if (cyc < 5) { const ph = cyc / 5, dir = sc.hash & 1 ? 1 : -1; const x = sx1 + (sx2 - sx1) * (dir > 0 ? ph : 1 - ph), y = sy1 + (sy2 - sy1) * (0.35 + 0.3 * ((sc.hash >>> 5) % 100) / 100); nHare(ctx, x, y, u, t, dir); }
+    }
+  }
+}
+
+function drawNatureReserves(ctx, claimMap) {
+  NATURE.onScreen = 0;
+  const zoom = G.cam.zoom;
+  if (zoom < 15 || !G.parcelPolys.length) return;
+  const t0 = performance.now();
+  const u = zoom > 19 ? 3 : zoom > 17.5 ? 2 : 1, lvl = natureAnimLevel(), t = lvl ? Date.now() / 1000 : 0;
+  const W = gc.width, H = gc.height, cell = 7.5 * u;
+  ctx.save();
+  for (const f of G.parcelPolys) {
+    const claim = claimMap[f.properties.parcel_id];
+    if (claim?.converted_to !== 'biodiversity' || !isAreaGeom(f.geometry)) continue;
+    const b = geoBounds(f.geometry);
+    const [sx1, sy1] = toScreen(b.w, b.n), [sx2, sy2] = toScreen(b.e, b.s);
+    if (sx2 < -30 || sx1 > W + 30 || sy2 < -30 || sy1 > H + 30) continue;
+    if ((sx2 - sx1) < 8 || (sy2 - sy1) < 6) continue;
+    NATURE.onScreen++;
+    const sc = natureScene(f);
+    const pxPerM = mapScale() / sc.mLon;
+    let frac = Math.min(1, (sc.sp * pxPerM / cell) ** 2) * NATURE.quality * (lvl === 1 ? 0.6 : 1);
+    for (const it of sc.items) {
+      if (it.pr > frac) continue;
+      const [x, y] = toScreen(it.lon, it.lat);
+      if (x < -20 || x > W + 20 || y < -30 || y > H + 20) continue;
+      const w = lvl ? windAt(x, y, t) * 2.2 : 0;
+      drawNatureItem(ctx, it, x, y, u, w, t);
+    }
+    drawNatureFauna(ctx, sc, u, t, lvl, Math.max(sx1, 0), Math.max(sy1, 0), Math.min(sx2, W), Math.min(sy2, H), frac);
+  }
+  ctx.restore();
+  // self-tuning: if the overlay eats > 9 ms, thin it out; recover slowly when cheap
+  const cost = performance.now() - t0;
+  NATURE._cost = NATURE._cost * 0.8 + cost * 0.2;
+  if (NATURE._cost > 9 && NATURE.quality > 0.3) NATURE.quality = Math.max(0.3, NATURE.quality * 0.9);
+  else if (NATURE._cost < 4 && NATURE.quality < 1) NATURE.quality = Math.min(1, NATURE.quality * 1.03);
 }
 
 function drawForestSprites(ctx, claimMap) {
@@ -8228,9 +8523,10 @@ function resetPopupPosition(id) {
 (function treasureAnimLoop() {
   requestAnimationFrame(treasureAnimLoop);
   if (!document.getElementById('screen-game').classList.contains('active')) return;
-  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length)) return;
+  const natureLive = NATURE.onScreen > 0 && natureAnimLevel() > 0;
+  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length || natureLive)) return;
   const now = performance.now();
-  const step = isCoarsePointer() ? 50 : 40;
+  const step = natureAnimLevel() === 1 ? 66 : isCoarsePointer() ? 50 : 40;
   if (now - (treasureAnimLoop._last || 0) < step) return;
   if (giantAnimBudget() === 1 && !G.fx.length) return; // reduced motion → static (800ms tick below)
   treasureAnimLoop._last = now;

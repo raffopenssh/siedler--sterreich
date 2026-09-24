@@ -430,6 +430,35 @@ Loading: only the 2 nearest KGs block the loading screen (`fetchKGPolygonsBlocki
 
 Frontend (`loadEnhancedForKGs`, all background, never blocks loading): `G.enhancedKGs`, `G.lidarParcels` (elevation tint ≥z15, slope hatching ≥z16.5), `G.lidarBuildingIdx` (real building heights/roof types, matched by centroid grid + `G.lidarGen` invalidation), `G.topTrees`/`G.topObjects` (landmark sprites), `G.osmLines` (roads/water/rail; majors-only <z15), `G.n2kSites` (hatched overlay, toggle `#btn-n2k`), `G.landPrices` (lazy per-parcel market value in popup). GPS: `#btn-gps`, `G.geo`, follow-mode disabled on manual pan. Popup enhanced rows: `renderEnhancedPopupRows` (`#pp-enhanced`, mobile "Mehr ▸" expander).
 
+## Nature reserves (Naturschutz / Brache) — living overlay
+
+Converted parcels (`claim.converted_to === 'biodiversity'`) are drawn by
+`drawNatureReserves(ctx, claimMap)` in `render()` **above the cached base
+layer** (like treasures), so grass can wave without redrawing the map. The
+base only paints the fill + `drawFieldPattern(..., 'wild')` tussock mottling;
+`drawLanduseSprites` skips them.
+
+- `natureScene(f)` builds one hash-stable scene per parcel (cached in
+  `NATURE.scenes`, geo coords): jittered ≤2600-point sampling, `vnoise` clump
+  noise, distance-to-edge → succession zones (Saum <3.5 m: bramble, saplings,
+  hawthorn, thistle; herb clumps: umbel/mullein/teasel/nettle/flowers; open
+  patches: short grass, molehills, anthills, mushrooms) plus rare landmarks
+  (≤2 snags — `v%3==0` has a hornet colony in the trunk cavity, ≤1 hive row,
+  ≤1 pond, nest boxes). Each item has `pr` (priority); the renderer draws
+  items with `pr < frac` where `frac = (sp·pxPerM/cell)²`, so screen density is
+  constant across zoom and LOD never flickers. Kinds: `NK.*`.
+- Wind: `windAt(x,y,t)` travelling gusts; `nBlade()` bends stems in 3 segments.
+  Pixel unit `u` = 1 / 2 / 3 at zoom ≤17.5 / ≤19 / >19; all sprites use
+  `wildPx()` so they scale.
+- Fauna (`drawNatureFauna`): butterflies + bees at flower items, dragonfly at
+  the pond, crow on snags, swallows over >3000 m², a hare crossing every 45 s.
+- Device gating: `natureAnimLevel()` from `giantAnimBudget()` — 0 static
+  (prefers-reduced-motion), 1 phones (15 fps via `treasureAnimLoop`, 60 %
+  density, fewer fauna), 2 desktop (25 fps). `NATURE.quality` self-tunes if the
+  overlay exceeds ~9 ms/frame. The rAF loop runs only while `NATURE.onScreen>0`.
+- Ordinary meadows/stubble/gardens/vineyards get rare hives / nest boxes via
+  `drawSporadicHabitat()` (~14 % of parcels, hash-stable) in the base layer.
+
 ## Quests → Herald briefings
 
 `GET /api/session/{id}/challenges` returns each open quest with live
