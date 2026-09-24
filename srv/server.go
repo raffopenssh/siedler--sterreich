@@ -151,6 +151,12 @@ func (s *Server) Serve(addr string) error {
 
 	// SEO / meta
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
+
+	// Roadmap + conformance harness for sibling data services (see llmahead.go)
+	mux.HandleFunc("GET /llm/ahead", s.handleLLMAhead)
+	mux.HandleFunc("GET /llm/ahead/{$}", s.handleLLMAhead)
+	mux.HandleFunc("GET /llm/ahead/check/{service}", s.handleLLMAheadCheck)
+	mux.HandleFunc("GET /llm/ahead/status", s.handleLLMAheadStatus)
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 	mux.HandleFunc("GET /static/og-image.png", s.handleOGImage)
 
