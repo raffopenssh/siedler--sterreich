@@ -5198,9 +5198,9 @@ function drawWildButterfly(ctx, cx, cy, u, seed) {
 // natureAnimLevel() 0 = static (prefers-reduced-motion), 1 = light
 // (phones: 15 fps, 60% density, fewer fauna), 2 = full (25 fps); plus a
 // self-tuning quality knob if a frame gets expensive.
-const NATURE = { scenes: new Map(), onScreen: 0, quality: 1, _cost: 0 };
+const NATURE = { scenes: new Map(), onScreen: 0, quality: 1, _cost: 0, level: null /* DEV override 0|1|2 */ };
 
-function natureAnimLevel() { const b = giantAnimBudget(); return b === 1 ? 0 : b <= 6 ? 1 : 2; }
+function natureAnimLevel() { if (NATURE.level != null) return NATURE.level; const b = giantAnimBudget(); return b === 1 ? 0 : b <= 6 ? 1 : 2; }
 /** Wind field: two travelling gust waves + flutter; -1..1. (x,y screen px, t seconds) */
 function windAt(x, y, t) {
   return 0.55 * Math.sin(t * 1.1 + x * 0.010 - y * 0.005) + 0.30 * Math.sin(t * 2.3 + x * 0.028 + y * 0.017) + 0.15 * Math.sin(t * 4.3 + x * 0.06);
@@ -9061,6 +9061,11 @@ pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attrib
 //   DEV.ez('12105', 430); DEV.kg('12105'); DEV.tree(0)
 //   DEV.chrome(false)                                // hide search/badges/attrib
 //   DEV.state()                                      // compact JSON of G
+//   DEV.warp(45); DEV.freeze()                       // shift/freeze the game clock (field & forest cycles)
+//   DEV.mock('12105-68/3', {to:'biodiversity'})      // local-only claim for overlay shots
+//   DEV.fields('ripe'); await DEV.harvest(id)         // crop cycle QA
+//   DEV.forests(); await DEV.forest(id)               // forest stands + timber estimate
+//   DEV.nature(); DEV.nature({level:2, quality:1})    // living-overlay perf/state
 // Also honoured on load: URL ?dev=1 skips the min. loading-screen dwell time,
 // and #v=lon,lat,zoom (existing) sets the initial camera.
 window.DEV = {
@@ -9185,11 +9190,96 @@ window.DEV = {
     if (el) el.style.display = on ? '' : 'none';
     resizeGame(); render();
   },
+  // ---- Game clock (Date.now shim): freeze for deterministic frames, warp to
+  // fast-forward the 40-min field cycle / forest regrowth. Display-only — the
+  // server keeps real time, so harvest calls may still be refused.
+  _realNow: null, _offsetMs: 0, _frozenAt: null,
+  _installClock() {
+    if (this._realNow) return;
+    this._realNow = Date.now; const self = this;
+    Date.now = () => (self._frozenAt != null ? self._frozenAt : self._realNow()) + self._offsetMs;
+  },
   /** Freeze/unfreeze sprite animations (deterministic frames). */
-  freeze(on = true) {
-    if (on && !this._now) { this._now = Date.now; const t = Date.now(); Date.now = () => t; }
-    if (!on && this._now) { Date.now = this._now; this._now = null; }
-    render();
+  freeze(on = true) { this._installClock(); this._frozenAt = on ? this._realNow() : null; render(); return this.clock(); },
+  /** Shift the game clock by N minutes (negative allowed). DEV.warp(0) resets. Clears scene caches. */
+  warp(min = 0) {
+    this._installClock(); this._offsetMs = min * 60000;
+    FOREST.scenes.clear(); NATURE.scenes.clear(); render();
+    if (G.sel && document.getElementById('parcel-popup').classList.contains('open')) showParcelPopup(G.sel, G.selFp);
+    return this.clock();
+  },
+  clock() { return { offsetMin: this._offsetMs / 60000, frozen: this._frozenAt != null, now: new Date(Date.now()).toISOString() }; },
+  _claimOf(pid) { return (G.claimed || []).find(c => c.parcel_id === pid) || null; },
+  /** Local-only claim (no server, no coins) so overlays can be shot without buying:
+   *  DEV.mock(id, {to:'biodiversity'|'wildforest'|null, harvestedMinAgo:12, owner:false}); DEV.mock(null) reloads real claims. */
+  async mock(parcelId, o = {}) {
+    if (parcelId === null) { await loadClaimed(); NATURE.scenes.clear(); FOREST.scenes.clear(); render(); return G.claimed.length; }
+    const f = this.find(parcelId); if (!f) return null;
+    const p = f.properties;
+    G.claimed = (G.claimed || []).filter(c => c.parcel_id !== parcelId);
+    const c = { id: -1 - G.claimed.length, session_id: G.session?.id, player_id: o.owner === false ? -1 : G.player?.id, parcel_id: parcelId,
+      kg_code: p.kg_code, gnr: p.gnr, ez: p.ez, area_sqm: p.area_sqm || 0, landuse: extractLuCode('', p), purchase_price: 0,
+      converted_to: o.to || null, claimed_at: new Date(Date.now() - 3600e3).toISOString(),
+      harvested_at: o.harvestedMinAgo != null ? new Date(Date.now() - o.harvestedMinAgo * 60000).toISOString() : null,
+      harvests: o.harvestedMinAgo != null ? 1 : 0, _mock: true };
+    G.claimed.push(c);
+    NATURE.scenes.delete(parcelId); FOREST.scenes.delete(parcelId + ':wild'); FOREST.scenes.delete(parcelId + ':schlag');
+    updateParcelCount(); render();
+    return c;
+  },
+  /** Crop fields near the camera with their cycle stage. DEV.fields('ripe'|'growing'|'ploughed'|'stubble'|'meadow'|'fallow'). */
+  fields(stage, limit = 20) {
+    return this.parcelsNear(p => isCropField(p) && (!stage || fieldStage(p, this._claimOf(p.parcel_id)).stage === stage), limit)
+      .map(p => { const fs = fieldStage(p, this._claimOf(p.parcel_id)); return Object.assign({ stage: fs.stage, t: +fs.t.toFixed(3), ripeInMin: Math.ceil(fs.ripeInS / 60), mine: fs.mine, kind: fs.kind }, p); });
+  },
+  /** Forest stands near the camera (NS 56 or lidar canopy ≥ 50 %) with owner + regrowth stage. */
+  forests(limit = 20, onlyMine = false) {
+    return this.parcelsNear(p => { const c = this._claimOf(p.parcel_id); return claimIsForest(p, c) && (!onlyMine || c?.player_id === G.player?.id); }, limit)
+      .map(p => { const c = this._claimOf(p.parcel_id), fs = forestStage(c); const fv = G.forestValues[p.parcel_id]?.estimate;
+        return Object.assign({ mine: c?.player_id === G.player?.id, converted: c?.converted_to || null, stage: fs.stage, factor: +fs.factor.toFixed(2), nextInMin: Math.ceil(fs.nextInS / 60), vfm: fv ? Math.round(fv.vfm) : undefined, source: fv?.source }, p); });
+  },
+  /** Select a forest parcel, fetch its timber estimate (/api/forest-value) and return the estimate. */
+  async forest(parcelId, center = false) {
+    const f = typeof parcelId === 'string' ? this.find(parcelId) : parcelId || G.sel; if (!f) return null;
+    await this.parcel(f, center);
+    const fv = await fetchForestValue(f);
+    showParcelPopup(f, G.selFp); render();
+    const c = this._claimOf(f.properties.parcel_id);
+    return { parcel_id: f.properties.parcel_id, isForest: claimIsForest(f.properties, c), stage: forestStage(c), estimate: fv?.estimate || null, cached: fv?.cached };
+  },
+  /** Harvest the given/selected parcel for real (field → /api/harvest-parcel, forest → /api/harvest-forest). Returns coin delta. */
+  async harvest(parcelId) {
+    if (parcelId) await this.parcel(parcelId); if (!G.sel) return null;
+    const before = G.player?.coins ?? 0, p = G.sel.properties;
+    if (claimIsForest(p, this._claimOf(p.parcel_id))) await doHarvestForest(); else await doHarvest();
+    await new Promise(r => setTimeout(r, 300)); render();
+    return { parcel_id: p.parcel_id, coins: (G.player?.coins ?? 0) - before, claim: this._claimOf(p.parcel_id) };
+  },
+  /** Convert the given/selected owned parcel for real: 'biodiversity' | 'forest' | 'wildforest'. */
+  async convert(parcelId, to = 'biodiversity') {
+    if (parcelId) await this.parcel(parcelId); if (!G.sel) return null;
+    await doConvert(to); await new Promise(r => setTimeout(r, 300)); render();
+    return this._claimOf(G.sel.properties.parcel_id);
+  },
+  /** Living overlays (Naturschutz / Naturwald / Schlag): stats, or set {level:0|1|2|null, quality:0.3..1, clear:true}. */
+  nature(o) {
+    if (o) {
+      if ('level' in o) NATURE.level = o.level;
+      if ('quality' in o) NATURE.quality = Math.max(0.3, Math.min(1, o.quality));
+      if (o.clear) { NATURE.scenes.clear(); FOREST.scenes.clear(); }
+      render();
+    }
+    const items = k => { const h = {}; for (const [id, sc] of k.scenes) for (const it of sc.items) h[it.k] = (h[it.k] || 0) + 1; return h; };
+    return { onScreen: NATURE.onScreen, level: natureAnimLevel(), forcedLevel: NATURE.level, quality: +NATURE.quality.toFixed(2), costMs: +NATURE._cost.toFixed(2),
+      natureScenes: NATURE.scenes.size, forestScenes: FOREST.scenes.size, natureKinds: items(NATURE), forestKinds: items(FOREST), animBudget: giantAnimBudget() };
+  },
+  /** Item-kind histogram of one parcel's procedural scene (nature reserve, 'wild' or 'schlag' forest). */
+  scene(parcelId, mode) {
+    const f = this.find(parcelId); if (!f) return null;
+    const sc = mode ? forestScene(f, mode) : natureScene(f);
+    const names = Object.fromEntries(Object.entries(Object.assign({}, NK, FK)).map(([k, v]) => [v, k]));
+    const h = {}; for (const it of sc.items) { const n = names[it.k] || it.k; h[n] = (h[n] || 0) + 1; }
+    return { parcel_id: parcelId, mode: mode || 'nature', items: sc.items.length, spacing_m: sc.sp, kinds: h };
   },
   /** Show the loading screen frozen at a given progress (for screenshots).
    *  DEV.loading(62, 'Dürnstein (12105)') ; DEV.loading(false) returns to game. */
@@ -9266,6 +9356,7 @@ window.DEV = {
       trees: allTallTrees().length, busy: _vpBusy, coins: G.player?.coins, xp: G.player?.xp,
       popups: ['parcel-popup','ez-popup','kg-popup','tree-popup'].filter(id => document.getElementById(id)?.classList.contains('open')),
       sel: G.sel?.properties?.parcel_id || null,
+      clock: this._realNow ? this.clock() : null, natureOnScreen: NATURE.onScreen, mocks: (G.claimed||[]).filter(c => c._mock).length,
     };
   },
 };
