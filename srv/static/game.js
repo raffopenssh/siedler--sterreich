@@ -4217,44 +4217,6 @@ function drawParcelPoly(ctx, f, claimMap) {
   if (isBiodiversity && (maxX - minX) > 6 && (maxY - minY) > 6) {
     const zoom = G.cam.zoom;
     const absHash = Math.abs(hash);
-    // At zoom >= 16, draw extra wildflowers and butterflies inside the parcel
-    if (zoom >= 16) {
-      const pxArea = (maxX - minX) * (maxY - minY);
-      const extraCount = Math.min(12, Math.max(3, Math.floor(pxArea / 400)));
-      for (let i = 0; i < extraCount; i++) {
-        const t = ((absHash + i * 6197) % 10000) / 10000;
-        const u = ((absHash + i * 4253) % 10000) / 10000;
-        const sx = minX + (maxX - minX) * (0.1 + t * 0.8);
-        const sy = minY + (maxY - minY) * (0.1 + u * 0.8);
-        if (!pip(sx, sy, pts)) continue;
-        // Tiny wildflowers
-        const flColors = ['#e8e040','#e060a0','#a060e0','#60a0e8','#e08040','#ff7070','#70e070'];
-        const fc = flColors[(absHash + i) % flColors.length];
-        const fs = zoom > 17 ? 1.0 : 0.65;
-        // Stem
-        ctx.strokeStyle = '#4a8a2a';
-        ctx.lineWidth = 0.6;
-        ctx.beginPath();
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(sx + ((absHash+i)%3-1)*fs, sy - 5*fs);
-        ctx.stroke();
-        // Flower
-        ctx.fillStyle = fc;
-        ctx.beginPath();
-        ctx.arc(sx + ((absHash+i)%3-1)*fs, sy - 5*fs - 1*fs, 1.3*fs, 0, Math.PI*2);
-        ctx.fill();
-        // Extra butterfly every 4th sprite
-        if (i % 4 === 0) {
-          const bt = (Date.now() / 900 + absHash + i) % (Math.PI*2);
-          const bx = sx + Math.sin(bt) * 4*fs;
-          const by = sy - 10*fs + Math.cos(bt*1.3) * 2*fs;
-          const wing = Math.abs(Math.sin(Date.now()/180 + absHash + i)) * 2*fs + 0.8*fs;
-          ctx.fillStyle = flColors[(absHash + i + 3) % flColors.length];
-          ctx.beginPath(); ctx.ellipse(bx - wing*0.4, by, wing, 0.8*fs, -0.3, 0, Math.PI*2); ctx.fill();
-          ctx.beginPath(); ctx.ellipse(bx + wing*0.4, by, wing, 0.8*fs, 0.3, 0, Math.PI*2); ctx.fill();
-        }
-      }
-    }
     // Animated sparkle particles (nature magic / healing) — visible at any zoom
     const sparkCount = Math.min(5, Math.max(2, Math.floor((maxX-minX)*(maxY-minY) / 800)));
     for (let i = 0; i < sparkCount; i++) {
@@ -4520,12 +4482,14 @@ function drawLanduseSprites(ctx, claimMap) {
     else if (claim?.converted_to === 'biodiversity') spriteType = 'wildflower';
     else continue;
 
+    if (spriteType === 'wildflower') { drawNatureParcel(ctx, p, b, coords, sx1, sy1, sx2, sy2, hash); continue; }
     if (spriteType === 'crops') {
       // Settlers-style fields: one motif per parcel (wheat sheaves / haystacks /
       // grass), laid out on a slightly staggered lattice so they read as rows
       // instead of random clutter. Lattice spacing in *screen* px so density is
       // constant across zoom; a parcel-stable phase keeps rows from jumping.
       const fs = fieldStage(p, claim);
+      if (fs.stage === 'meadow' || fs.stage === 'stubble') drawSporadicHabitat(ctx, 'crops', b, coords, sx1, sy1, sx2, sy2, hash);
       if (fs.stage === 'ploughed' || fs.stage === 'growing' || fs.stage === 'ripe') continue; // texture carries the stage
       const kind = fs.kind;                        // 0,1 sheaves · 2 haystacks · 3 grass
       const sp = kind === 2 ? 46 : 30;
@@ -4546,6 +4510,7 @@ function drawLanduseSprites(ctx, claimMap) {
       }
       continue;
     }
+    if (spriteType === 'meadow' || spriteType === 'garden' || spriteType === 'vineyard') drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash);
     const count = Math.min(14, Math.max(2, Math.floor(area / 600)));
     for (let i = 0; i < count; i++) {
       const t = ((hash + i * 7919) % 10000) / 10000;
@@ -4562,7 +4527,6 @@ function drawLanduseSprites(ctx, claimMap) {
         case 'garden': drawGardenSprite(ctx, sx, sy, v, hash+i); break;
         case 'water': drawWaterSprite(ctx, sx, sy, v, hash+i); break;
         case 'reeds': drawReedSprite(ctx, sx, sy, v, hash+i); break;
-        case 'wildflower': drawWildflowerSprite(ctx, sx, sy, v, hash+i); break;
       }
     }
   }
@@ -4955,36 +4919,274 @@ function drawReedSprite(ctx, x, y, v, seed) {
   }
 }
 
-function drawWildflowerSprite(ctx, x, y, v, seed) {
-  const s = G.cam.zoom > 17 ? 1.0 : 0.7;
-  x = Math.round(x); y = Math.round(y);
-  // Dense wildflower patch (biodiversity)
-  const flowerColors = ['#e8e040','#e060a0','#a060e0','#60a0e8','#e08040','#ff7070','#70e070'];
-  // Stems
-  for (let j = -3; j <= 3; j++) {
-    const ox = x + j * 2 * s;
-    const h = (6 + (seed+j)%4) * s;
-    ctx.strokeStyle = '#4a8a2a';
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    ctx.moveTo(ox, y);
-    ctx.lineTo(ox + ((seed+j)%3-1)*s, y - h);
-    ctx.stroke();
-    // Flower head
-    ctx.fillStyle = flowerColors[(seed+j+v) % flowerColors.length];
-    ctx.beginPath();
-    ctx.arc(ox + ((seed+j)%3-1)*s, y - h - 1*s, 1.5*s, 0, Math.PI*2);
-    ctx.fill();
+// ---- Nature reserve (Naturschutz / Brache) ----
+// A converted parcel reads as a *Blumenwiese* the way Settlers IV drew
+// decorative ground: pixel tufts of grass with chunky 3×3 blossoms in a
+// parcel-stable palette (2 species per parcel so it looks like one meadow, not
+// confetti), sparse structure elements (Hecke, Totholz, Lesesteinhaufen), a
+// beehives, ponds, nest boxes, dead snags with hornet nests) and animated pixel
+// butterflies. drawSporadicHabitat() sprinkles hives/nest boxes on ordinary land.
+// Same px()/u scheme as drawCropSprite (u=1 below zoom 17.5, 2 above).
+const WILD_FLOWERS = [
+  {petal: '#e83a2a', dark: '#b02418', core: '#2a1a10'},   // Klatschmohn
+  {petal: '#3a6ae8', dark: '#2848b8', core: '#1a2a60'},   // Kornblume
+  {petal: '#f8f8f0', dark: '#d0d0c0', core: '#f0c020'},   // Margerite
+  {petal: '#f0d030', dark: '#c8a020', core: '#a07010'},   // Königskerze / Löwenzahn
+  {petal: '#e070b0', dark: '#b8488a', core: '#f0a0d0'},   // Wiesenklee
+  {petal: '#9060e0', dark: '#6a40b0', core: '#c0a0f8'},   // Glockenblume
+];
+const WILD_BUTTERFLIES = [
+  {w: '#f08020', e: '#2a1a10'},   // Kleiner Fuchs
+  {w: '#f8f0d0', e: '#404040'},   // Kohlweißling
+  {w: '#f0d020', e: '#a06010'},   // Zitronenfalter
+  {w: '#5090f0', e: '#203070'},   // Bläuling
+];
+const WILD_GRASS = ['#3e8a2c', '#4c9c36', '#5aac42'], WILD_GRASS_TIP = '#8ccc5a', WILD_SH = 'rgba(0,0,0,0.25)';
+
+function wildPx(ctx, x, y, u) {
+  return (dx, dy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x + dx * u, y + dy * u, w * u, h * u); };
+}
+/** 3×3 blossom: cross of petals, shaded lower petals, contrasting core. */
+function wildBlossom(px, dx, dy, f, big) {
+  if (big) {
+    px(dx - 1, dy - 2, 3, 1, f.petal); px(dx - 2, dy - 1, 5, 2, f.petal); px(dx - 1, dy + 1, 3, 1, f.dark);
+    px(dx - 2, dy + 1, 1, 1, f.dark); px(dx + 2, dy + 1, 1, 1, f.dark);
+    px(dx, dy - 1, 1, 1, f.core); px(dx, dy, 1, 1, f.core);
+  } else {
+    px(dx, dy - 1, 1, 1, f.petal); px(dx - 1, dy, 3, 1, f.petal); px(dx, dy + 1, 1, 1, f.dark);
+    px(dx, dy, 1, 1, f.core);
   }
-  // Butterfly on some (animated)
-  if (v === 0) {
-    const bt = (Date.now() / 800 + seed) % (Math.PI*2);
-    const bx = x + Math.sin(bt) * 5*s;
-    const by = y - 12*s + Math.cos(bt*1.5) * 2*s;
-    const wing = Math.abs(Math.sin(Date.now()/200 + seed)) * 2*s + 1*s;
-    ctx.fillStyle = flowerColors[(seed+2) % flowerColors.length];
-    ctx.beginPath(); ctx.ellipse(bx - wing*0.5, by, wing, 1*s, -0.3, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(bx + wing*0.5, by, wing, 1*s, 0.3, 0, Math.PI*2); ctx.fill();
+}
+/** Grass tuft with 2–3 blossoms of one species. */
+function drawWildTuft(ctx, x, y, u, f, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  const g = WILD_GRASS[seed % 3];
+  px(-4, 0, 9, 1, WILD_SH);
+  // blades (columns of varying height, light tips)
+  const bl = [[-4, 3], [-2, 5], [0, 7], [2, 5], [4, 3], [-3, 2], [3, 2]];
+  for (let i = 0; i < bl.length; i++) {
+    const h = bl[i][1] + ((seed >> i) & 1);
+    px(bl[i][0], -h, 1, h, g); px(bl[i][0], -h, 1, 1, WILD_GRASS_TIP);
+  }
+  // stems + blossoms
+  const lean = (seed % 3) - 1;
+  const n = 2 + (seed & 1);
+  const stems = [[-3 + lean, 8], [1 + lean, 10], [4 + lean, 7]];
+  for (let i = 0; i < n; i++) {
+    const [sx, sh] = stems[(i + (seed >> 2)) % 3];
+    px(sx, -sh, 1, sh - 4, '#3a7a28');
+    wildBlossom(px, sx, -sh - 1, f, i === 0);
+  }
+}
+/** Hedge shrub (Hecke) with berries. */
+function drawWildBush(ctx, x, y, u, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  px(-7, 0, 14, 2, WILD_SH); px(-5, 2, 10, 1, WILD_SH);
+  px(-6, -3, 12, 3, '#2e6a24'); px(-7, -2, 14, 2, '#2e6a24');
+  px(-5, -6, 10, 3, '#3e8a30'); px(-3, -8, 6, 2, '#3e8a30');
+  px(-4, -7, 3, 1, '#62b048'); px(-1, -8, 2, 1, '#62b048'); px(-6, -4, 2, 1, '#62b048');
+  px(1, -5, 3, 1, '#62b048'); px(-2, -3, 1, 1, '#1e4a18'); px(3, -2, 2, 1, '#1e4a18');
+  const berry = seed % 3 === 0 ? '#e02020' : seed % 3 === 1 ? '#301848' : '#f0a020';
+  px(-3, -5, 1, 1, berry); px(2, -6, 1, 1, berry); px(0, -3, 1, 1, berry); px(4, -4, 1, 1, berry);
+  px(-1, -1, 2, 1, '#5a3a1a');   // stem base
+}
+/** Totholz: fallen log with mushrooms + moss. */
+function drawWildLog(ctx, x, y, u, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  px(-8, 1, 17, 1, WILD_SH);
+  px(-8, -3, 16, 4, '#6a4a28'); px(-8, -3, 16, 1, '#8a6838'); px(-8, 0, 16, 1, '#4a3018');
+  px(8, -3, 1, 4, '#b89060'); px(8, -2, 1, 2, '#8a6838');   // cut end + rings
+  px(-8, -3, 1, 4, '#4a3018');
+  px(-5, -2, 1, 1, '#4a3018'); px(1, -1, 2, 1, '#4a3018'); px(4, -2, 1, 1, '#4a3018');  // bark cracks
+  px(-3, -3, 3, 1, '#5aa040'); px(3, -3, 2, 1, '#5aa040');   // moss
+  const cap = seed % 2 ? '#d83020' : '#c89040';
+  px(-6, -4, 1, 1, '#f0e8d0'); px(-7, -5, 3, 1, cap); px(-6, -6, 1, 1, cap);
+  if (seed % 2) px(-6, -5, 1, 1, '#f8f0e0');
+  px(5, -4, 1, 1, '#f0e8d0'); px(4, -5, 3, 1, cap);
+}
+/** Lesesteinhaufen: dry-stone pile (habitat for lizards). */
+function drawWildStones(ctx, x, y, u, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  px(-6, 1, 12, 1, WILD_SH);
+  px(-6, -2, 12, 3, '#7a7a72'); px(-4, -4, 8, 2, '#8a8a80'); px(-2, -5, 4, 1, '#9a9a90');
+  px(-5, -3, 2, 1, '#b0b0a6'); px(0, -5, 2, 1, '#b8b8ae'); px(2, -2, 2, 1, '#a8a89e');
+  px(-6, 0, 12, 1, '#585850'); px(-1, -2, 1, 1, '#585850'); px(3, -3, 1, 1, '#585850');
+  px(-3, -1, 1, 1, '#585850');
+  if (seed % 2) { px(-5, -1, 2, 1, '#6aa040'); px(4, -1, 1, 1, '#6aa040'); }  // moss
+  if (seed % 3 === 0) { px(1, -6, 3, 1, '#4a8a30'); px(4, -7, 1, 1, '#4a8a30'); }  // Eidechse
+}
+/** Bienenstock: stacked hive boxes (Zander-Beute) with bees, or a straw skep. */
+function drawBeehive(ctx, x, y, u, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  px(-5, 1, 11, 1, WILD_SH);
+  if (seed % 3) {
+    // box hive on two legs: painted brood box, lighter honey box, roof plate
+    const paint = [['#e8c040', '#b89020'], ['#4090d8', '#2a68a8'], ['#e06848', '#b04030'], ['#58a858', '#3a7a3a']][seed % 4];
+    px(-3, -1, 1, 2, '#4a3020'); px(2, -1, 1, 2, '#4a3020');
+    px(-4, -6, 8, 5, paint[0]); px(3, -6, 1, 5, paint[1]); px(-4, -2, 8, 1, paint[1]);
+    px(-4, -10, 8, 4, '#f0e8d0'); px(3, -10, 1, 4, '#c8b890');
+    px(-5, -12, 10, 2, '#5a5a58'); px(-5, -12, 10, 1, '#8a8a88');  // roof plate
+    px(-2, -2, 4, 1, '#2a1a10');                                     // entrance slit
+    px(-3, -8, 1, 1, '#c8b890'); px(0, -5, 1, 1, paint[1]);          // grain
+  } else {
+    // traditional straw skep on a plank
+    px(-6, -1, 12, 1, '#7a5a30'); px(-6, 0, 12, 1, '#5a4020');
+    px(-5, -4, 10, 3, '#c8a048'); px(-4, -7, 8, 3, '#d8b458'); px(-3, -9, 6, 2, '#e0c060'); px(-2, -10, 4, 1, '#e8c868');
+    px(-5, -3, 10, 1, '#a88030'); px(-4, -6, 8, 1, '#b89040'); px(-3, -8, 6, 1, '#c8a048');  // coil lines
+    px(-1, -3, 2, 2, '#2a1a10');                                                            // entrance
+  }
+  // a few bees buzzing around the entrance
+  const t = Date.now() / 300 + seed;
+  for (let i = 0; i < 3; i++) {
+    const bx = Math.round(Math.sin(t + i * 2.1) * 6 + (i - 1) * 2), by = Math.round(-4 - i * 3 + Math.cos(t * 1.3 + i) * 2);
+    px(bx, by, 1, 1, '#f0c020'); px(bx + 1, by, 1, 1, '#201810');
+  }
+}
+/** Tümpel: small pond with reeds and a frog. */
+function drawWildPond(ctx, x, y, u, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  px(-7, -1, 14, 4, '#5a7a48'); px(-8, 0, 16, 2, '#5a7a48');            // muddy bank
+  px(-6, -1, 12, 3, '#3878b0'); px(-7, 0, 14, 1, '#3878b0'); px(-5, 2, 10, 1, '#2a5a90');
+  px(-4, 0, 3, 1, '#78b0e0'); px(2, 1, 2, 1, '#78b0e0');                   // glints
+  const r = ((Date.now() / 900 + seed) % 3) | 0;                             // ripple ring
+  px(-1 - r, -r, 1, 1, 'rgba(200,230,255,0.5)'); px(1 + r, r, 1, 1, 'rgba(200,230,255,0.5)');
+  for (const rx of [-7, -5, 6, 8]) { px(rx, -6, 1, 6, '#4a8a30'); px(rx, -7, 1, 2, '#7a5a30'); }  // reeds
+  px(-2, -2, 3, 1, '#48a038'); px(-1, -3, 2, 1, '#48a038'); px(-1, -3, 1, 1, '#f8f8e0');            // frog
+  if (seed % 2) { px(3, -1, 2, 1, '#48a038'); px(4, -2, 1, 1, '#f0e040'); }                          // lily
+}
+/** Nistkasten: bird nesting box on a post, a bird perched on top sometimes. */
+function drawNestBox(ctx, x, y, u, seed) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  px(-2, 1, 5, 1, WILD_SH);
+  px(0, -9, 1, 10, '#4a3020');
+  px(-3, -16, 6, 7, '#8a6838'); px(2, -16, 1, 7, '#5a4020'); px(-3, -10, 6, 1, '#5a4020');
+  px(-4, -18, 8, 2, '#4a3a2a'); px(-4, -18, 8, 1, '#6a5a48');    // sloped roof
+  px(-1, -14, 2, 2, '#1a1008');                                    // hole
+  px(-2, -11, 1, 1, '#c8a060');                                    // perch peg
+  if (seed % 2 && Math.sin(Date.now() / 2000 + seed) > -0.3) {     // bird comes and goes
+    px(-1, -20, 3, 2, '#3a6ac0'); px(2, -20, 1, 1, '#f0c020'); px(-2, -19, 1, 1, '#3a6ac0'); px(0, -21, 1, 1, '#f8f8f0');
+  }
+}
+/** Toter Baum: bleached snag with broken limbs, woodpecker holes, ivy — and
+ *  optionally a hornet colony (Vespa crabro) in a trunk cavity. */
+function drawDeadTree(ctx, x, y, u, seed, hornets) {
+  x = Math.round(x); y = Math.round(y);
+  const px = wildPx(ctx, x, y, u);
+  const T = '#8a7a60', TD = '#5a4a38', TL = '#b8a888';
+  px(-5, 1, 11, 1, WILD_SH); px(-3, 2, 6, 1, WILD_SH);
+  px(-3, -1, 7, 2, TD); px(-4, 0, 9, 1, TD);                    // root flare
+  px(-2, -20, 4, 20, T); px(1, -20, 1, 20, TD); px(-2, -18, 1, 14, TL);   // trunk, shade, light edge
+  px(-2, -22, 3, 2, T); px(-1, -24, 1, 2, TD); px(0, -23, 1, 1, T);        // jagged broken top
+  // limbs
+  px(2, -15, 4, 1, T); px(5, -17, 2, 2, T); px(6, -18, 1, 1, TD);          // right stub
+  px(-6, -12, 4, 1, T); px(-7, -14, 2, 2, T); px(-8, -15, 1, 1, TD);       // left stub
+  px(2, -9, 3, 1, TD); px(4, -10, 1, 1, TD);                               // short snag
+  px(-1, -16, 1, 1, '#1a1008'); px(0, -8, 1, 1, '#1a1008');                // woodpecker holes
+  px(-2, -6, 1, 2, TD); px(0, -13, 1, 3, TD);                              // bark cracks
+  if (seed % 2) { px(-2, -4, 1, 3, '#3e8a2c'); px(-3, -5, 1, 1, '#3e8a2c'); px(-2, -7, 1, 1, '#5aac42'); }  // ivy
+  if (seed % 3 === 0) { px(3, -14, 1, 1, '#2a2a2a'); px(2, -15, 1, 1, '#2a2a2a'); px(4, -15, 1, 1, '#2a2a2a'); }  // crow
+  if (hornets) {
+    // hollow trunk: big dark cavity, papery comb layers visible at the rim, hornets in and out
+    px(-2, -13, 4, 5, '#1a1008'); px(-1, -14, 2, 1, '#1a1008'); px(-1, -8, 2, 1, '#1a1008');
+    px(-1, -12, 2, 3, '#a8a090'); px(-1, -11, 2, 1, '#c8c0b0'); px(0, -10, 1, 1, '#2a2018');   // comb
+    px(-3, -12, 1, 3, TL); px(2, -12, 1, 3, TD);                                                // worn rim
+    const t = Date.now() / 250 + seed;
+    for (let i = 0; i < 4; i++) {
+      const hx = Math.round(Math.sin(t + i * 1.7) * (4 + i)), hy = Math.round(-11 + Math.cos(t * 1.3 + i * 0.9) * 4);
+      px(hx, hy, 1, 1, '#e0a020'); px(hx + 1, hy, 1, 1, '#3a2010');
+    }
+  }
+}
+/** One rare habitat feature on an ordinary (non-nature) parcel: beehives on
+ *  meadows and fields, a nest box in gardens. ~14% of parcels, hash-stable. */
+function drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash) {
+  const m = hashMix(hash ^ 0x9e3779b9);
+  if (m % 100 >= 14) return;
+  const u = G.cam.zoom > 17.5 ? 2 : 1;
+  if ((sx2 - sx1) < 60 * u || (sy2 - sy1) < 40 * u) return;
+  // try a few hash-stable spots near the parcel edge (farmers keep hives at the margin)
+  for (let i = 0; i < 6; i++) {
+    const k = hashMix(m + i * 977);
+    const fx = 0.12 + ((k & 255) / 255) * 0.76, fy = 0.12 + (((k >>> 8) & 255) / 255) * 0.76;
+    const lon = b.w + (b.e - b.w) * fx, lat = b.n - (b.n - b.s) * fy;
+    if (!pipRings(lon, lat, coords)) continue;
+    const [sx, sy] = toScreen(lon, lat);
+    if (spriteType === 'garden') drawNestBox(ctx, sx, sy, u, m >>> 4);
+    else if (spriteType === 'vineyard') drawBeehive(ctx, sx, sy, u, (m >>> 4) | 1);   // box hives between rows
+    else {
+      // a small row of 2–3 hives
+      const n = 2 + ((m >>> 12) & 1);
+      for (let j = 0; j < n; j++) drawBeehive(ctx, sx + (j - (n - 1) / 2) * 13 * u, sy + (j % 2) * 2 * u, u, (m >>> 4) + j * 7);
+    }
+    return;
+  }
+}
+/** Animated pixel butterfly circling (cx,cy). */
+function drawWildButterfly(ctx, cx, cy, u, seed) {
+  const now = Date.now();
+  const t = now / 1400 + seed;
+  const bx = Math.round(cx + Math.sin(t) * 9 * u + Math.sin(t * 2.3) * 3 * u);
+  const by = Math.round(cy - 14 * u + Math.cos(t * 1.7) * 4 * u);
+  const c = WILD_BUTTERFLIES[seed % WILD_BUTTERFLIES.length];
+  const open = Math.sin(now / 110 + seed) > 0;
+  const px = wildPx(ctx, bx, by, u);
+  if (open) {
+    px(-3, -1, 2, 2, c.w); px(1, -1, 2, 2, c.w); px(-2, 1, 1, 1, c.w); px(1, 1, 1, 1, c.w);
+    px(-3, -1, 1, 1, c.e); px(2, -1, 1, 1, c.e);
+  } else {
+    px(-1, -2, 1, 3, c.w); px(1, -2, 1, 3, c.w); px(-1, -2, 1, 1, c.e); px(1, -2, 1, 1, c.e);
+  }
+  px(0, -1, 1, 2, '#201810');
+  px(-2, 3, 5, 1, 'rgba(0,0,0,0.12)');  // ground shadow
+}
+
+function drawNatureParcel(ctx, p, b, coords, sx1, sy1, sx2, sy2, hash) {
+  G._biodivDrawn = true;
+  const u = G.cam.zoom > 17.5 ? 2 : 1;
+  const sp = 24 * u;
+  const w = sx2 - sx1, h = sy2 - sy1;
+  const cols = Math.min(14, Math.max(1, Math.floor(w / sp)));
+  const rows = Math.min(14, Math.max(1, Math.floor(h / sp)));
+  const fA = WILD_FLOWERS[hash % WILD_FLOWERS.length];
+  const fB = WILD_FLOWERS[(hash >>> 3) % WILD_FLOWERS.length];
+  const pts = [];
+  for (let r = 0; r < rows && pts.length < 90; r++) for (let c = 0; c < cols && pts.length < 90; c++) {
+    const m = hashMix(hash + r * 131 + c * 17);
+    const fx = (c + 0.5 + (r % 2) * 0.5 + ((m & 15) / 15 - 0.5) * 0.5) / cols;
+    const fy = (r + 0.5 + (((m >> 4) & 15) / 15 - 0.5) * 0.5) / rows;
+    if (fx > 1 || fy > 1) continue;
+    const lon = b.w + (b.e - b.w) * fx, lat = b.n - (b.n - b.s) * fy;
+    if (!pipRings(lon, lat, coords)) continue;
+    const [sx, sy] = toScreen(lon, lat);
+    pts.push({sx, sy, m});
+  }
+  // Painter's order: top → bottom so taller elements overlap correctly.
+  pts.sort((a, b2) => a.sy - b2.sy);
+  // Structure elements only once the meadow has some room; small parcels stay pure flowers.
+  const structures = pts.length >= 4;
+  for (const q of pts) {
+    const roll = (q.m >>> 8) % 100;
+    if (structures && roll < 7) drawWildBush(ctx, q.sx, q.sy, u, q.m);
+    else if (structures && roll < 11) drawWildLog(ctx, q.sx, q.sy, u, q.m);
+    else if (structures && roll < 14) drawWildStones(ctx, q.sx, q.sy, u, q.m);
+    else if (structures && roll < 17) drawBeehive(ctx, q.sx, q.sy, u, q.m >>> 4);
+    else if (structures && roll < 19) drawWildPond(ctx, q.sx, q.sy, u, q.m >>> 4);
+    else if (structures && roll < 21) drawNestBox(ctx, q.sx, q.sy, u, q.m >>> 4);
+    else if (structures && roll < 24) drawDeadTree(ctx, q.sx, q.sy, u, q.m >>> 4, roll >= 22);
+    else drawWildTuft(ctx, q.sx, q.sy, u, roll < 62 ? fA : fB, q.m >>> 12);
+  }
+  // Butterflies: one per ~7 tufts, at least one when there is any room.
+  const nB = Math.min(7, Math.max(pts.length ? 1 : 0, Math.floor(pts.length / 7)));
+  for (let i = 0; i < nB; i++) {
+    const q = pts[(hash + i * 5) % pts.length];
+    drawWildButterfly(ctx, q.sx, q.sy, u, ((q.m >>> 16) + i) >>> 0);
   }
 }
 
