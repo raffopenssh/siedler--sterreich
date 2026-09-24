@@ -150,6 +150,13 @@ function parseLanduseSummary(summary) {
 const PLAYER_COLORS = ['#e04040','#4080e0','#e0c040','#a040e0','#40e0a0','#e08040','#e040a0','#40e040'];
 
 // ---- Game State ----
+// Canvas type scale — every in-map label uses one of these three so sizes are
+// harmonised across treasures, giant trees, GPS, badges (CSS sidebar: 14/16px VT323).
+const MAP_FONT = {
+  label: '14px VT323, monospace',            // names, distances
+  small: '11px VT323, monospace',            // sub-lines (category, units)
+  pixel: '9px "Press Start 2P", monospace',  // badges / rewards
+};
 const G = {
   player: null, session: null,
   playerToken: null,    // rejoin token, sent as X-Player-Token on API calls
@@ -891,7 +898,7 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
   if (G.pick.cam.zoom >= 9) {
     const b = geoBounds(geom);
     const [cx, cy] = pickProject((b.w+b.e)/2, (b.s+b.n)/2);
-    ctx.font = '14px VT323';
+    ctx.font = MAP_FONT.label;
     ctx.textAlign = 'center';
     ctx.fillStyle = '#000';
     ctx.fillText(feature.properties.name, cx+1, cy+1);
@@ -2631,7 +2638,9 @@ function render() {
   if (G.similar) drawSimilarParcels(ctx);
 
   // ---- Treasures ----
+  _treasuresOnScreen = 0;
   for (const t of G.treasures) drawTreasure(ctx, t);
+  drawCollectFX(ctx);
   if (G.n2kVisible) drawN2KOverlay(ctx, true);
 
   // ---- GPS position marker ----
@@ -2996,7 +3005,7 @@ function drawN2KOverlay(ctx, labelsOnly) {
     const label = '🛡️ Natura 2000 · ' + names.join(' · ');
     ctx.save();
     ctx.globalAlpha = 1; ctx.setLineDash([]);
-    ctx.font = '9px "Press Start 2P", monospace';
+    ctx.font = MAP_FONT.pixel;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const tw = ctx.measureText(label).width;
     const pw = Math.min(tw + 24, W - 20), ph = 24;
@@ -3465,7 +3474,7 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH, tier) {
     const bob = Math.sin(now/450 + phase) * 3;
     const lp = 0.7 + Math.sin(now/300 + phase) * 0.3;
     const ly = y - dh + 3*s - 8 + bob;
-    ctx.font = '13px VT323, monospace';
+    ctx.font = MAP_FONT.label;
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(0,0,0,0.65)';
     ctx.fillText(label, x+1, ly+1);
@@ -3601,7 +3610,7 @@ function drawTallTreeFogHint(ctx) {
   ctx.textAlign = 'center';
   ctx.fillText('\uD83C\uDF32', 0, 7);
   // Distance label
-  ctx.font = '13px VT323, monospace';
+  ctx.font = MAP_FONT.label;
   ctx.fillStyle = 'rgba(0,0,0,0.65)';
   ctx.fillText(distTxt, 1, 25);
   ctx.fillStyle = '#ffd700';
@@ -3662,7 +3671,7 @@ function drawTopLandmarks(ctx) {
       const hidden = (zoom >= 15.5 ? inView.length : 0) - pool.length;
       if (hidden > 0 && zoom < 17) {
         ctx.save();
-        ctx.font = '13px VT323, monospace'; ctx.textAlign = 'right';
+        ctx.font = MAP_FONT.label; ctx.textAlign = 'right';
         const txt = '🌲 +' + hidden + ' ' + tr('weitere · näher zoomen');
         ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(txt, W - 11, H - 31);
         ctx.fillStyle = '#c8ffb0'; ctx.fillText(txt, W - 12, H - 32);
@@ -3708,7 +3717,7 @@ function drawTopLandmarks(ctx) {
         ctx.moveTo(x, y - 22); ctx.lineTo(x + 14, y - 18); ctx.lineTo(x, y - 14);
         ctx.closePath(); ctx.fill();
         if (zoom >= 16.5) {
-          ctx.font = '11px VT323, monospace';
+          ctx.font = MAP_FONT.small;
           ctx.textAlign = 'center';
           const emoji = o.type === 'roof' ? '🏠' : '🗼';
           ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -3737,7 +3746,7 @@ function drawGeoDistanceAtTree(ctx, t) {
   const dirs = window.LANG === 'en' ? ['N','NE','E','SE','S','SW','W','NW'] : ['N','NO','O','SO','S','SW','W','NW'];
   const dir = dirs[Math.round(brg / 45) % 8];
   const label = '📍 ' + distTxt + ' ' + dir;
-  ctx.font = '13px VT323, monospace';
+  ctx.font = MAP_FONT.label;
   ctx.textAlign = 'center';
   const tw = ctx.measureText(label).width;
   const by = y + 14;
@@ -4083,6 +4092,13 @@ function drawParcelPoly(ctx, f, claimMap) {
     : (G.landusePolys.length > 0 ? 0.35 : 0.85);
   ctx.fill();
   ctx.globalAlpha = 1;
+
+  // Worked-field texture (harvest tracks / furrows / mowing swaths) aligned to
+  // the parcel's longest edge — see drawFieldPattern.
+  if (G.cam.zoom >= 15 && !isWater && !isBiodiversity && !isForest && (maxX - minX) > 18 && (maxY - minY) > 12 &&
+      (terrain === TERRAIN.farm || extractLuCode('', p) === '48')) {
+    drawFieldPattern(ctx, rings, hash);
+  }
 
   // Enhanced mode: Lambert hillshade from lidar slope + aspect (fixed NW sun),
   // falling back to the elevation-rank tint when the parcel has no slope data.
@@ -4460,6 +4476,30 @@ function drawLanduseSprites(ctx, claimMap) {
     else if (claim?.converted_to === 'biodiversity') spriteType = 'wildflower';
     else continue;
 
+    if (spriteType === 'crops') {
+      // Settlers-style fields: one motif per parcel (wheat sheaves / haystacks /
+      // grass), laid out on a slightly staggered lattice so they read as rows
+      // instead of random clutter. Lattice spacing in *screen* px so density is
+      // constant across zoom; a parcel-stable phase keeps rows from jumping.
+      const kind = fieldKind(hash);                // 0,1 sheaves · 2 haystacks · 3 grass
+      const sp = kind === 2 ? 46 : 30;
+      const w = sx2 - sx1, h = sy2 - sy1;
+      const cols = Math.min(10, Math.max(1, Math.floor(w / sp)));
+      const rows = Math.min(10, Math.max(1, Math.floor(h / sp)));
+      let n = 0;
+      for (let r = 0; r < rows && n < 28; r++) for (let c = 0; c < cols && n < 28; c++) {
+        const fx = (c + 0.5 + (r % 2) * 0.5 + ((hash >> (c % 7)) & 1) * 0.15) / cols;
+        const fy = (r + 0.5 + ((hash >> (r % 5)) & 1) * 0.15) / rows;
+        if (fx > 1 || fy > 1) continue;
+        const lon = b.w + (b.e - b.w) * fx, lat = b.n - (b.n - b.s) * fy;
+        if (!pipRings(lon, lat, coords)) continue;
+        const [sx, sy] = toScreen(lon, lat);
+        n++;
+        if (kind === 3) drawMeadowSprite(ctx, sx, sy, (hash + r * 3 + c) % 5, hash + r * 31 + c);
+        else drawCropSprite(ctx, sx, sy, kind === 2 ? 'haystack' : 'sheaf', hash + r * 31 + c);
+      }
+      continue;
+    }
     const count = Math.min(14, Math.max(2, Math.floor(area / 600)));
     for (let i = 0; i < count; i++) {
       const t = ((hash + i * 7919) % 10000) / 10000;
@@ -4470,7 +4510,7 @@ function drawLanduseSprites(ctx, claimMap) {
       const [sx, sy] = toScreen(lon, lat);
       const v = (hash + i) % 5;
       switch (spriteType) {
-        case 'crops': drawCropSprite(ctx, sx, sy, v, hash+i); break;
+        case 'crops': drawCropSprite(ctx, sx, sy, 'sheaf', hash+i); break;
         case 'meadow': drawMeadowSprite(ctx, sx, sy, v, hash+i); break;
         case 'vineyard': drawVineyardSprite(ctx, sx, sy, v); break;
         case 'garden': drawGardenSprite(ctx, sx, sy, v, hash+i); break;
@@ -4483,32 +4523,104 @@ function drawLanduseSprites(ctx, claimMap) {
   ctx.restore();
 }
 
-function drawCropSprite(ctx, x, y, v, seed) {
-  const s = G.cam.zoom > 17 ? 1.2 : 0.8;
+// ---- Worked-field patterns ----
+// Fields read as *worked land* the way Settlers IV farms did: parallel tractor
+// tracks with stubble rows on harvested grain, dark furrows on ploughed land,
+// alternating light/dark swaths on mown meadows. One canvas pattern per
+// (kind, zoom bucket) is cached; per parcel we only rotate it along the longest
+// edge (tracks follow the field, not the screen) with a parcel-stable phase.
+// Cost: one clip + one fill per field parcel.
+function fieldKind(hash) { return Math.abs(hash) % 4; }   // 0,1 harvest · 2 ploughed · 3 meadow
+const _fieldPatCache = {};
+function fieldPattern(ctx, kind, k) {
+  const key = kind + ':' + k;
+  if (_fieldPatCache[key]) return _fieldPatCache[key];
+  const P = kind === 2 ? 8 : kind === 3 ? 20 : 16;          // period in px at k=1
+  const c = document.createElement('canvas'); c.width = Math.round(P * k); c.height = Math.round(P * k);
+  const g = c.getContext('2d');
+  g.scale(k, k);
+  if (kind === 3) {
+    // mown meadow: light / dark swath, thin darker seam
+    g.fillStyle = 'rgba(255,255,210,0.16)'; g.fillRect(0, 0, P / 2, P);
+    g.fillStyle = 'rgba(0,30,0,0.17)'; g.fillRect(P / 2, 0, P / 2, P);
+    g.fillStyle = 'rgba(0,20,0,0.28)'; g.fillRect(P / 2 - 0.5, 0, 1, P);
+  } else if (kind === 2) {
+    // ploughed: furrow shadow + lit crest
+    g.fillStyle = 'rgba(70,45,15,0.45)'; g.fillRect(0, 0, 3, P);
+    g.fillStyle = 'rgba(215,185,115,0.30)'; g.fillRect(3, 0, 2, P);
+    g.fillStyle = 'rgba(70,45,15,0.20)'; g.fillRect(5, 0, 3, P);
+  } else {
+    // harvested grain: twin tyre tracks, stubble rows between, pale straw sheen
+    g.fillStyle = 'rgba(235,215,130,0.22)'; g.fillRect(0, 0, P, P);
+    g.fillStyle = 'rgba(55,38,10,0.50)'; g.fillRect(1, 0, 2, P); g.fillRect(6, 0, 2, P);   // tracks
+    g.fillStyle = 'rgba(55,38,10,0.22)'; g.fillRect(3, 0, 3, P);                            // between tyres
+    g.fillStyle = 'rgba(110,85,25,0.40)';                                                    // stubble rows
+    for (let x = 10; x < P; x += 2) g.fillRect(x, 0, 0.8, P);
+    g.fillStyle = 'rgba(255,240,170,0.35)'; g.fillRect(9, 0, 1, P);                          // straw glint
+  }
+  const pat = ctx.createPattern(c, 'repeat');
+  _fieldPatCache[key] = {pat, P: P * k};
+  return _fieldPatCache[key];
+}
+function drawFieldPattern(ctx, rings, hash) {
+  const ring = rings[0];
+  if (!ring || ring.length < 3) return;
+  // longest edge → track direction
+  let bi = 0, bl = -1;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const dx = ring[i + 1][0] - ring[i][0], dy = ring[i + 1][1] - ring[i][1];
+    const l = dx * dx + dy * dy;
+    if (l > bl) { bl = l; bi = i; }
+  }
+  const ang = Math.atan2(ring[bi + 1][1] - ring[bi][1], ring[bi + 1][0] - ring[bi][0]);
+  const z = G.cam.zoom;
+  const k = z >= 18 ? 2 : z >= 16.5 ? 1.5 : z >= 15.5 ? 1 : 0.7;
+  const {pat, P} = fieldPattern(ctx, fieldKind(hash), k);
+  // Tracks run parallel to the edge: the pattern's stripes are vertical, so
+  // rotate by ang (stripe axis = y → edge direction) with a stable phase.
+  const m = new DOMMatrix().translate(ring[bi][0], ring[bi][1]).rotate(ang * 180 / Math.PI + 90).translate((Math.abs(hash) % 97) / 97 * P, 0);
+  pat.setTransform(m);
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = pat;
+  ctx.globalAlpha = z >= 16 ? 1 : 0.7;
+  ctx.fill();
+  ctx.restore();
+}
+
+// Pixel-art field props on a unit grid (u px per pixel): a bound wheat sheaf
+// with fanned ears, or a golden haystack on a pole. Palette straight from the
+// Settlers IV grain fields (deep ochre → straw highlight, umber shadow).
+function drawCropSprite(ctx, x, y, kind, seed) {
+  const u = G.cam.zoom > 17.5 ? 2 : 1;
   x = Math.round(x); y = Math.round(y);
-  // Wheat/grain stalks in rows
-  const colors = ['#c8a830','#d0b038','#b89828','#d8b840','#c0a028'];
-  const stalkColor = colors[v];
-  for (let j = -2; j <= 2; j++) {
-    const ox = x + j * 3 * s;
-    // Stalk
-    ctx.strokeStyle = '#8a7a30';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(ox, y);
-    ctx.lineTo(ox + (seed%3-1)*0.5, y - 10*s);
-    ctx.stroke();
-    // Grain head
-    ctx.fillStyle = stalkColor;
-    ctx.fillRect(ox - 1*s, y - 12*s, 2*s, 4*s);
-    // Awns (tiny lines at top)
-    ctx.strokeStyle = stalkColor;
-    ctx.beginPath();
-    ctx.moveTo(ox, y - 12*s);
-    ctx.lineTo(ox - 1.5*s, y - 14*s);
-    ctx.moveTo(ox, y - 12*s);
-    ctx.lineTo(ox + 1.5*s, y - 14*s);
-    ctx.stroke();
+  const px = (dx, dy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x + dx * u, y + dy * u, w * u, h * u); };
+  const SH = 'rgba(0,0,0,0.28)', UMB = '#7a5a22', OCH = '#b8902e', GOLD = '#d8b040', STRAW = '#f0d878';
+  if (kind === 'haystack') {
+    // shadow, dome, pole
+    px(-6, 1, 12, 1, SH); px(-4, 2, 8, 1, SH);
+    px(-5, -1, 10, 2, UMB);                       // base in shade
+    px(-6, -3, 12, 2, OCH); px(-5, -5, 10, 2, OCH);
+    px(-4, -7, 8, 2, GOLD); px(-3, -9, 6, 2, GOLD); px(-2, -10, 4, 1, GOLD);
+    px(-3, -8, 2, 1, STRAW); px(-1, -10, 2, 1, STRAW); px(-5, -4, 1, 1, STRAW); px(2, -6, 1, 1, STRAW);
+    px(-2, -6, 1, 1, UMB); px(3, -4, 1, 1, UMB);  // loose straw shading
+    px(0, -13, 1, 4, '#5a4020');                  // pole tip
+    if (seed % 3 === 0) { px(5, -2, 2, 1, GOLD); px(-7, -1, 2, 1, GOLD); } // fallen straw
+  } else {
+    // sheaf: stalk bundle (trapezoid), tie band, fanned ears
+    const lean = (seed % 3) - 1;
+    px(-4, 1, 8, 1, SH);
+    px(-3, -3, 6, 4, OCH); px(-2, -6, 4, 3, OCH); px(-1, -7, 2, 1, OCH);
+    px(-3, -3, 1, 4, UMB); px(2, -3, 1, 4, UMB);  // stalk shading
+    px(-3, -2, 6, 1, '#5a4020');                  // tie
+    px(-1, -6, 1, 3, STRAW);                      // highlight
+    // ears fan out
+    px(-2 + lean, -10, 1, 3, GOLD); px(-3 + lean, -11, 1, 2, GOLD);
+    px(0 + lean, -11, 1, 4, GOLD); px(0 + lean, -12, 1, 1, STRAW);
+    px(2 + lean, -10, 1, 3, GOLD); px(3 + lean, -11, 1, 2, GOLD);
+    px(-1 + lean, -9, 1, 2, STRAW); px(1 + lean, -9, 1, 2, OCH);
+    // awns
+    px(-3 + lean, -13, 1, 1, OCH); px(3 + lean, -13, 1, 1, OCH); px(0 + lean, -13, 1, 1, OCH);
   }
 }
 
@@ -5098,63 +5210,247 @@ function drawTriangle(ctx, cx, top, w, h) {
   ctx.fill();
 }
 
-function drawTreasure(ctx, t) {
-  const [x, y] = toScreen(t.lon, t.lat);
-  if (x < -20 || x > gc.width+20 || y < -20 || y > gc.height+20) return;
-
-  if ((t.treasure_type === 'species' || t.treasure_type === 'n2k_species') && t.species_name) {
-    // Natura-2000 rare-species treasures get a pulsing gold ring
-    if (t.treasure_type === 'n2k_species') {
-      const pulse = (Date.now() % 2000) / 2000;
-      ctx.strokeStyle = 'rgba(255,210,60,' + (0.8 * (1-pulse)).toFixed(2) + ')';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(x, y-4, 12 + pulse * 14, 0, Math.PI*2); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255,230,120,0.5)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(x, y-4, 12, 0, Math.PI*2); ctx.stroke();
-    }
-    drawSpeciesTreasure(ctx, x, y, t);
-  } else {
-    drawChestTreasure(ctx, x, y, t);
-  }
+// ================= TREASURE MARKERS =================
+// Every treasure shares one "collectible" presentation so it reads on any
+// terrain and any screen: ground shadow → rarity glow → translucent medallion
+// with a crisp rarity rim → the sprite (bobbing) → orbiting sparkles → name tag
+// (zoom ≥ 16.5). Red-list category colours the rim (EN red, VU orange, NT blue,
+// LC green); chests are gold, XP gems cyan. N2K bonus finds get a rotating
+// dashed gold ring. Sizes are in CSS px and get a 15% boost on touch devices;
+// the hit radius is never below 22px (44px target). Collect FX: burst + float.
+const TREASURE_RARITY = {
+  EN: {rim:'#ff5a4a', glow:'255,90,70',  name:'Stark gefährdet'},
+  VU: {rim:'#ffb830', glow:'255,184,48', name:'Gefährdet'},
+  NT: {rim:'#6cc4ff', glow:'108,196,255',name:'Potenziell gefährdet'},
+  LC: {rim:'#7ee07e', glow:'126,224,126',name:'Nicht gefährdet'},
+  coins: {rim:'#ffd24a', glow:'255,210,74', name:'Schatz'},
+  xp:    {rim:'#5ee6ff', glow:'94,230,255', name:'Erfahrung'},
+  rare_seed:   {rim:'#9be86a', glow:'155,232,106', name:'Seltener Samen'},
+  ancient_map: {rim:'#e0c080', glow:'224,192,128', name:'Alte Karte'},
+};
+let _coarsePointer = null;
+function isCoarsePointer() {
+  if (_coarsePointer == null) { try { _coarsePointer = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches); } catch (e) { _coarsePointer = false; } }
+  return _coarsePointer;
 }
-
-function drawChestTreasure(ctx, x, y, t) {
-  const frame = Math.floor(Date.now() / 400) % 3;
-  const s = treasureScale();
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(s, s);
-  // Soft glow so the chest reads against dark forest
-  const glow = 0.25 + Math.sin(Date.now() / 700) * 0.1;
-  ctx.fillStyle = 'rgba(255,215,90,' + glow.toFixed(2) + ')';
-  ctx.beginPath(); ctx.arc(0, 1, 11, 0, Math.PI*2); ctx.fill();
-  // Chest body
-  ctx.fillStyle = '#6b4020';
-  ctx.fillRect(-7, -3, 14, 9);
-  ctx.fillStyle = '#8b5530';
-  ctx.fillRect(-6, -2, 12, 7);
-  // Lid
-  ctx.fillStyle = '#7b4828';
-  ctx.fillRect(-7, -6, 14, 4);
-  // Gold trim
-  ctx.fillStyle = '#d4a843';
-  ctx.fillRect(-7, -3, 14, 1);
-  ctx.fillRect(-1, -6, 2, 9);
-  // Sparkles
-  ctx.fillStyle = '#fff';
-  const sx = [-10, 8, -6, 10][frame];
-  const sy = [-10, -8, -12, -6][frame];
-  ctx.fillRect(sx, sy, 2, 2);
-  ctx.fillRect(sx-1, sy+1, 1, 1);
-  ctx.fillRect(sx+2, sy+1, 1, 1);
-  ctx.restore();
+function treasureRarity(t) {
+  if (t.treasure_type === 'species' || t.treasure_type === 'n2k_species') return TREASURE_RARITY[t.species_category] || TREASURE_RARITY.LC;
+  return TREASURE_RARITY[t.treasure_type] || TREASURE_RARITY.coins;
 }
-
 // Treasure sprites grow with zoom so they stay findable/tappable at street level.
 function treasureScale() {
   const z = G.cam.zoom;
-  return z > 18 ? 2.2 : z > 17 ? 1.8 : z > 16 ? 1.4 : 1.0;
+  let s = z > 18 ? 2.2 : z > 17 ? 1.8 : z > 16 ? 1.45 : z > 15 ? 1.2 : 1.05;
+  if (isCoarsePointer()) s *= 1.15;
+  return s;
+}
+function treasureHitRadius() { return Math.max(isCoarsePointer() ? 26 : 22, 15 * treasureScale()); }
+let _treasuresOnScreen = 0;
+function treasurePhase(t) { return ((t.id || 0) * 0.73) % (Math.PI * 2); }
+
+function drawTreasure(ctx, t) {
+  const [x, y] = toScreen(t.lon, t.lat);
+  const s = treasureScale();
+  const m = 40 * s;
+  if (x < -m || x > gc.width + m || y < -m || y > gc.height + m) return;
+  _treasuresOnScreen++;
+  const time = Date.now();
+  const ph = treasurePhase(t);
+  const bob = Math.sin(time / 650 + ph) * 2.5 * s;
+  const rar = treasureRarity(t);
+  const isSpecies = (t.treasure_type === 'species' || t.treasure_type === 'n2k_species') && t.species_name;
+  const R = 15 * s;                 // medallion radius
+  const cy = y - 6 * s + bob;       // medallion centre (sprite floats above its shadow)
+
+  ctx.save();
+  // Settlers-era presentation: no plate, no gradients. The creature/chest
+  // stands on the land; underneath lies a *dithered* isometric ring of light
+  // (checkerboard pixels in the rarity colour, like the 2000s selection
+  // circles), and a small bouncing pixel arrow hovers above — the classic
+  // "look here" cue. Everything is snapped to a pixel unit `u`.
+  const u = Math.max(1, Math.round(s));
+  const xi = Math.round(x), yi = Math.round(y);
+  const pulse = 0.5 + 0.5 * Math.sin(time / 800 + ph);
+
+  // Dithered ground ring: ellipse rx=R, ry=0.45R; ring band 3u; checkerboard
+  const rx = Math.round(R + 2 * u), ry = Math.round(rx * 0.45);
+  const band = 3 * u;
+  const spin = Math.floor(time / 250) % 2;             // slowly crawling dither
+  ctx.fillStyle = rar.rim;
+  for (let py = -ry; py <= ry; py += u) {
+    for (let pxx = -rx; pxx <= rx; pxx += u) {
+      const d = Math.hypot(pxx / rx, py / ry);          // 0 centre … 1 rim
+      const inner = 1 - band / rx;
+      if (d > 1 || d < inner) continue;
+      const cell = ((pxx / u + py / u + spin) & 1) === 0;
+      const edge = d > 1 - u / rx;                       // outer edge row solid
+      if (cell || edge) ctx.fillRect(xi + pxx, yi + 3 * u + py, u, u);
+    }
+  }
+  // Soft fill inside the ring (sparse dither, breathes with pulse)
+  ctx.fillStyle = 'rgba(' + rar.glow + ',' + (0.25 + pulse * 0.2).toFixed(2) + ')';
+  for (let py = -ry; py <= ry; py += 2 * u) {
+    for (let pxx = -rx; pxx <= rx; pxx += 2 * u) {
+      const d = Math.hypot(pxx / rx, py / ry);
+      if (d < 1 - band / rx && (((pxx / u + py / u) >> 1) & 1) === spin) ctx.fillRect(xi + pxx, yi + 3 * u + py, u, u);
+    }
+  }
+  // Contact shadow directly under the sprite
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  const shw = Math.round(7 * s);
+  ctx.fillRect(xi - shw, yi + 2 * u, shw * 2, u); ctx.fillRect(xi - shw + 2 * u, yi + u, shw * 2 - 4 * u, u); ctx.fillRect(xi - shw + 2 * u, yi + 3 * u, shw * 2 - 4 * u, u);
+
+  // Natura-2000 bonus: second, wider gold dither ring rotating the other way
+  if (t.treasure_type === 'n2k_species') {
+    const rx2 = rx + 5 * u, ry2 = Math.round(rx2 * 0.45);
+    ctx.fillStyle = '#ffd84a';
+    for (let py = -ry2; py <= ry2; py += u) for (let pxx = -rx2; pxx <= rx2; pxx += u) {
+      const d = Math.hypot(pxx / rx2, py / ry2);
+      if (d > 1 || d < 1 - 2 * u / rx2) continue;
+      if (((pxx / u + py / u + 1 - spin) & 1) === 0) ctx.fillRect(xi + pxx, yi + 3 * u + py, u, u);
+    }
+  }
+
+  // Bouncing pixel arrow above the sprite (rarity colour, dark outline)
+  const ay = Math.round(cy - R - 6 * s - Math.abs(Math.sin(time / 350 + ph)) * 4 * s);
+  const arrow = (col, o) => {
+    ctx.fillStyle = col;
+    ctx.fillRect(xi - 4 * u - o, ay - 6 * u - o, 8 * u + 2 * o, 3 * u + 2 * o);
+    ctx.fillRect(xi - 3 * u - o, ay - 3 * u, 6 * u + 2 * o, u + o);
+    ctx.fillRect(xi - 2 * u - o, ay - 2 * u, 4 * u + 2 * o, u + o);
+    ctx.fillRect(xi - u - o, ay - u, 2 * u + 2 * o, u + o);
+  };
+  arrow('#1a140c', u); arrow(rar.rim, 0);
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(xi - 4 * u, ay - 6 * u, 8 * u, u);
+
+  // Sprite
+  if (isSpecies) drawSpeciesTreasure(ctx, x, y + bob, t, s);
+  else drawLootSprite(ctx, xi, Math.round(y - 5 * s + bob), s, t.treasure_type, time, ph);
+
+  // Orbiting sparkles: pixel crosses (1 unit) that twinkle
+  for (let i = 0; i < 3; i++) {
+    const a = time / 1400 + ph + i * 2.094;
+    const tw = 0.5 + 0.5 * Math.sin(time / 180 + i * 1.7 + ph);
+    const sx = Math.round(x + Math.cos(a) * (R + 4 * s)), sy = Math.round(cy + Math.sin(a) * (R + 4 * s) * 0.55 - 2 * s);
+    ctx.fillStyle = tw > 0.5 ? '#fff8d8' : '#ffd84a';
+    ctx.fillRect(sx - u / 2, sy - u / 2, u, u);
+    if (tw > 0.35) { ctx.fillRect(sx - u / 2, sy - 2 * u, u, 4 * u); ctx.fillRect(sx - 2 * u, sy - u / 2, 4 * u, u); }
+  }
+
+  // Name tag at street level (MAP_FONT.label, like giant-tree labels)
+  if (G.cam.zoom >= 16.5) {
+    const label = isSpecies ? t.species_german : (rar.name + (t.value ? ' +' + t.value : ''));
+    const sub = isSpecies && t.species_category ? t.species_category + ' · ' + rar.name : '';
+    ctx.font = MAP_FONT.label;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const ty = Math.round(y + 8 * s);
+    const tw = Math.ceil(ctx.measureText(label).width) + 8;
+    ctx.fillStyle = 'rgba(20,16,10,0.78)';
+    ctx.fillRect(xi - Math.ceil(tw / 2), ty, tw, sub ? 26 : 15);
+    ctx.fillStyle = rar.rim; ctx.fillRect(xi - Math.ceil(tw / 2), ty, tw, 1);
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillText(label, xi + 1, ty + 2);
+    ctx.fillStyle = '#fff4d0'; ctx.fillText(label, xi, ty + 1);
+    if (sub) {
+      ctx.font = MAP_FONT.small;
+      ctx.fillStyle = rar.rim; ctx.fillText(sub, xi, ty + 14);
+    }
+  }
+  ctx.restore();
+}
+
+// Pixel-art loot sprites (drawn on a virtual 1px grid scaled by s, centred on cx,cy).
+function drawLootSprite(ctx, cx, cy, s, type, time, ph) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(s, s);
+  const px = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  if (type === 'xp') {
+    // Floating cyan gem, faceted, with a rotating highlight
+    const gl = 0.5 + 0.5 * Math.sin(time / 300 + ph);
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(7, -3); ctx.lineTo(4, 7); ctx.lineTo(-4, 7); ctx.lineTo(-7, -3); ctx.closePath();
+    ctx.fillStyle = '#1d8fb0'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(7, -3); ctx.lineTo(0, -1); ctx.closePath(); ctx.fillStyle = '#7fe8ff'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(-7, -3); ctx.lineTo(0, -1); ctx.closePath(); ctx.fillStyle = '#48c6ea'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-7, -3); ctx.lineTo(0, -1); ctx.lineTo(-4, 7); ctx.closePath(); ctx.fillStyle = '#2aa4cc'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(7, -3); ctx.lineTo(0, -1); ctx.lineTo(4, 7); ctx.closePath(); ctx.fillStyle = '#156f8c'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -1); ctx.lineTo(4, 7); ctx.lineTo(-4, 7); ctx.closePath(); ctx.fillStyle = '#0f5a72'; ctx.fill();
+    px(-2, -6, 2, 2, 'rgba(255,255,255,' + (0.5 + gl * 0.5).toFixed(2) + ')');
+    px(1, -4, 1, 1, 'rgba(255,255,255,' + (0.3 + gl * 0.6).toFixed(2) + ')');
+  } else if (type === 'rare_seed') {
+    px(-5, 2, 10, 6, '#7a4a22'); px(-6, 1, 12, 2, '#8f5a2c'); px(-4, 3, 8, 1, '#5e3618');
+    px(-1, -6, 2, 8, '#3f9a3a'); px(-5, -5, 4, 3, '#5ec457'); px(1, -8, 4, 3, '#5ec457'); px(-1, -9, 2, 2, '#9be86a');
+  } else if (type === 'ancient_map') {
+    px(-9, -6, 18, 12, '#d8bf86'); px(-9, -6, 18, 1, '#a88a55'); px(-9, 5, 18, 1, '#a88a55');
+    px(-10, -7, 3, 14, '#8a6a3c'); px(7, -7, 3, 14, '#8a6a3c');
+    ctx.strokeStyle = '#7a4a22'; ctx.lineWidth = 1; ctx.setLineDash([1.5, 1.5]);
+    ctx.beginPath(); ctx.moveTo(-6, 3); ctx.quadraticCurveTo(-1, -6, 5, -2); ctx.stroke(); ctx.setLineDash([]);
+    px(4, -3, 2, 2, '#c03030'); px(4.5, -2.5, 1, 1, '#ff8080');
+  } else {
+    // Wooden treasure chest, iron bands, gold lock; lid cracks open and glints
+    const open = Math.max(0, Math.sin(time / 1100 + ph)) * 2.5;
+    px(-9, -1, 18, 9, '#5a3416');           // body dark
+    px(-8, 0, 16, 7, '#8a5a2e');            // body
+    px(-8, 0, 16, 1, '#a9743d');            // top highlight
+    px(-8, 6, 16, 1, '#6b4220');            // bottom shade
+    px(-9, -1, 2, 9, '#3f3a38'); px(7, -1, 2, 9, '#3f3a38');          // iron corners
+    px(-5, -1, 1, 9, '#4a4440'); px(4, -1, 1, 9, '#4a4440');          // straps
+    // glint from inside when lid is open
+    if (open > 0.4) { px(-7, -1 - open, 14, open + 1, '#ffe27a'); px(-4, -1 - open, 8, 1, '#fff7c0'); }
+    // lid (rounded top) — rises with `open`
+    ctx.save(); ctx.translate(0, -open);
+    px(-9, -6, 18, 5, '#6b4220'); px(-8, -7, 16, 1, '#6b4220'); px(-8, -5, 16, 3, '#9a6634'); px(-7, -6, 14, 1, '#b57d44');
+    px(-9, -6, 2, 5, '#3f3a38'); px(7, -6, 2, 5, '#3f3a38'); px(-5, -7, 1, 6, '#4a4440'); px(4, -7, 1, 6, '#4a4440');
+    ctx.restore();
+    // lock plate + keyhole
+    px(-2, -2, 4, 4, '#e8b83a'); px(-2, -2, 4, 1, '#fff0a0'); px(-0.5, -0.5, 1, 1.5, '#4a3010');
+    // coin glint on the lock
+    const gl = 0.5 + 0.5 * Math.sin(time / 250 + ph);
+    if (gl > 0.7) px(1, -2, 1, 1, '#ffffff');
+  }
+  ctx.restore();
+}
+
+// ---- Collect FX: gold burst + floating reward text ----
+G.fx = G.fx || [];
+function spawnCollectFX(t, text, rar) {
+  const [x, y] = toScreen(t.lon, t.lat);
+  const parts = [];
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2 + Math.random() * 0.4;
+    const v = 60 + Math.random() * 90;
+    parts.push({a, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.6 - 60, sz: 1.5 + Math.random() * 2.5});
+  }
+  G.fx.push({lon: t.lon, lat: t.lat, t0: performance.now(), dur: 1400, text, color: rar.rim, glow: rar.glow, parts});
+}
+function drawCollectFX(ctx) {
+  if (!G.fx.length) return;
+  const now = performance.now();
+  G.fx = G.fx.filter(f => now - f.t0 < f.dur);
+  for (const f of G.fx) {
+    const [x, y] = toScreen(f.lon, f.lat);
+    const k = (now - f.t0) / f.dur;            // 0..1
+    const tt = (now - f.t0) / 1000;
+    // expanding ring
+    ctx.strokeStyle = 'rgba(' + f.glow + ',' + (0.8 * (1 - k)).toFixed(2) + ')';
+    ctx.lineWidth = 2;
+    const rr = Math.round(10 + k * 60);
+    ctx.strokeRect(Math.round(x) - rr, Math.round(y - 6) - rr * 0.6, rr * 2, rr * 1.2);
+    // sparks with gravity
+    for (const p of f.parts) {
+      const px = x + p.vx * tt, py = y - 6 + p.vy * tt + 160 * tt * tt;
+      ctx.fillStyle = 'rgba(255,235,140,' + (1 - k).toFixed(2) + ')';
+      ctx.fillRect(px - p.sz / 2, py - p.sz / 2, p.sz, p.sz);
+    }
+    // floating text
+    const ease = 1 - Math.pow(1 - Math.min(1, k * 1.3), 3);
+    ctx.font = MAP_FONT.pixel;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const fy = Math.round(y - 26 - ease * 40);
+    ctx.globalAlpha = 1 - k * k;
+    ctx.fillStyle = '#000'; ctx.fillText(f.text, Math.round(x) + 1, fy + 1);
+    ctx.fillStyle = f.color; ctx.fillText(f.text, Math.round(x), fy);
+    ctx.globalAlpha = 1;
+  }
 }
 
 // Map species names to sprite drawing groups
@@ -5181,22 +5477,14 @@ const SPECIES_SPRITE_MAP = {
   'Acipenser ruthenus':         'sturgeon',
 };
 
-function drawSpeciesTreasure(ctx, x, y, t) {
+// Species sprite only (frame, glow, label are drawn by drawTreasure). `y` is the
+// already-bobbed ground anchor; the creature occupies roughly y-17s … y+6s.
+function drawSpeciesTreasure(ctx, x, y, t, s) {
   const sprite = SPECIES_SPRITE_MAP[t.species_name] || 'butterfly_white';
   const time = Date.now();
-  const s = treasureScale();
-  const bob = Math.sin(time / 600 + x * 0.01) * 2;
-
+  s = s || treasureScale();
   ctx.save();
-
-  // Soft glow circle underneath
-  const glowPulse = 0.3 + Math.sin(time / 800) * 0.1;
-  const catColor = {'EN':'rgba(220,60,60,','VU':'rgba(220,160,40,','NT':'rgba(100,180,220,','LC':'rgba(100,200,100,'};
-  const gBase = catColor[t.species_category] || 'rgba(200,200,100,';
-  ctx.fillStyle = gBase + glowPulse + ')';
-  ctx.beginPath(); ctx.arc(x, y + 2, 12*s, 0, Math.PI*2); ctx.fill();
-
-  const by = y + bob;
+  const by = y;
 
   if (sprite === 'lynx') {
     // Pixel-art lynx face: tufted ears, spotted
@@ -5604,23 +5892,6 @@ function drawSpeciesTreasure(ctx, x, y, t) {
     }
   }
 
-  // Species label at higher zoom
-  if (G.cam.zoom >= 17 && t.species_german) {
-    ctx.font = `${Math.round(10*s)}px "VT323", monospace`;
-    ctx.textAlign = 'center';
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = 'rgba(0,0,0,0.75)'; ctx.lineWidth = 3;
-    ctx.strokeText(t.species_german, x, by + 16*s);
-    ctx.fillStyle = '#fff4d0';
-    ctx.fillText(t.species_german, x, by + 16*s);
-    // Red list category badge
-    const catColors = {'EN':'#ff6a5a','VU':'#ffc040','NT':'#80c0f0','LC':'#90e090'};
-    const cc = catColors[t.species_category] || '#ccc';
-    ctx.strokeText(t.species_category, x, by + 25*s);
-    ctx.fillStyle = cc;
-    ctx.fillText(t.species_category, x, by + 25*s);
-  }
-
   ctx.restore();
 }
 
@@ -5851,7 +6122,7 @@ function drawScaleBar(ctx, W, H) {
   ctx.fillStyle = '#000'; ctx.fillRect(x-1,y-1,barPx+2,6);
   ctx.fillStyle = '#fff'; ctx.fillRect(x,y,barPx,4);
   ctx.fillStyle = '#000'; ctx.fillRect(x,y,barPx/2,4);
-  ctx.font = '12px VT323'; ctx.fillStyle = '#fff';
+  ctx.font = MAP_FONT.small; ctx.fillStyle = '#fff';
   ctx.fillText(barM>=1000?(barM/1000)+'km':barM+'m', x+barPx+6, y+4);
 }
 
@@ -6390,8 +6661,8 @@ function onGameClick(e) {
   // Check treasures first
   for (const t of G.treasures) {
     const [tx, ty] = toScreen(t.lon, t.lat);
-    const hr = 12 * treasureScale() + 8;
-    if (Math.abs(tx-x)<hr && Math.abs(ty-y)<hr) { claimTreasure(t); return; }
+    const hr = treasureHitRadius();
+    if (Math.hypot(tx-x, ty-(y+6*treasureScale())) < hr) { claimTreasure(t); return; }
   }
 
   // Similar-parcel markers (before parcel hit-testing — they sit on top)
@@ -7139,7 +7410,7 @@ function drawSimilarParcels(ctx) {
     ctx.fillStyle = sc > 0.6 ? '#4de8dc' : '#2ab5ac';
     ctx.fill();
     if (showLabel) {
-      ctx.font = '10px "Press Start 2P", monospace';
+      ctx.font = MAP_FONT.pixel;
       ctx.textAlign = 'center';
       const lbl = Math.round(r.score * 100) + '%';
       ctx.fillStyle = '#062d30';
@@ -7169,7 +7440,7 @@ function drawSimilarParcels(ctx) {
     ctx.restore();
     // count + distance label, offset toward screen center
     const lx = a.ex - Math.cos(a.ang) * 26, ly = a.ey - Math.sin(a.ang) * 26;
-    ctx.font = '9px "Press Start 2P", monospace';
+    ctx.font = MAP_FONT.pixel;
     ctx.textAlign = 'center';
     const lbl = (a.n > 1 ? a.n + '× ' : '') + (a.dist >= 1000 ? Math.round(a.dist/1000) + 'km' : Math.round(a.dist) + 'm');
     ctx.fillStyle = '#062d30';
@@ -7197,7 +7468,7 @@ function drawSimilarParcels(ctx) {
     ctx.fillStyle = '#ffd34d';
     ctx.fill();
     if (showLabel) {
-      ctx.font = '10px "Press Start 2P", monospace';
+      ctx.font = MAP_FONT.pixel;
       ctx.textAlign = 'center';
       ctx.fillStyle = '#3a2c08';
       ctx.fillText('REF', rx + 1, ry - sz - 5);
@@ -7465,6 +7736,7 @@ async function claimTreasure(t) {
     toast('💎 Schatz! +'+res.value+emoji,'ok');
   }
   G.player = res.player; updateStats();
+  spawnCollectFX(t, '+' + res.value + (res.type === 'xp' ? ' XP' : ' 🪙'), treasureRarity(t));
   G.treasures = G.treasures.filter(tr=>tr.id!==t.id);
   if (!G.tallUnlocked && enhancedLoaded()) setTimeout(() => Herald.hint('trees_unlocked'), 1200);
   // First treasure unlocks the giant trees (enhanced mode)
@@ -7577,6 +7849,19 @@ function resetPopupPosition(id) {
   }
 }
 
+// Smooth treasure bob/sparkle + collect FX: ~25fps only while a treasure is
+// actually on screen (or FX are playing); respects prefers-reduced-motion.
+(function treasureAnimLoop() {
+  requestAnimationFrame(treasureAnimLoop);
+  if (!document.getElementById('screen-game').classList.contains('active')) return;
+  if (!(_treasuresOnScreen > 0 || G.fx.length)) return;
+  const now = performance.now();
+  const step = isCoarsePointer() ? 50 : 40;
+  if (now - (treasureAnimLoop._last || 0) < step) return;
+  if (giantAnimBudget() === 1 && !G.fx.length) return; // reduced motion → static (800ms tick below)
+  treasureAnimLoop._last = now;
+  render();
+})();
 // Sparkle animation for treasures, top-tree sway + GPS pulse
 setInterval(() => {
   if (document.getElementById('screen-game').classList.contains('active') &&
@@ -8162,7 +8447,7 @@ function _topoFont(kind, size) {
     case 'water': return `italic ${size}px VT323, monospace`;
     case 'ried':  return 'italic 15px VT323, monospace';
     case 'hof': case 'ruinhof': return '14px VT323, monospace';
-    default:      return '13px VT323, monospace';
+    default:      return MAP_FONT.label;
   }
 }
 function _topoColor(kind) {

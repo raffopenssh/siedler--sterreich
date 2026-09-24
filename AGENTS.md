@@ -214,6 +214,24 @@ building (0.5) symbols when picking a parcel's dominant use in
 Upstream's `land_prices` applies the same idea server-side: prefer
 `buy_total_blended_eur` + `class_source:"area"` over the single-class total.
 
+### Treasure markers & field textures
+
+- `drawTreasure()` (game.js): Settlers-era collectible presentation — dithered
+  isometric ground ring in the rarity colour (`TREASURE_RARITY`: EN/VU/NT/LC,
+  coins gold, xp cyan), contact shadow, bobbing sprite, bouncing pixel arrow,
+  pixel-cross sparkles, name tag at zoom ≥ 16.5. Species sprites live in
+  `drawSpeciesTreasure(ctx,x,y,t,s)`; loot in `drawLootSprite()` (chest, gem,
+  seed, map). `treasureHitRadius()` ≥ 22px (26 on touch). Collect →
+  `spawnCollectFX()` burst + floating reward; `drawCollectFX()`. A rAF loop
+  renders at ~25fps only while `_treasuresOnScreen > 0` or FX play.
+- **Canvas type scale `MAP_FONT`** (`label` 14px VT323, `small` 11px VT323,
+  `pixel` 9px Press Start 2P) — use these for every in-map label, never ad-hoc sizes.
+- Fields (NS 48 / `TERRAIN.farm`): `drawFieldPattern()` fills the parcel with a
+  cached canvas pattern (`fieldKind(hash)`: harvest tracks+stubble, ploughed
+  furrows, mown swaths) rotated along the parcel's longest edge; sprites
+  (`drawCropSprite` sheaf/haystack, `drawMeadowSprite`) sit on a staggered
+  lattice of the same kind (zoom ≥ 16).
+
 ## Database Schema
 
 SQLite with sqlc. Key tables:
