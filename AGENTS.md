@@ -295,7 +295,7 @@ SQLite with sqlc. Key tables:
 ## Real-Time (SSE)
 
 Server broadcasts events via `s.broadcast(sessionID, data)`. Frontend handles in `handleEvent(d)`:
-- `parcel_claimed`, `parcel_converted`, `parcel_sold`
+- `parcel_claimed`, `parcel_converted`, `parcel_sold`, `parcel_harvested` (`forest:true` for timber)
 - `ez_claimed` — bulk EZ purchase
 - `player_joined`, `challenge_completed`
 - `chat` — new message
@@ -458,6 +458,70 @@ base only paints the fill + `drawFieldPattern(..., 'wild')` tussock mottling;
   overlay exceeds ~9 ms/frame. The rAF loop runs only while `NATURE.onScreen>0`.
 - Ordinary meadows/stubble/gardens/vineyards get rare hives / nest boxes via
   `drawSporadicHabitat()` (~14 % of parcels, hash-stable) in the base layer.
+
+## Forest plots — Holzernte & Naturwald (`srv/timber.go`, game.js "FOREST PLOTS")
+
+A forest stand (`claimIsForest`: NS 56, or lidar tree cover ≥ 50 % on a
+non-crop parcel; server: `estimateTimber().IsForest`) replaces the generic
+Naturschutz/Aufforsten buttons with two options:
+
+- **🪓 Holzernte** (`POST /api/harvest-forest`): coins now = real net timber
+  value / `eurPerCoin` (10). Reuses `parcel_claims.harvested_at`/`harvests`.
+  The stand then regrows on real time (`forestPhase()` ↔ `forestStage()`):
+  Schlag < 40 min → Jungwuchs < 90 → Stangenholz < 150 → Baumholz
+  (harvestable again, value 50 % → 100 % by 510 min). Quest "Holzknecht"
+  counts `SUM(harvests) WHERE landuse='56'`; Erntedank subtracts those.
+- **🌳 Naturwald** (`POST /api/convert-parcel` with `wildforest`): permanent,
+  forest-only, only on a Baumholz stand; XP = `120 + min(180, Vfm/10)`.
+  Counts toward the 30 % bio target (`GetSessionBiodiversityPercent`) and
+  the Waldmeister/Naturschützer counters; quest "Waldhüter".
+
+**Estimate** (`GET /api/forest-value?parcel_id=&kg=&area=&lu=&session_id=`,
+cached 1 h when v3 / 10 min otherwise, singleflight per parcel):
+1. Stand facts from the *cached* lidar-slim only (never warms): `fracs.tree`,
+   `tree_h {mean,max}` (new slim field from `height_distribution.tree`; older
+   caches fall back to `0.72·ndsm_max_m`), elevation, slope. No lidar → NS 56
+   defaults (85 % canopy, h 18 m). Species mix from elevation
+   (conifer share, larch above 800/1200 m, pine in lowlands).
+2. **Fast path**: `POST srtm /api/v3/trees` (product apex inventory,
+   `include_trees:false, fallback_live:false`) with a **2.5 s budget** — ~0.2 s
+   when the KG's light GPKG is warm, minutes when cold (Zenodo). A
+   timeout/202 marks the KG cold in `v3cold` for 4 min; the heuristic is used
+   meanwhile. When it answers: `volume_m3_est_total`, `n_trees`, `h_mean_m`,
+   `by_leaf_type`, `by_species_hint`, `area_ha_canopy` replace the heuristic
+   (`source:"v3"`). Only for `isV2Product` KGs and < 60 ha.
+3. Stock heuristic (Ertragstafel-ish): `Vfm/ha ≈ 0.9·h_mean^1.95` × canopy ha;
+   `Efm = 0.8·Vfm`; CO₂ ≈ 0.9 t/Vfm. Assortments by height (sawlog share
+   `(h−10)/18` capped 0.7, fuelwood 10–35 %, rest industrial).
+4. **Prices** from `https://holzeinschlag-at.exe.xyz/data/timber_price_catalog.json`
+   (weekly refresh upstream; we cache 24 h as `timber:catalog`): per-state LK
+   series (`LK_BLFIM2b` spruce/fir Media 2b, `LK_BLLA3aplus` larch,
+   `LK_BLKI2aplus` pine, `LK_BLBU3plus` beech, `LK_ISFI_FMO` Schleifholz,
+   `LK_BHH/LK_BHW` fuelwood ×1.4 RM→Fm), national STAT series as fallback,
+   `fallbackPrices` table last. `kgState()` maps the KG code prefix to the
+   Bundesland (0/1/2 NÖ, 3 Bgld, 4+50–54 OÖ, 55–59 Sbg, 6 Stmk, 7 Ktn, 8 T, 9 Vbg).
+   `/api/plot-context` there is 10–60 s and single-threaded — not used.
+5. Harvest cost 28/36/45 €/Efm by slope (>20°, >30°) + 150 € fixed.
+
+**Rendering.** `drawForestOverlay()` (after `drawNatureReserves`, same
+LOD/animation machinery, counts into `NATURE.onScreen`) draws
+`forestScene(f, 'wild'|'schlag')`:
+- *wild*: clump noise → old growth (veterans, snags, deadwood, root plates),
+  gaps (saplings, bramble, thorn, fireweed), mixed stand; Waldmantel with
+  bramble/thorn within 3 m of the edge. Species table by elevation
+  (`F_SPECIES_LOW/MID/HIGH`, pioneers `F_PIONEER`), 4 size classes in
+  `fTree()`, wind bends trunks (`bend` factor). Fauna: woodpecker on snags,
+  deer crossing every 60 s, jay.
+- *schlag*: stumps, slash, ≤2 Holzpolter near the edge, ~2 % Überhälter
+  (`bend 2.6`, visibly wind-bent), crows. Regrowth items carry `birth`
+  (cycle fraction) and pop in as `forestStage().t` passes it; saplings grow
+  to size 1. Ground: `TERRAIN.schlag`/`regrow` + `fieldPattern` kind 7
+  (ruts). Below zoom 15 wild forests fall back to plain forest sprites
+  (`getTreeStyle`), regrown-but-not-full-value stands use style `'young'`.
+- Popup: `forestPopupRows()` (Holzvorrat, Bestand, Holzerlös with price
+  source/date, CO₂) in the Gelände section; `#pp-field` row shows the stand
+  stage. `G.forestValues[pid]` is the lazy cache; the fetch callback re-runs
+  `showParcelPopup` so the action buttons pick up the coins/XP.
 
 ## Quests → Herald briefings
 
