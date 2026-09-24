@@ -9,6 +9,7 @@ import (
 )
 
 var flagListenAddr = flag.String("listen", ":8000", "address to listen on")
+var flagReseed = flag.String("reseed-treasures", "", "re-place the unfound treasures of a session (id or invite code) and exit")
 
 func main() {
 	if err := run(); err != nil {
@@ -25,6 +26,9 @@ func run() error {
 	server, err := srv.New("db.sqlite3", hostname)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
+	}
+	if *flagReseed != "" {
+		return server.ReseedTreasures(*flagReseed)
 	}
 	return server.Serve(*flagListenAddr)
 }

@@ -2529,49 +2529,6 @@ var redListSpecies = []struct {
 	{"Gulo gulo", "Vielfraß", "VU", "mammal", 450},
 }
 
-func (s *Server) generateTreasures(ctx context.Context, sessionID string, lon, lat float64) {
-	// Generate a mix: some classic coin/xp treasures + species encounters
-	type treasure struct {
-		tType                                  string
-		value                                  int64
-		speciesName, speciesGerman, speciesCat string
-	}
-	var treasures []treasure
-
-	// 3 classic treasures
-	treasures = append(treasures,
-		treasure{"coins", 100, "", "", ""},
-		treasure{"coins", 200, "", "", ""},
-		treasure{"xp", 150, "", "", ""},
-	)
-
-	// 7 species encounters (pick pseudo-random from list using session ID hash)
-	hash := uint64(0)
-	for _, c := range sessionID {
-		hash = hash*31 + uint64(c)
-	}
-	for i := 0; i < 7; i++ {
-		idx := int((hash + uint64(i)*7919) % uint64(len(redListSpecies)))
-		sp := redListSpecies[idx]
-		treasures = append(treasures, treasure{"species", sp.Value, sp.Name, sp.German, sp.Category})
-	}
-
-	for i, t := range treasures {
-		dLon := (float64(i)*0.0012 - 0.005) + float64(i%3)*0.0006
-		dLat := (float64(i)*0.0009 - 0.004) + float64(i%2)*0.0005
-		s.Q.CreateTreasure(ctx, dbgen.CreateTreasureParams{
-			SessionID:       sessionID,
-			Lon:             lon + dLon,
-			Lat:             lat + dLat,
-			TreasureType:    t.tType,
-			Value:           t.value,
-			SpeciesName:     t.speciesName,
-			SpeciesGerman:   t.speciesGerman,
-			SpeciesCategory: t.speciesCat,
-		})
-	}
-}
-
 // backfillChallenges adds quests introduced after a session was created (only
 // for players who already have quests there, i.e. are members).
 func (s *Server) backfillChallenges(ctx context.Context, sessionID, playerID string) {
