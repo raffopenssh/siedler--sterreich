@@ -33,6 +33,7 @@ const (
 	fxBBoxCSV  = "15.205,47.015,15.215,47.025"
 	fxPoly     = `{"type":"Polygon","coordinates":[[[15.207,47.017],[15.210,47.017],[15.210,47.019],[15.207,47.019],[15.207,47.017]]]}`
 	fxNoDataKG = "00000"
+	fxPtQ      = "lon=15.2105&lat=47.0195" // inside fxBBox, ~400 m from gw station gw:356899
 )
 
 type aheadService struct {
@@ -44,6 +45,7 @@ var aheadServices = []aheadService{
 	{"srtm", "https://srtm-lidar-at.exe.xyz:8000", "raffopenssh/srtm-lidar-at"},
 	{"holz", "https://holzeinschlag-at.exe.xyz", "raffopenssh/holzeinschlag-austria"},
 	{"farm", "https://farm-subsidies-austria.exe.xyz", "raffopenssh/farm-subsidies"},
+	{"gw", "https://groundwater-at.exe.xyz", "groundwater-at (GW Power)"},
 }
 
 // aheadCheck is a declarative HTTP probe. Paths are relative to the service
@@ -97,7 +99,7 @@ var aheadItems = []aheadItem{
 		Spec:  "Idempotent, deduped, low-priority. Returns ≤500 ms with 202 {queued:[..],already_warm:[..]} (200 if all warm). ≤50 KGs per call. Fired once per game session create.",
 		Why:   "Kills loading-screen 202 waits; both of you lazily pull Zenodo.",
 		Check: &aheadCheck{Method: "POST", Path: "/api/v1/prewarm?kgs=" + fxKG, Status: []int{200, 202}, MaxMs: 2000}},
-	{ID: "ALL-5", Prio: "P3", Services: []string{"holz", "farm"}, Title: "ETag/304 + gzip on static JSON",
+	{ID: "ALL-5", Prio: "P3", Services: []string{"holz", "farm", "gw"}, Title: "ETag/304 + gzip on static JSON",
 		Spec: "Every /data/* and /llm/* JSON: ETag (or Last-Modified), If-None-Match → 304, Content-Encoding gzip when requested, Cache-Control max-age≥3600. CORS *.",
 		Why:  "700 KB catalog every session → 0 bytes when unchanged.",
 		Check: &aheadCheck{Path: "/llm/manifest.json", MaxMs: 3000, Custom: func(r *probeRes) error {
@@ -196,6 +198,41 @@ var aheadItems = []aheadItem{
 		Spec:  "{points:[{id (hashed betr_id), lon, lat, organic?, size_class (s|m|l), parcel_id?}], year}. Aggregated/hashed, no names.",
 		Why:   "Render the real farmstead as the EZ 'home'.",
 		Check: &aheadCheck{Path: "/api/hofstellen?" + fxBBoxQ, MaxMs: 5000, Has: []string{"points"}}},
+
+	// ---- groundwater (GW Power) — already ships /llm/kg, /llm/kgs, manifest, llm.txt (ALL-1..3 green).
+	// What follows moves it from "KG dossier" to parcel-scale gameplay: wells, drought seasons, water landmarks.
+	{ID: "GW-1", Prio: "P1", Services: []string{"gw"}, Title: "GET /llm/point?lon=&lat= — water context at a coordinate (parcel scale)",
+		Spec:  "Same IDW as the KG centroid calc, evaluated at the point. {lon,lat,kg_code, metrics:{gwi, gwi_category, gwi_q_*, gwi_gw_trend, gwi_no3, depth_to_gw_m_est, depth_confidence (high|med|low), aquifer_type}, nearest_gw_station:{id,name,distance_m,gw_level_m,gw_trend_m_per_decade,parcel_id?}, nearest_no3_station:{id,distance_m,no3_mg_l}, nearest_river:{name,distance_m,reach_id,glacier_fed:bool}, groundwater_body:{gwk_id,name,abstraction_intensity_pct}}. depth_to_gw = IDW station level (m a.s.l.) − DEM at point; null + confidence low when nearest station > 5 km. Quantize input to 4 decimals for cache hits. ≤150 ms. 404 no_data outside coverage.",
+		Why:   "KGs span 0.5–30 km; a well/irrigation mechanic needs the value under *this* parcel. 'Brunnen graben' costs by depth, pays by gwi.",
+		Check: &aheadCheck{Path: "/llm/point?" + fxPtQ, MaxMs: 3000, Has: []string{"metrics.gwi", "nearest_gw_station"}}},
+	{ID: "GW-2", Prio: "P1", Services: []string{"gw"}, Title: "GET /llm/points?west&south&east&north — stations/plants/sites in a bbox, no history",
+		Spec:  "R-tree over the four point datasets. Params: categories=groundwater_station,nitrate_station,power_plant,water_quality_site (default all), limit ≤500, history=0|1 (default 0). {points:[{id,category,name,lon,lat,kg_code,parcel_id?,metrics{…latest only},history_url:\"/llm/point/{id}\"}], count, truncated}. ≤100 ms. CORS *.",
+		Why:   "Stations become discoverable map landmarks (Messstelle, Brunnen, Kraftwerk) with a real 30-year chart on tap — today only the points snapped into each visible KG are reachable and each costs a 9 KB dossier.",
+		Check: &aheadCheck{Path: "/llm/points?" + fxBBoxQ, MaxMs: 3000, Has: []string{"points.0.category", "count"}}},
+	{ID: "GW-3", Prio: "P1", Services: []string{"gw"}, Title: "drought block on /llm/kg — event calendar + seasonal profile",
+		Spec:  "drought:{source, as_of, p_drought_year (share of years since 2012 with ≥1 month CDI ≥ warning), worst_year, season_profile:[12 × mean CDI class per calendar month], events:[{year,start_month,end_month,cdi_max,class:watch|warning|alert}]} from the monthly Copernicus EDO CDI grid (you already hold the annual mean/max). Extend history to the latest complete year and add precip_mm + gw_level_anomaly_m per year where the station/precip series allow. Null-safe; never drop existing keys.",
+		Why:   "Real, local drought seasons drive an in-game event: fields yield less, the well runs dry, the Naturschutz meadow survives. p_drought_year is the dice, season_profile the calendar.",
+		Check: &aheadCheck{Path: "/llm/kg/" + fxKG, MaxMs: 3000, Has: []string{"drought.p_drought_year|drought.events", "drought.season_profile"}}},
+	{ID: "GW-4", Prio: "P2", Services: []string{"gw"}, Title: "now block — latest measured state (eHYD daily), refreshed daily",
+		Spec:  "now:{as_of (date of newest observation), gw_level_anomaly_sigma (mean over stations within the IDW radius: latest level vs. that calendar month's 1991-2020 mean, in σ), gw_percentile_of_month (0-100), n_stations, trend_30d_cm, no3_latest_mg_l?, status: normal|low|very_low|high}. Source eHYD current data (or the GeoSphere/BML public feeds); one daily cron, served from a file; Cache-Control 1 h. Also on GET /llm/point.",
+		Why:   "A 'Grundwasser heute' weather bar: the game world follows the real aquifer under the player. Zero cost per request.",
+		Check: &aheadCheck{Path: "/llm/kg/" + fxKG, MaxMs: 3000, Has: []string{"now.gw_level_anomaly_sigma|now.status"}}},
+	{ID: "GW-5", Prio: "P2", Services: []string{"gw"}, Title: "GET /llm/protection?west&south&east&north — Wasserschutz-/Schongebiete polygons",
+		Spec:  "{zones:[{id, name, type: schutzgebiet|schongebiet, zone: I|II|III|null, state, source, geometry (Polygon|MultiPolygon, WGS84, ring[0] exterior)}], count, ready, truncated}. Sources: Länder WIS / INSPIRE AM (Area Management) datasets; carry the per-state license string. ≤200 ms; limit 500. Plus per-KG metric water_protection_share_pct on /llm/kg.",
+		Why:   "A real reason a meadow must stay a meadow: conversion surcharge / manure ban inside zone II, bonus XP for Naturschutz there. Also the nitrate mechanic gets a map.",
+		Check: &aheadCheck{Path: "/llm/protection?" + fxBBoxQ, MaxMs: 4000, Has: []string{"zones", "ready|count"}}},
+	{ID: "GW-6", Prio: "P2", Services: []string{"gw"}, Title: "GET /llm/flowpath?lon=&lat= — downstream reach chain to the border",
+		Spec:  "Walk the MERIT-Basins reach graph downstream from the nearest reach. {start:{reach_id,river,distance_m}, reaches:[{reach_id, river, length_km, glacier_fed:bool, gauge?:{hzb,name,flow_mean_m3s,flow_trend_pct_per_decade}}], total_km, exit:{river, border_point:[lon,lat], sea: black_sea|north_sea}, geometry: LineString simplified ≤3 KB, catchment_geometry_url (the containing verified catchment as GeoJSON)}. ≤300 ms (precompute per reach).",
+		Why:   "'Wassertropfen-Reise' quest: follow the rain from your parcel to the Danube, with every real gauge en route as a checkpoint; catchment outline as a map overlay.",
+		Check: &aheadCheck{Path: "/llm/flowpath?" + fxPtQ, MaxMs: 4000, Has: []string{"reaches", "total_km"}}},
+	{ID: "GW-7", Prio: "P2", Services: []string{"gw"}, Title: "GET /llm/gwi.json + ?fields= slimming",
+		Spec:  "/llm/gwi.json → {as_of, categories:{0:good,1:watch,2:stressed}, kgs:{\"63307\":[0.53,2], …}} for all 7,850 KGs, ≤150 KB gzip, ETag, Cache-Control 1 d. On /llm/kg and /llm/kgs: ?fields=metrics,points,drought (comma list of top-level keys; unit_glossary only when asked) and ?history=0.",
+		Why:   "Colour the municipality picker by water stress in one cached file; per-session KG dossiers drop from 9 KB (3 KB glossary each) to ~1 KB.",
+		Check: &aheadCheck{Path: "/llm/gwi.json", MaxMs: 3000, MaxBytes: 1 << 20, Has: []string{"kgs", "as_of"}}},
+	{ID: "GW-8", Prio: "P3", Services: []string{"gw"}, Title: "parcel_id on every point + GET /llm/parcel/{parcel_id}",
+		Spec:  "Snap all points to parcels (today only 'when confident'); expose parcel_id → {points[], water_body, point-context (= GW-1 at the parcel centroid)}. 404 no_data when the parcel has no snapped point and no coverage.",
+		Why:   "Buying the parcel with the Messstelle on it is a collectible ('Pegelwart' badge); one call from the parcel popup.",
+		Check: &aheadCheck{Path: "/llm/parcel/63307-133/5", MaxMs: 3000, Has: []string{"points|metrics"}}},
 }
 
 func aheadServiceByName(slug string) *aheadService {
@@ -579,7 +616,7 @@ func renderAheadMarkdown(self, svcF, itemF string) []byte {
 	if itemF == "" {
 		fmt.Fprintf(&b, "# Siedler Österreich → sibling services: AHEAD list\n\n")
 		fmt.Fprintf(&b, "Consumer: https://siedler-oesterreich.exe.xyz:8000 (browser game on live Austrian cadastre). Terse by design.\n")
-		fmt.Fprintf(&b, "Machine form: %s?format=json   Filter: ?service=cadastre|srtm|holz|farm  ?item=ID\n\n", self)
+		fmt.Fprintf(&b, "Machine form: %s?format=json   Filter: ?service=cadastre|srtm|holz|farm|gw  ?item=ID\n\n", self)
 		fmt.Fprintf(&b, "## Protocol (for the implementing agent)\n")
 		fmt.Fprintf(&b, "1. `curl -s %s/check/<service>` → JSON pass/fail per item, P1 first in next_steps.\n", self)
 		fmt.Fprintf(&b, "2. Implement one item. Deploy. `curl -s '%s/check/<service>?item=<ID>&force=1'` (cached 60 s otherwise; `&base=https://<host>:<port>` for a public staging instance).\n", self)
