@@ -1854,6 +1854,7 @@ async function fetchKGPolygons() {
   // Refresh the badge: it must reappear when panning back into an already-
   // loaded enhanced KG (loadEnhancedForKGs skips those, so it won't re-fire).
   updateEnhancedBadge();
+  updateWaterChip();
 }
 
 // ================= ENHANCED MODE (lidar terrain, OSM lines, Natura 2000) =================
@@ -3106,7 +3107,8 @@ function drawN2KOverlay(ctx, labelsOnly) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const tw = ctx.measureText(label).width;
     const pw = Math.min(tw + 24, W - 20), ph = 24;
-    const px = W / 2, py = (document.getElementById('enhanced-badge')?.style.display === 'none' ? 72 : 102); // below search bar / enhanced badge
+    const hudShown = [...(document.getElementById('hud-badges')?.children || [])].some(el => el.style.display !== 'none');
+    const px = W / 2, py = hudShown ? 102 : 72; // below search bar / HUD badge row
     ctx.fillStyle = 'rgba(10,40,20,0.82)';
     ctx.strokeStyle = 'rgba(125,255,160,0.85)';
     ctx.lineWidth = 1.5;
@@ -7304,6 +7306,8 @@ function updateAbroadBadge() {
   // The two badges share the same slot — don't stack them.
   const eb = document.getElementById('enhanced-badge');
   if (eb && abroad) eb.style.display = 'none';
+  const wc = document.getElementById('water-chip');
+  if (wc && abroad) wc.style.display = 'none';
 }
 
 /** Red-white-red national border line, drawn above the map content. */
@@ -8346,6 +8350,7 @@ async function openKGSummary(kg) {
     html += '<div class="kg-lu-title">Nutzung (nach Parzellenzahl)</div><div class="fracs-bar">' + seg + '</div><div class="fracs-legend">' + leg + '</div>';
   }
   if (d.enhanced) html += '<div class="kg-enh">✨ Enhanced — LiDAR-Geländedaten aktiv</div>';
+  html += '<div class="kg-lu-title"><span class="pp-ez-link" onclick="openDossier(\'' + kg + '\')">📖 ' + tr('Gemeinde-Chronik') + ' ▸</span> <span class="kg-dim">' + tr('Wasser · Wald · Höfe') + '</span></div>';
   body.innerHTML = html;
 }
 
@@ -9312,7 +9317,7 @@ window.DEV = {
   },
   /** Show/hide non-map chrome (search, badges, attribution, loading hint). */
   chrome(on) {
-    for (const id of ['game-search','enhanced-badge','abroad-badge','map-attrib','map-loading','muni-toast','herald'])
+    for (const id of ['game-search','hud-badges','abroad-badge','map-attrib','map-loading','muni-toast','herald','flow-chip'])
       { const el = document.getElementById(id); if (el) el.style.visibility = on ? '' : 'hidden'; }
   },
   /** Sidebar (desktop) show/hide — more map for hero shots. */
@@ -9580,6 +9585,7 @@ const Herald = {
       first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Mach es noch einmal auf und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das bringt XP und zählt zum 30 %-Ziel.') },
       first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 40 Minuten — jeder zu seiner Zeit. Ist deiner golden, zeigt ein 🌾-Marker: ernten bringt Münzen. Wartest du zu lang, ernten die Bauern. Oder lass ihn als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen — das zählt zum Naturschutz.') },
       trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen dir, wo sie stehen. Kauf dir eine Parzelle mit so einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
+      drought: { icon:'☀️', tag: tr('Dürre'), html: tr('Das Grundwasser steht hier') + ' <b>' + fmtSigma(G.drought?.sigma || 0) + '</b> ' + tr('unter normal — deine Felder tragen nur') + ' <b>×' + ((G.dossiers[G.drought?.kg]?.game?.yield_factor) ?? 0.6).toFixed(1).replace('.', ',') + '</b>. ' + tr('Ein 🕳️ Brunnen schützt, Brache zählt zum Naturschutz.') + ' <span class="pp-ez-link" onclick="openDossier(null,\'water\')">📖 ' + tr('Chronik') + '</span>' },
       enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Da gibt’s echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz, dann siehst du sie.') },
     };
     if (!H[key]) return;
@@ -10010,4 +10016,225 @@ function renderFlurRow(f) {
   lab.textContent = fl.t.layer === 'ried' ? tr('Ried') : tr('Flur');
   val.innerHTML = `<span class="pp-flur-name" title="${esc(tr('BEV Geographische Namen'))}">${topoIcon(fl.t)} ${esc(fl.label)}</span>` +
     (fl.sub ? `<small class="pp-flur-sub">${esc(fl.sub)}</small>` : '');
+}
+
+// ================= WATER & GEMEINDE-CHRONIK (gw / holz / farm siblings) =================
+// Real-data mechanics surfaced in the game: the KG dossier (GET /api/dossier/{kg})
+// drives the "Grundwasser heute" HUD chip, the 3-tab Chronik panel and the
+// drought/Förderung numbers in the field popup. Everything here is lazy and
+// background — nothing blocks loading.
+G.dossiers = {};        // kg → dossier | 'loading' | {error}
+G.drought = null;       // drought block of the KG under the camera
+G.waterKG = null;       // sticky KG code the chip refers to
+G.gwPoints = [];        // GW-2 Messstellen (points, no geometry)
+G.gwPointIds = new Set(); G.gwTiles = new Set(); G.gwAttempts = {};
+G.gwVisible = localStorage.getItem('gwVisible') !== '0';
+G.wpZones = []; G.wpIds = new Set(); G.wpTiles = new Set();   // GW-5 Wasserschutzgebiete
+G.wellQuotes = {};      // parcel_id → /api/well-quote
+G.fieldEco = {};        // parcel_id → {t, d} (/api/field-economy, 60 s)
+G.flow = null;          // GW-6 active Wassertropfen-Reise
+G.gwi = null;           // GW-7 {kgs:{kg:[gwi,cat]}}
+G.stationHist = {};     // station id → /api/water/station response
+
+const WATER_STATUS = {
+  normal:   { de: 'normal',        cls: 'st-normal' },
+  low:      { de: 'niedrig',       cls: 'st-low' },
+  very_low: { de: 'sehr niedrig',  cls: 'st-very_low' },
+  high:     { de: 'hoch',          cls: 'st-high' },
+};
+const GWI_CAT = { good: ['gut', '#5ad06a'], watch: ['beobachten', '#e8a83a'], stressed: ['belastet', '#e05040'] };
+const CDI_COLORS = ['#2e6a3a', '#b8a03a', '#d07a30', '#c83a2a'];   // 0 none · 1 watch · 2 warning · 3 alert
+const MONTHS_DE = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+
+function fmtSigma(s) { return (s > 0 ? '+' : s < 0 ? '−' : '') + Math.abs(s).toFixed(1).replace('.', ',') + 'σ'; }
+function fmtNum(v, d = 0) { return (+v || 0).toLocaleString('de-AT', { maximumFractionDigits: d, minimumFractionDigits: d }); }
+function fmtPct(v) { return Math.round((+v || 0) * 100) + ' %'; }
+function fmtHa(ha) { return ha >= 100 ? fmtNum(ha) + ' ha' : fmtNum(ha, 1) + ' ha'; }
+function padKG(kg) { kg = String(kg || ''); return kg.length === 4 ? '0' + kg : kg; }
+
+/** Lazy dossier fetch; resolves to the dossier (or null). Retries once on 202/pending. */
+async function loadDossier(kg) {
+  kg = padKG(kg); if (!kg) return null;
+  const cur = G.dossiers[kg];
+  if (cur && cur !== 'loading') return cur.error ? null : cur;
+  if (cur === 'loading') return new Promise(res => { (loadDossier._w[kg] = loadDossier._w[kg] || []).push(res); });
+  G.dossiers[kg] = 'loading';
+  let d = null;
+  try { d = await api('GET', '/api/dossier/' + kg, null, { pendingBudgetMs: 12000 }); } catch (e) { d = null; }
+  if (!d || d.pending) { delete G.dossiers[kg]; setTimeout(() => loadDossier(kg).then(() => updateWaterChip()), 20000); d = null; }
+  else if (d.error) { G.dossiers[kg] = { error: d.error }; d = null; }
+  else G.dossiers[kg] = d;
+  (loadDossier._w[kg] || []).forEach(r => r(d)); delete loadDossier._w[kg];
+  return d;
+}
+loadDossier._w = {};
+
+/** KG under the camera — sticky so the chip doesn't flicker between parcels. */
+function currentWaterKG() {
+  const kg = kgAtCamera();
+  if (kg) G.waterKG = padKG(kg);
+  return G.waterKG;
+}
+
+/** GW-4 HUD chip + sidebar row: today's groundwater status of the KG under the camera. */
+function updateWaterChip() {
+  const chip = document.getElementById('water-chip'), sbRow = document.getElementById('sb-chronik'), sbVal = document.getElementById('sb-drought');
+  if (!chip) return;
+  const kg = currentWaterKG();
+  const abroad = !!G.atBorder && !insideAustria(G.cam.lon, G.cam.lat);
+  if (!kg || abroad) { chip.style.display = 'none'; return; }
+  const d = G.dossiers[kg];
+  if (!d || d === 'loading') { if (!d) loadDossier(kg).then(() => updateWaterChip()); return; }
+  if (d.error || !d.drought) { chip.style.display = 'none'; return; }
+  const dr = d.drought, w = d.water || {}, now = w.now || {};
+  G.drought = Object.assign({ kg }, dr);
+  const st = WATER_STATUS[dr.status] || null;
+  const known = dr.known !== false && st;
+  const stLabel = known ? tr(st.de) : tr('keine Messung');
+  const sigma = known && now.sigma != null ? fmtSigma(now.sigma) : '';
+  let txt = '💧 ' + stLabel + (sigma ? ' ' + sigma : '');
+  if (dr.level >= 1 && dr.label) txt += ' · ' + tr(dr.label);
+  chip.className = 'water-chip ' + (known ? st.cls : 'st-unknown') + (dr.level >= 2 ? ' pulse' : '');
+  chip.innerHTML = esc(txt) + (known && d.game ? '<span class="wc-sub">' + tr('Ernte') + ' ×' + (d.game.yield_factor || 1).toFixed(1).replace('.', ',') + '</span>' : '');
+  chip.title = tr('Grundwasser heute') + ' · ' + esc(d.kg_name || kg) + (now.as_of ? ' · ' + now.as_of : '') + ' — ' + tr('Gemeinde-Chronik öffnen');
+  chip.style.display = '';
+  if (sbRow) {
+    sbRow.style.display = '';
+    sbVal.textContent = stLabel + (sigma ? ' ' + sigma : '');
+    sbVal.className = known ? st.cls : '';
+  }
+  // Herald: first time a drought (level ≥ 2) shows up under the camera.
+  if (dr.level >= 2 && known) Herald.hint('drought');
+  // N2K chip in drawN2KOverlay sits below the badge row — refresh so it doesn't overlap.
+  if (G.n2kVisible && Object.keys(G.n2kSites).length) render();
+}
+
+// ---- Chronik panel ----
+G.dossierTab = 'water';
+G.dossierKG = null;
+window.openDossier = async function(kg, tab) {
+  kg = padKG(kg || currentWaterKG() || (G.claimed.find(c => c.player_id === G.player?.id) || {}).kg_code);
+  if (tab) G.dossierTab = tab;
+  const pop = document.getElementById('dossier-popup'), body = document.getElementById('dossier-body');
+  if (!kg) { toast(tr('Noch keine Katastralgemeinde geladen — zoom näher ran.'), 'err'); return; }
+  G.dossierKG = kg;
+  document.getElementById('kg-popup').classList.remove('open');
+  document.getElementById('station-popup').classList.remove('open');
+  pop.classList.add('open');
+  if (innerWidth <= 768) { const sb = document.getElementById('sidebar'); if (sb) sb.classList.remove('expanded'); }
+  renderDossierTabs();
+  const cached = G.dossiers[kg];
+  if (!cached || cached === 'loading') body.innerHTML = '<div class="kg-loading">' + tr('Chronik wird aufgeschlagen…') + '</div>';
+  const d = await loadDossier(kg);
+  if (G.dossierKG !== kg) return;
+  document.getElementById('dossier-title').textContent = '📖 ' + (d && (d.gemeinde_name || d.kg_name) ? (d.gemeinde_name || d.kg_name) : 'KG ' + kg);
+  if (!d) { body.innerHTML = '<div class="kg-loading">' + tr('Chronik gerade nicht erreichbar — bitte nochmal antippen') + '</div>'; return; }
+  renderDossier(d);
+};
+function renderDossierTabs() {
+  document.querySelectorAll('#dossier-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === G.dossierTab));
+}
+document.querySelectorAll('#dossier-tabs button').forEach(b => b.onclick = () => { G.dossierTab = b.dataset.tab; renderDossierTabs(); const d = G.dossiers[G.dossierKG]; if (d && d !== 'loading' && !d.error) renderDossier(d); });
+document.getElementById('dossier-popup-close').onclick = () => { document.getElementById('dossier-popup').classList.remove('open'); resetPopupPosition('dossier-popup'); };
+document.getElementById('station-popup-close').onclick = () => { document.getElementById('station-popup').classList.remove('open'); resetPopupPosition('station-popup'); };
+
+function ppRows(rows) { return '<div class="pp-grid">' + rows.map(([k, v]) => '<span>' + k + '</span><b>' + v + '</b>').join('') + '</div>'; }
+/** ≤24 pixel bars. vals:[{v,label,cls}], max auto. */
+function pxChart(vals, opts) {
+  opts = opts || {};
+  const n = Math.min(24, vals.length), arr = vals.slice(-n);
+  const max = Math.max(1e-9, ...arr.map(x => Math.abs(x.v || 0)));
+  let h = '<div class="px-chart">';
+  for (const x of arr) {
+    const pct = Math.max(2, Math.round(Math.abs(x.v || 0) / max * 100));
+    h += '<i class="' + (x.cls || '') + '" style="height:' + pct + '%" title="' + esc(x.label + ': ' + (opts.fmt ? opts.fmt(x.v) : fmtNum(x.v, 1))) + '"></i>';
+  }
+  h += '</div><div class="px-axis"><span>' + esc(String(arr[0].label)) + '</span>' + (opts.mid ? '<span>' + esc(opts.mid) + '</span>' : '') + '<span>' + esc(String(arr[arr.length - 1].label)) + '</span></div>';
+  return h;
+}
+function segBar(parts) {   // [{f, color, name}]
+  let seg = '', leg = '';
+  for (const p of parts) { if (p.f < 0.01) continue; seg += '<i style="width:' + (p.f * 100).toFixed(1) + '%;background:' + p.color + '"></i>'; leg += '<em><i style="background:' + p.color + '"></i>' + esc(p.name) + ' ' + Math.round(p.f * 100) + '%</em>'; }
+  return '<div class="fracs-bar">' + seg + '</div><div class="fracs-legend">' + leg + '</div>';
+}
+
+function renderDossier(d) {
+  const body = document.getElementById('dossier-body');
+  const tab = G.dossierTab, g = d.game || {};
+  let html = '';
+  if (tab === 'water') {
+    const w = d.water, dr = d.drought || {}, now = (w && w.now) || {};
+    if (!w) html += '<div class="kg-loading">' + tr('Keine Grundwasserdaten für diese Gemeinde.') + '</div>';
+    else {
+      const st = WATER_STATUS[now.status];
+      const cat = GWI_CAT[w.gwi_category] || ['?', '#888'];
+      const rows = [];
+      rows.push(['💧 ' + tr('Heute'), st ? '<span class="' + st.cls.replace('st-', 'wc-') + '" style="color:inherit">' + tr(st.de) + (now.sigma != null ? ' · ' + fmtSigma(now.sigma) : '') + '</span>' + (now.trend_30d_cm != null ? ' <span class="kg-dim">' + (now.trend_30d_cm > 0 ? '↗' : now.trend_30d_cm < 0 ? '↘' : '→') + ' ' + Math.abs(now.trend_30d_cm) + ' cm/30 d</span>' : '') : '<span class="kg-dim">' + tr('keine Live-Messung') + '</span>']);
+      rows.push(['🧭 ' + tr('Wasserstress'), '<span style="color:' + cat[1] + '">' + tr(cat[0]) + '</span> <span class="kg-dim">GWI ' + (w.gwi != null ? w.gwi.toFixed(2) : '–') + (w.gw_trend_m_decade != null ? ' · ' + (w.gw_trend_m_decade > 0 ? '+' : '') + w.gw_trend_m_decade.toFixed(2) + ' m/10 J' : '') + '</span>']);
+      if (w.no3_mg_l != null) rows.push(['🧪 Nitrat', fmtNum(w.no3_mg_l, 1) + ' mg/l <span class="kg-dim">' + (w.no3_mg_l >= 50 ? tr('über Grenzwert') : w.no3_mg_l >= 25 ? tr('erhöht') : tr('unauffällig')) + '</span>']);
+      if (dr.p_drought_year != null) rows.push(['☀️ ' + tr('Dürre-Risiko'), fmtPct(dr.p_drought_year) + ' <span class="kg-dim">' + tr('der Jahre') + (w.drought && w.drought.worst_year ? ' · ' + tr('schlimmstes') + ' ' + w.drought.worst_year : '') + '</span>']);
+      if (w.stations != null) rows.push(['📏 ' + tr('Messstellen'), w.stations + (w.gw_body ? ' <span class="kg-dim">· ' + esc(w.gw_body) + '</span>' : '')]);
+      html += ppRows(rows);
+      // Season calendar
+      const sp = (w.drought && w.drought.season_profile) || [];
+      if (sp.length === 12) {
+        const m = new Date().getMonth();
+        html += '<div class="ds-title"><span>' + tr('Dürre-Kalender') + '</span><span>' + tr('Ø Klasse pro Monat') + '</span></div><div class="season-cal">';
+        for (let i = 0; i < 12; i++) { const c = Math.min(3, Math.max(0, Math.round(sp[i]))); html += '<i class="' + (i === m ? 'now' : '') + '" style="background:' + CDI_COLORS[c] + '" title="' + esc(MONTHS_DE[i] + ': ' + sp[i].toFixed(2)) + '">' + MONTHS_DE[i] + '</i>'; }
+        html += '</div>';
+      }
+      const hist = w.history || [];
+      if (hist.length >= 3) {
+        html += '<div class="ds-title"><span>' + tr('Trockenheit') + ' (CDI)</span><span>' + hist[0].year + '–' + hist[hist.length - 1].year + '</span></div>';
+        html += pxChart(hist.map(h => ({ v: h.cdi, label: h.year, cls: h.cdi >= 1.5 ? 'bad' : h.cdi >= 1 ? 'warn' : '' })), { fmt: v => v.toFixed(2) });
+      }
+      html += '<div class="ds-rule">🎮 ' + tr('Ernte heute') + ' <b>×' + (g.yield_factor != null ? g.yield_factor.toFixed(1).replace('.', ',') : '1,0') + '</b> · 🕳️ ' + tr('Brunnen schützt') + ' <b>' + fmtPct(g.well_protection || 0) + '</b>' + (dr.level >= 1 ? '<br>' + tr('Dürre: Felder tragen weniger — Brunnen und Brache lohnen sich.') : '') + '</div>';
+      html += '<div class="ds-actions"><button class="btn btn-secondary btn-small" onclick="startFlow()">💧 ' + tr('Weg des Wassers') + '</button>' +
+        '<label><input type="checkbox" id="ds-gw-toggle" ' + (G.gwVisible ? 'checked' : '') + ' onchange="setGwVisible(this.checked)"> 📏 ' + tr('Messstellen') + '</label></div>';
+      html += '<div class="ds-src">groundwater-at · eHYD, Copernicus EDO, WISE · CC BY 4.0' + (now.as_of ? ' · ' + now.as_of : '') + '</div>';
+    }
+  } else if (tab === 'forest') {
+    const f = d.forest;
+    if (!f) html += '<div class="kg-loading">' + tr('Keine Walddaten für diese Gemeinde.') + '</div>';
+    else {
+      const rows = [];
+      if (f.forest_area_ha != null) rows.push(['🌲 ' + tr('Waldfläche'), fmtHa(f.forest_area_ha)]);
+      rows.push(['🪓 ' + tr('Verlust'), (f.loss_ha_latest != null ? fmtNum(f.loss_ha_latest, 1) + ' ha ' + tr('letztes Jahr') : '–') + (f.loss_total_ha != null ? ' <span class="kg-dim">· ' + fmtNum(f.loss_total_ha, 0) + ' ha ' + tr('seit 2001') + '</span>' : '')]);
+      if (f.harvest_efm != null) rows.push(['🪵 ' + tr('Ernte'), fmtNum(f.harvest_efm) + ' Efm' + (f.harvest_value_eur ? ' <span class="kg-dim">≈ ' + fmtEur(f.harvest_value_eur) + '</span>' : '')]);
+      if (f.co2_t != null) rows.push(['🌍 CO₂', fmtNum(f.co2_t) + ' t ' + tr('gebunden/Jahr') + (f.net_flux_tco2e_ha != null ? ' <span class="kg-dim">(' + fmtNum(f.net_flux_tco2e_ha, 0) + ' t/ha)</span>' : '')]);
+      if (f.price_spruce) rows.push(['💶 ' + tr('Fichte'), f.price_spruce + ' €/Fm' + (f.state ? ' <span class="kg-dim">' + esc(f.state) + '</span>' : '')]);
+      html += ppRows(rows);
+      const hist = f.history || [];
+      if (hist.length >= 3) {
+        const mx = Math.max(...hist.map(h => h.loss_ha || 0));
+        html += '<div class="ds-title"><span>' + tr('Waldverlust') + ' ha/Jahr</span><span>' + hist[0].year + '–' + hist[hist.length - 1].year + '</span></div>';
+        html += pxChart(hist.map(h => ({ v: h.loss_ha || 0, label: h.year, cls: h.loss_ha >= mx * 0.75 ? 'bad' : h.loss_ha >= mx * 0.4 ? 'warn' : '' })), { fmt: v => fmtNum(v, 1) + ' ha' });
+      }
+      html += '<div class="ds-rule">🎮 🌳 ' + tr('Naturwald') + ': <b>120⚡ + Holzvorrat/10</b> — ' + tr('je dichter der Bestand, desto mehr XP; zählt zum 30-%-Ziel.') + '</div>';
+      html += '<div class="ds-src">holzeinschlag-at · Hansen GFC, BFW, Statistik Austria · CC BY 4.0' + (f.as_of ? ' · ' + f.as_of : '') + '</div>';
+    }
+  } else {
+    const fm = d.farm;
+    if (!fm) html += '<div class="kg-loading">' + tr('Keine Förderdaten für diese Gemeinde.') + '</div>';
+    else {
+      const rows = [];
+      if (fm.recipients_n != null) rows.push(['🚜 ' + tr('Betriebe'), fmtNum(fm.recipients_n) + (fm.eligible_ha_total ? ' <span class="kg-dim">· ' + fmtHa(fm.eligible_ha_total) + '</span>' : '')]);
+      if (fm.total_eur != null) rows.push(['💶 ' + tr('Förderung'), fmtEur(fm.total_eur) + (fm.eur_per_recipient_median ? ' <span class="kg-dim">· Ø ' + fmtNum(fm.eur_per_recipient_median) + ' €/Hof</span>' : '')]);
+      if (fm.eur_per_ha_median != null) rows.push(['📐 ' + tr('Median'), fmtNum(fm.eur_per_ha_median) + ' €/ha']);
+      if (fm.organic_share != null) rows.push(['🌿 Bio', fmtPct(fm.organic_share)]);
+      if (fm.mountain_share != null) rows.push(['⛰️ ' + tr('Bergbauern'), fmtPct(fm.mountain_share)]);
+      html += ppRows(rows);
+      const mix = fm.archetype_mix || {};
+      const AR = { bergbauer: ['Bergbauer', '#7a9a5a'], bio_bergbauer: ['Bio-Bergbauer', '#5ad06a'], bio: ['Bio', '#3fb850'], ackerbau: ['Ackerbau', '#d8b04a'], gruenland: ['Grünland', '#4a9848'], vieh: ['Viehhaltung', '#b07050'], wein: ['Wein', '#a050a0'], obst: ['Obst', '#e07040'], ohne_flaeche: ['ohne Fläche', '#888'], sonst: ['sonstige', '#777'] };
+      const parts = Object.entries(mix).sort((a, b) => b[1] - a[1]).map(([k, f]) => ({ f, name: (AR[k] || [k.replace(/_/g, ' ')])[0], color: (AR[k] || [0, '#' + (simpleHash(k) & 0xffffff).toString(16).padStart(6, '0')])[1] }));
+      if (parts.length) html += '<div class="ds-title"><span>' + tr('Hoftypen') + '</span></div>' + segBar(parts);
+      const tm = (fm.top_measures || []).slice(0, 3);
+      if (tm.length) html += '<div class="ds-title"><span>' + tr('Top-Maßnahmen') + '</span></div><div class="pp-grid" style="font-size:16px">' + tm.map(m => '<span>' + Math.round(m.share * 100) + ' %</span><b>' + esc(String(m.name).replace(/\s*\(Artikel.*$/, '').slice(0, 60)) + '</b>').join('') + '</div>';
+      const hist = fm.history || [];
+      if (hist.length >= 2) html += '<div class="ds-title"><span>' + tr('Förderung') + ' €/Jahr</span></div>' + pxChart(hist.map(h => ({ v: h.total_eur, label: h.year, cls: h.year === fm.as_of ? 'cur' : '' })), { fmt: fmtEur });
+      html += '<div class="ds-rule">🎮 🏛 ' + tr('Förderung') + ': <b>' + fmtNum(g.subsidy_per_ha || 0, 1) + '🪙/ha</b> ' + tr('pro Ernte') + ' — ' + tr('Wiesen holen sie alle 40 Minuten ab, Bio-Schläge kriegen mehr.') + '</div>';
+      html += '<div class="ds-src">farm-subsidies · AMA Transparenzdatenbank ' + (fm.as_of || '') + ' · CC BY 4.0</div>';
+    }
+  }
+  body.innerHTML = html;
 }

@@ -74,7 +74,7 @@
 <link rel="preload" href="/static/game-bg.jpg?v=1" as="image" type="image/jpeg">
 <link rel="preload" href="/static/fonts/press-start-2p-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/vt323-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/style.css?v=20260921a">
+<link rel="stylesheet" href="/static/style.css?v=20260925b">
 </head>
 <body>
 <div id="app">
@@ -277,6 +277,7 @@
           <div class="bio-marker" style="left:30%"></div>
           <span class="bio-label" id="bio-label">0%</span>
         </div>
+        <div class="stat sb-chronik" id="sb-chronik" onclick="openDossier(null,'water')" title="Gemeinde-Chronik öffnen" style="display:none"><span>💧 Grundwasser heute</span><b id="sb-drought">…</b></div>
       </div>
       <div class="sb-section" id="sec-players">
         <h3>⚔️ Mitspieler</h3>
@@ -372,6 +373,23 @@
         <h3 id="kg-title">🏘️ Katastralgemeinde</h3>
         <div id="kg-body" class="kg-body"></div>
       </div>
+      <div id="dossier-popup" class="popup draggable-popup kg-popup dossier-popup">
+        <div class="popup-drag-handle" data-drag-target="dossier-popup">☰</div>
+        <button class="popup-close" id="dossier-popup-close">✕</button>
+        <h3 id="dossier-title">📖 Gemeinde-Chronik</h3>
+        <div class="dossier-tabs" id="dossier-tabs">
+          <button data-tab="water" class="on">💧 Wasser</button>
+          <button data-tab="forest">🌲 Wald</button>
+          <button data-tab="farm">🚜 Höfe</button>
+        </div>
+        <div id="dossier-body" class="kg-body"></div>
+      </div>
+      <div id="station-popup" class="popup draggable-popup kg-popup station-popup">
+        <div class="popup-drag-handle" data-drag-target="station-popup">☰</div>
+        <button class="popup-close" id="station-popup-close">✕</button>
+        <h3 id="station-title">📏 Messstelle</h3>
+        <div id="station-body" class="kg-body"></div>
+      </div>
       <div id="ez-popup" class="popup draggable-popup ez-popup">
         <div class="popup-drag-handle" data-drag-target="ez-popup">☰</div>
         <button class="popup-close" id="ez-popup-close">✕</button>
@@ -384,7 +402,7 @@
         <button class="btn btn-small" id="btn-zoomout">−</button>
         <button class="btn btn-small" id="btn-gearth" title="In Google Earth öffnen">🌍</button>
         <button class="btn btn-small" id="btn-share" title="Diese Ansicht teilen — Einladungslink kopieren">🔗</button>
-        <button class="btn btn-small" id="btn-n2k" title="Natura-2000-Schutzgebiete ein/aus">🛡️</button>
+        <button class="btn btn-small" id="btn-n2k" title="Schutzgebiete (Natura 2000 &amp; Wasserschutz) ein/aus">🛡️</button>
         <button class="btn btn-small" id="btn-topo" title="Flurnamen &amp; Ortsnamen (BEV) ein/aus">🏷️</button>
         <button class="btn btn-small" id="btn-gps" title="Mein Standort" style="display:none">📍</button>
       </div>
@@ -402,7 +420,10 @@
         <button class="herald-close" id="herald-close" title="Ausblenden" aria-label="Ausblenden">✕</button>
       </div>
       <div id="map-loading" class="map-loading" style="display:none">⏳ Lade Gelände…</div>
-      <div id="enhanced-badge" class="enhanced-badge" style="display:none">✨ Enhanced Gelände</div>
+      <div id="hud-badges" class="hud-badges">
+        <div id="enhanced-badge" class="enhanced-badge" style="display:none">✨ Enhanced Gelände</div>
+        <button id="water-chip" class="water-chip st-unknown" style="display:none" title="Grundwasser heute — Gemeinde-Chronik öffnen" onclick="openDossier(null,'water')">💧 …</button>
+      </div>
       <div id="abroad-badge" class="abroad-badge" style="display:none">🚧 Außerhalb Österreichs — keine Katasterdaten</div>
       <div id="map-attrib" class="map-attrib" aria-label="Datenquellen">
         <button class="map-attrib-toggle" id="map-attrib-toggle" title="Datenquellen &amp; Lizenzen" aria-expanded="false">© BEV · OSM</button>
@@ -414,12 +435,13 @@
           <div class="map-attrib-note">Spielerische Darstellung – keine amtliche Auskunft. <a href="/impressum">Impressum</a></div>
         </div>
       </div>
+      <div id="flow-chip" class="flow-chip" style="display:none"><span id="flow-chip-text">💧 …</span><button onclick="clearFlow()" title="Wasserweg ausblenden">✕</button></div>
       <button id="btn-similar-clear" class="similar-clear-chip" style="display:none" onclick="clearSimilar()">✕ Ähnliche ausblenden</button>
     </main>
   </div>
 </div>
 
 <script src="/static/i18n.js?v=20260924h"></script>
-<script src="/static/game.js?v=20260925a"></script>
+<script src="/static/game.js?v=20260925b"></script>
 </body>
 </html>

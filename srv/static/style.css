@@ -1040,3 +1040,89 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .herald-act { font-size:7px; padding:6px 9px; }
   .herald-foot { flex-wrap:wrap; gap:4px; }
 }
+
+/* ================= WATER & CHRONIK (GW-1…8, HOLZ-1, FARM-1) ================= */
+/* HUD badge row: enhanced badge + "Grundwasser heute" chip share one centred slot */
+.hud-badges {
+  position:absolute; top:58px; left:50%; transform:translateX(-50%);
+  display:flex; gap:6px; align-items:stretch; z-index:50; pointer-events:none;
+  max-width:calc(100vw - 140px);
+}
+.hud-badges > * { pointer-events:auto; }
+.enhanced-badge { position:static; transform:none; left:auto; top:auto; }
+.water-chip {
+  background:rgba(20,30,15,0.88); border:2px solid var(--panel-border);
+  color:var(--text-dim); font:8px var(--font-pixel); line-height:1.2;
+  padding:6px 10px; border-radius:3px; cursor:pointer; white-space:nowrap;
+  box-shadow:2px 2px 0 #000; display:flex; align-items:center; gap:6px;
+}
+.water-chip:hover { filter:brightness(1.2); }
+.water-chip:active { transform:translate(1px,1px); box-shadow:1px 1px 0 #000; }
+.water-chip .wc-sub { font:14px var(--font-game); opacity:.85; }
+.water-chip.st-normal { border-color:#5ad06a; color:#c4ffcb; }
+.water-chip.st-low { border-color:#e8a83a; color:#ffe2a6; }
+.water-chip.st-very_low { border-color:#e05040; color:#ffc4bc; }
+.water-chip.st-very_low.pulse { animation:wcPulse 1.6s ease-in-out infinite; }
+.water-chip.st-high { border-color:#4aa8e8; color:#c8e8ff; }
+@keyframes wcPulse { 0%,100% { box-shadow:2px 2px 0 #000, 0 0 0 rgba(224,80,64,0); } 50% { box-shadow:2px 2px 0 #000, 0 0 10px rgba(224,80,64,.7); } }
+.sb-chronik { cursor:pointer; margin-top:6px; padding:3px 4px; border:1px dashed var(--panel-border); border-radius:3px; }
+.sb-chronik:hover { border-color:var(--gold); }
+.sb-chronik b.st-normal { color:#8ee89a; } .sb-chronik b.st-low { color:#ffcf70; } .sb-chronik b.st-very_low { color:#ff8a78; } .sb-chronik b.st-high { color:#8ac8ff; }
+
+/* Chronik panel */
+#dossier-popup { top:56px; right:16px; bottom:auto; width:380px; max-height:calc(100vh - 110px); }
+#station-popup { top:56px; right:16px; bottom:auto; width:360px; }
+.station-popup h3 { color:#8ac8ff; }
+.dossier-tabs { display:flex; gap:4px; margin:-2px 0 10px; }
+.dossier-tabs button {
+  flex:1; background:var(--bg); border:2px solid var(--panel-border); color:var(--text-dim);
+  font:8px var(--font-pixel); padding:7px 4px; cursor:pointer; border-radius:3px; box-shadow:2px 2px 0 #000;
+}
+.dossier-tabs button.on { border-color:var(--gold); color:var(--gold); background:rgba(80,60,20,.4); }
+.dossier-tabs button:active { transform:translate(1px,1px); box-shadow:1px 1px 0 #000; }
+.ds-rule {
+  margin-top:10px; padding:6px 8px; border:2px solid var(--gold); border-radius:3px;
+  background:rgba(80,60,20,.35); font:17px var(--font-game); color:var(--gold-light); line-height:1.25;
+}
+.ds-rule b { color:#fff; font-weight:normal; }
+.ds-src { margin-top:8px; font:13px var(--font-game); color:var(--text-dim); }
+.ds-title { margin-top:10px; font:15px var(--font-game); color:var(--text-dim); display:flex; justify-content:space-between; }
+.ds-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; align-items:center; }
+.ds-actions label { font:17px var(--font-game); color:var(--text); display:flex; align-items:center; gap:5px; cursor:pointer; }
+/* pixel bar chart: ≤24 bars, flex, hard shadows */
+.px-chart { display:flex; align-items:flex-end; gap:2px; height:56px; padding:2px 0 0; border-bottom:2px solid var(--panel-border); position:relative; }
+.px-chart i { flex:1; min-width:3px; display:block; background:#4a9848; border:1px solid #17301b; border-bottom:none; box-sizing:border-box; }
+.px-chart i.cur { background:var(--gold); border-color:#7a5a00; }
+.px-chart i.bad { background:#c85a3a; border-color:#5a2010; }
+.px-chart i.warn { background:#e0a040; border-color:#6a4a10; }
+.px-chart i.neg { background:#3c7ec8; border-color:#123458; }
+.px-axis { display:flex; justify-content:space-between; font:13px var(--font-game); color:var(--text-dim); }
+/* 12-cell drought season calendar */
+.season-cal { display:grid; grid-template-columns:repeat(12,1fr); gap:2px; margin-top:4px; }
+.season-cal i { display:block; height:18px; border:1px solid #1a1408; font:11px var(--font-game); color:rgba(255,255,255,.75); text-align:center; line-height:18px; font-style:normal; }
+.season-cal i.now { outline:2px solid var(--gold); outline-offset:-1px; }
+/* hydrograph line chart (canvas) */
+.px-line { width:100%; height:64px; image-rendering:pixelated; display:block; border-bottom:2px solid var(--panel-border); }
+/* Wasserweg HUD chip */
+.flow-chip {
+  position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+  display:flex; align-items:center; gap:8px;
+  background:rgba(10,40,70,0.92); border:2px solid #5ab4ff;
+  color:#c8e8ff; font:8px var(--font-pixel); padding:7px 12px; border-radius:3px; z-index:60;
+  box-shadow:2px 2px 0 #000; white-space:nowrap; max-width:calc(100vw - 40px);
+}
+.flow-chip span { overflow:hidden; text-overflow:ellipsis; }
+.flow-chip button { background:none; border:2px solid #5ab4ff; color:#c8e8ff; font:8px var(--font-pixel); padding:3px 5px; cursor:pointer; border-radius:3px; }
+.flow-chip button:hover { background:#5ab4ff; color:#001; }
+.pp-water-badge { color:#8ac8ff; }
+.pp-eco { color:var(--text-dim); font-size:15px; display:block; line-height:1.1; }
+.pp-eco.bad { color:#ff9a86; }
+@media (max-width:768px) {
+  .hud-badges { top:52px; gap:4px; max-width:calc(100vw - 16px); }
+  .enhanced-badge { top:auto; }
+  .water-chip { font-size:7px; padding:5px 7px; }
+  .water-chip .wc-sub { display:none; }
+  #dossier-popup, #station-popup { left:8px; right:8px; top:60px; bottom:auto; width:auto; max-height:calc(70vh - 60px); }
+  .dossier-tabs button { font-size:7px; }
+  .flow-chip { bottom:auto; top:92px; z-index:210; font-size:7px; padding:6px 8px; }
+}
