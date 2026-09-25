@@ -1126,3 +1126,8 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .dossier-tabs button { font-size:7px; }
   .flow-chip { bottom:auto; top:92px; z-index:210; font-size:7px; padding:6px 8px; }
 }
+
+.pick-legend { margin-left:auto; font:15px var(--font-game); color:var(--text-dim); white-space:nowrap; display:inline-flex; align-items:center; gap:4px; }
+.pick-legend i { display:inline-block; width:12px; height:12px; border:1px solid #1a1408; }
+.pick-legend .lg-watch { background:rgba(200,120,40,0.6); } .pick-legend .lg-stressed { background:rgba(240,50,40,0.7); }
+@media (max-width:768px) { .pick-legend { display:none !important; } }

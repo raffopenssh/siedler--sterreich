@@ -674,7 +674,7 @@ function initPicker() {
     G.pick.level = 'states';
     G.pick.cam = {lon:13.3, lat:47.5, zoom:7};
     G.pick.munis = [];
-    document.getElementById('btn-back-pick').style.display = 'none';
+    document.getElementById('btn-back-pick').style.display = 'none'; { const lg = document.getElementById('pick-gwi-legend'); if (lg) lg.style.display = 'none'; }
     document.getElementById('pick-info').classList.remove('show');
     drawPick();
   };
@@ -10142,6 +10142,7 @@ function updateWaterChip() {
   const sigma = known && now.sigma != null ? fmtSigma(now.sigma) : '';
   let txt = '💧 ' + stLabel + (sigma ? ' ' + sigma : '');
   if (dr.level >= 1 && dr.label) txt += ' · ' + tr(dr.label);
+  if (innerWidth <= 768 && dr.level >= 1 && dr.label) txt = '💧 ' + tr(dr.label) + (sigma ? ' ' + sigma : '');   // phones: one word + σ
   chip.className = 'water-chip ' + (known ? st.cls : 'st-unknown') + (dr.level >= 2 ? ' pulse' : '');
   chip.innerHTML = esc(txt) + (known && d.game ? '<span class="wc-sub">' + tr('Ernte') + ' ×' + (d.game.yield_factor || 1).toFixed(1).replace('.', ',') + '</span>' : '');
   chip.title = tr('Grundwasser heute') + ' · ' + esc(d.kg_name || kg) + (now.as_of ? ' · ' + now.as_of : '') + ' — ' + tr('Gemeinde-Chronik öffnen');
@@ -10738,6 +10739,7 @@ async function loadPickerGwi(munis) {
     const acc = {};
     for (const k of ((r && r.data && r.data.kgs) || [])) { const g = G.gwi.kgs[padKG(k.kg_code)]; if (!g) continue; const a = acc[k.gemeinde_code] = acc[k.gemeinde_code] || [0, 0]; a[0] += g[0]; a[1]++; }
     for (const gc in acc) G.gwiByGemeinde[gc] = acc[gc][0] / acc[gc][1];
+    const lg = document.getElementById('pick-gwi-legend'); if (lg) lg.style.display = Object.keys(acc).length ? '' : 'none';
     if (typeof drawPick === 'function') drawPick();
   } catch (e) { console.warn('picker gwi', e); }
 }
@@ -10747,3 +10749,20 @@ function gwiTint(gemeindeCode) {
   const t = Math.min(1, (v - 0.3) / 0.4);          // 0 at watch threshold → 1 at gwi 0.7
   return 'rgba(' + Math.round(200 + 40 * t) + ',' + Math.round(120 - 70 * t) + ',40,' + (0.12 + 0.2 * t).toFixed(2) + ')';
 }
+
+// ---- DEV helpers for the water/Chronik features ----
+Object.assign(window.DEV, {
+  /** DEV.dossier() → dossier of the KG under the camera; DEV.dossier('63307', 'forest') opens the panel on a tab. */
+  async dossier(kg, tab) { kg = padKG(kg || currentWaterKG()); const d = await loadDossier(kg); if (tab !== false) await openDossier(kg, tab || G.dossierTab); return d; },
+  /** DEV.station() → loaded Messstellen; DEV.station('gw:356899') opens its popup (flies there first). */
+  async station(id) {
+    if (!id) return G.gwPoints.map(s => ({ id: s.id, category: s.category, name: s.name, parcel_id: s.parcel_id, lon: s.lon, lat: s.lat }));
+    const s = G.gwPoints.find(p => p.id === id);
+    if (s) { await this.goto(s.lon, s.lat, Math.max(G.cam.zoom, 17)); }
+    await openStation(s || id); return s || null;
+  },
+  /** DEV.flow() → start the Wassertropfen-Reise from the selected parcel / camera; DEV.flow(false) clears; DEV.flow(lon,lat) from a point. */
+  async flow(lon, lat) { if (lon === false) { clearFlow(); return null; } await startFlow(lon, lat); return G.flow && { total_km: G.flow.d.total_km, exit: G.flow.d.exit, reaches: G.flow.d.n_reaches, title: G.flow.title }; },
+  /** Water layers state (for screenshots): DEV.water() */
+  water() { return { kg: G.waterKG, drought: G.drought, stations: G.gwPoints.length, zones: G.wpZones.length, wells: G.claimed.filter(c => c.well_at).length, gwVisible: G.gwVisible, flow: !!G.flow }; },
+});

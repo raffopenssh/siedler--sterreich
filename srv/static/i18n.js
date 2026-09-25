@@ -516,6 +516,41 @@ Object.assign(I18N_EXACT, {
   'ab 14 Jahren': 'ages 14+', 'Beta · keine Cookies · kein Tracking · Chat automatisch gefiltert · ': 'Beta · no cookies · no tracking · chat auto-filtered · ', ' (jünger nur mit Einwilligung der Eltern)': ' (younger only with parental consent)',
 });
 
+// ---------- water & Gemeinde-Chronik (GW-1…8, HOLZ-1, FARM-1) ----------
+Object.assign(I18N_EXACT, {
+  '💧 Grundwasser': '💧 Groundwater', 'Grundwasser heute': 'Groundwater today', 'Gemeinde-Chronik öffnen': 'Open municipality chronicle',
+  'Grundwasser heute — Gemeinde-Chronik öffnen': 'Groundwater today — open municipality chronicle',
+  '📖 Gemeinde-Chronik': '📖 Municipality Chronicle', 'Gemeinde-Chronik': 'Municipality Chronicle', 'Chronik': 'Chronicle', 'Wasser · Wald · Höfe': 'Water · Forest · Farms',
+  '💧 Wasser': '💧 Water', '🌲 Wald': '🌲 Forest', '🚜 Höfe': '🚜 Farms', '📏 Messstelle': '📏 Gauging station',
+  'Chronik wird aufgeschlagen…': 'Opening the chronicle…', 'Chronik gerade nicht erreichbar — bitte nochmal antippen': 'Chronicle unavailable right now — please tap again',
+  'Noch keine Katastralgemeinde geladen — zoom näher ran.': 'No cadastral municipality loaded yet — zoom in.',
+  'normal': 'normal', 'niedrig': 'low', 'sehr niedrig': 'very low', 'hoch': 'high', 'keine Messung': 'no reading', 'keine Live-Messung': 'no live reading',
+  'gut': 'good', 'beobachten': 'watch', 'belastet': 'stressed', 'Dürre': 'Drought', 'trocken': 'dry', 'schwere Dürre': 'severe drought', 'Heute': 'Today', 'Wasserstress': 'Water stress',
+  'über Grenzwert': 'above limit', 'erhöht': 'elevated', 'unauffällig': 'unremarkable', 'Dürre-Risiko': 'Drought risk', 'der Jahre': 'of years', 'schlimmstes': 'worst',
+  'Messstellen': 'Gauging stations', 'Messstelle': 'Gauging station', 'Dürre-Kalender': 'Drought calendar', 'Ø Klasse pro Monat': 'Ø class per month', 'Trockenheit': 'Dryness',
+  'Ernte heute': 'Harvest today', 'Brunnen schützt': 'Well protects', 'Dürre: Felder tragen weniger — Brunnen und Brache lohnen sich.': 'Drought: fields yield less — wells and fallow pay off.',
+  'Weg des Wassers': 'Path of the water', 'Wasserweg': 'Water path', 'Fließweg': 'Flow path', 'bis zur Grenze': 'to the border', 'Angekommen': 'Arrived',
+  'Der Tropfen sucht seinen Bach…': 'The drop is looking for its brook…', 'Flussdaten werden geladen — gleich nochmal': 'River data loading — try again shortly', 'Kein Fließweg gefunden': 'No flow path found',
+  'Schwarzes Meer': 'Black Sea', 'Nordsee': 'North Sea', 'Adria': 'Adriatic', 'Mittelmeer': 'Mediterranean', 'Wasserweg ausblenden': 'Hide water path',
+  'Waldfläche': 'Forest area', 'Verlust': 'Loss', 'letztes Jahr': 'last year', 'seit 2001': 'since 2001', 'Ernte': 'Harvest', 'gebunden/Jahr': 'stored/year', 'Fichte': 'Spruce',
+  'Waldverlust': 'Forest loss', 'je dichter der Bestand, desto mehr XP; zählt zum 30-%-Ziel.': 'the denser the stand, the more XP; counts toward the 30 % goal.',
+  'Betriebe': 'Farms', 'Förderung': 'Subsidy', 'Median': 'Median', 'Bergbauern': 'Mountain farms', 'Hoftypen': 'Farm types', 'Top-Maßnahmen': 'Top measures', 'pro Ernte': 'per harvest',
+  'Wiesen holen sie alle 40 Minuten ab, Bio-Schläge kriegen mehr.': 'Meadows collect it every 40 minutes, organic plots get more.',
+  'Keine Grundwasserdaten für diese Gemeinde.': 'No groundwater data for this municipality.', 'Keine Walddaten für diese Gemeinde.': 'No forest data for this municipality.', 'Keine Förderdaten für diese Gemeinde.': 'No subsidy data for this municipality.',
+  'Förderung abholen': 'Collect subsidy', 'Nächste Auszahlung in': 'Next payout in', 'alle 40 min': 'every 40 min', 'keine Förderung': 'no subsidy', 'Bio-Prämie': 'organic premium', 'Ernten': 'Harvest', 'in': 'in',
+  'holt Förderung': 'collects subsidy', 'Brunnen': 'Well', 'Brunnen graben': 'Dig well', 'Brunnen gegraben': 'Well dug', 'gräbt einen Brunnen': 'digs a well', 'schützt': 'protects', 'der Ernte': 'of the harvest',
+  'Grundwasser in': 'Groundwater at', 'der Ernte vor Dürre': 'of the harvest from drought', 'porous aquifer': 'porous aquifer', 'karst aquifer': 'karst aquifer',
+  'Pegelwart': 'Gauge keeper', 'für die Messstelle': 'for the gauging station', 'Wer diese Parzelle kauft, wird': 'Whoever buys this parcel becomes',
+  'Grundwasser-Messstelle': 'Groundwater station', 'Nitrat-Messstelle': 'Nitrate station', 'Wasserkraftwerk': 'Hydropower plant', 'Gewässergüte-Messstelle': 'Water quality site',
+  'Art': 'Type', 'Pegel': 'Level', 'Trend': 'Trend', 'signifikant': 'significant', 'Leistung': 'Capacity', 'Chemie': 'Chemistry', 'Ökologie': 'Ecology', 'Risiko': 'Risk', 'Verlauf': 'History', 'Lade Verlauf…': 'Loading history…', 'Kein Verlauf verfügbar': 'No history available',
+  'Good': 'Good', 'Poor': 'Poor', 'Parzelle': 'Parcel',
+  'Schutzgebiet': 'Protected area', 'Wasserschutzgebiet': 'Water protection area', 'Wasserschongebiet': 'Water conservation area', 'Wasserschutz': 'Water protection', 'Schongebiet': 'Conservation area',
+  'Trinkwasser-Bonus': 'drinking-water bonus', 'Wasserschutzgebiet: Trinkwasser-Bonus ×1,5': 'Water protection area: drinking-water bonus ×1.5',
+  'Schutzgebiete sichtbar': 'Protected areas shown', 'Schutzgebiete ausgeblendet': 'Protected areas hidden', 'Schutzgebiete (Natura 2000 & Wasserschutz) ein/aus': 'Protected areas (Natura 2000 & water protection) on/off',
+  'Das Grundwasser steht hier': 'Groundwater here is', 'unter normal — deine Felder tragen nur': 'below normal — your fields yield only', 'Ein 🕳️ Brunnen schützt, Brache zählt zum Naturschutz.': 'A 🕳️ well protects, fallow counts as conservation.',
+  '💧 Wasserstress: ': '💧 Water stress: ', ' beobachten ': ' watch ', ' belastet': ' stressed', 'Grundwasser-Status-Index (groundwater-at, CC BY 4.0)': 'Groundwater status index (groundwater-at, CC BY 4.0)',
+});
+
 const I18N_RX = [
   // ---------- registration / joining ----------
   [/^🎉 Servus, (.+)!$/, '🎉 Welcome, $1!'],

@@ -554,6 +554,75 @@ Consumed today (`srv/siblings.go` unless noted):
   ("Anbau: 🌽 Körnermais · 6,3 ha · 🌿 Bio"). `doHarvest()` sends `crop_group`;
   server `fieldPhaseAtCrop()` uses it for meadow-vs-crop (`cropMeadow` mirrors `CROP_MEADOW`).
 
+## Gemeinde-Chronik dossiers & water mechanics (gw / holz / farm siblings)
+
+Backend: `srv/dossier.go` (`GET /api/dossier/{kg}` = gw + holz + farm `/llm/kg`
+in parallel, 6 h cache, 404 negative-cached 1 h; derives `drought{level,label,
+status,sigma}` and `game{yield_factor,well_protection,subsidy_per_ha}`) and
+`srv/water.go` (GW-1…8 proxies: `/api/water/point|points|station/{id}|
+protection|flowpath|gwi`, `GET /api/well-quote`, `POST /api/dig-well`,
+`GET /api/field-economy`; harvest payout = crop × drought factor (+ well
+protection) + Förderung; Naturschutz ×1.5 XP inside a Wasserschutzgebiet;
++80 XP Pegelwart when `gw_station:true` on claim). Claims carry `well_at` /
+`well_depth_m`. SSE: `well_dug`, `parcel_harvested{meadow,drought}`.
+
+Frontend (game.js section "WATER & GEMEINDE-CHRONIK", all lazy/background):
+- **HUD chip** `#water-chip` (GW-4) inside `#hud-badges` (flex row shared with
+  `#enhanced-badge` — both are `position:static` now; `drawN2KOverlay` reads
+  the row to place its label). `updateWaterChip()` runs from
+  `loadMoreParcels()`/`fetchKGPolygons()`; KG = `currentWaterKG()` (sticky
+  `kgAtCamera()`), dossier via `loadDossier(kg)` → `G.dossiers[kg]`
+  (`'loading'` | dossier | `{error}`), `G.drought` = current KG's block. Colour
+  classes `st-normal|low|very_low|high`, `.pulse` at level ≥ 2. Phones show
+  "💧 Dürre −2,2σ" only. Sidebar row `#sb-chronik` mirrors it. Herald hint
+  `drought` (one-shot, suppressed while a Wasserweg runs).
+- **Chronik panel** `#dossier-popup` (`openDossier(kg, tab)`, tabs
+  water/forest/farm, `renderDossier(d)`): pp-grid rows + one `pxChart()` (≤ 24
+  div bars, `.bad/.warn/.cur`), `.season-cal` 12 cells from
+  `season_profile` (current month outlined), `.ds-rule` gold box = the game
+  rule (yield ×, well %, Naturwald XP, Förderung 🪙/ha), `segBar()` for
+  `archetype_mix`. Entry points: chip, sidebar row, `openKGSummary()` link,
+  Herald link. Wasser tab hosts the Messstellen checkbox (`setGwVisible`) and
+  the "Weg des Wassers" button.
+- **Field economy** (`fieldEconomy(pid)` 60 s cache → `renderFieldEconomyRows`):
+  owned NS-48 parcels get row `#pp-eco` ("Ernte 🌾 42🪙 + 🏛 18🪙 = 60🪙",
+  ☀️ malus line) or "🏛 Förderung 2🪙 alle 40 min" for meadows; harvest button
+  uses `economy.total`; meadows get "🏛 Förderung abholen" / disabled "in N min"
+  (gate = `harvested_at` + `FIELD_CYCLE_S`). `doHarvest()` sends `organic` from
+  `parcelSchlag()`; `harvestToast(res)` breaks the payout down.
+- **Brunnen** (GW-1): `wellButtonHTML()` (lazy `fetchWellQuote` → depth, price,
+  protection in the title) → `doDigWell()`; row `#pp-well`; `drawWells()` pixel
+  well in the base layer (after forest sprites, zoom ≥ 16, `wellPointFor(f)`
+  hash-stable inside the ring). `baseSignature` counts wells.
+- **Messstellen** (GW-2): `loadPointLayer()` (point sibling of `loadBboxLayer`)
+  → `loadGwPoints(b)` per viewport tile into `G.gwPoints`; `drawGwStations()`
+  in the dynamic layer (zoom ≥ 15, sprites per category in
+  `drawStationSprite`, co-located points fan out 12 px, labels ≥ z17);
+  `hitStation()` in `onGameClick` before parcels → `openStation(s)`
+  (`#station-popup`, metrics + `drawPixelLine()` 30-year canvas chart).
+  `stationOnParcel(pid)` (index `G._stByParcel`) drives the popup row
+  "📏 Messstelle · +80⚡ Pegelwart" and `gw_station` on claim.
+- **Wasserschutzgebiete** (GW-5): `loadWaterProtection(b)` via `loadBboxLayer`
+  into `G.wpZones` (with bbox); `drawWaterProtection()` in the base layer right
+  after `drawN2KOverlay` (blue hatch + dashed edge, label ≥ z16), gated by the
+  same `G.n2kVisible` / `#btn-n2k`. `waterProtectionAt(lon,lat)` → popup badge
+  and the Naturschutz button label "+150⚡ 💧"; `doConvert()` sends lon/lat.
+- **Wassertropfen-Reise** (GW-6): `startFlow(lon,lat)` → `G.flow` {pts, cum,
+  dur, follow}; `flowAnimLoop()` (setTimeout 40 ms, only while `G.flow`) moves
+  the camera along the droplet (time-based lerp; manual pan sets
+  `follow=false`; `loadMoreParcels()` every 2.5 s), `#flow-chip` shows
+  "23 / 65 km · Kainach" then "Kainach → Mur → Schwarzes Meer · 65 km";
+  `drawFlowPath()` cyan line + white travelling dashes + gauge checkpoints +
+  2-px droplet. `clearFlow()` on ✕.
+- **Picker tint** (GW-7): `loadPickerGwi(munis)` = `/api/water/gwi` joined with
+  cadastre `/spatial/kgs?fields=kg_code,gemeinde_code` (state bbox, ~18 KB gz)
+  → `G.gwiByGemeinde` mean GWI → `gwiTint()` wash in `drawMuniPoly()`;
+  legend `#pick-gwi-legend`.
+- Popup rows for all of it are appended in `waterPopupRows(pid, rows)` from
+  `renderEnhancedPopupRows`. DEV: `DEV.dossier(kg, tab)`, `DEV.station(id)`,
+  `DEV.flow(lon, lat)` / `DEV.flow(false)`, `DEV.water()`. Screenshots in
+  `docs/screenshots/water/`, glitches #10–17 in `docs/glitches.md`.
+
 ## Quests → Herald briefings
 
 `GET /api/session/{id}/challenges` returns each open quest with live
