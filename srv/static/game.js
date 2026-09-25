@@ -721,6 +721,7 @@ async function loadStateMunis(state) {
     const res = await GET(CAD+'/search/municipalities?state='+encodeURIComponent(state)+'&limit=600&format=geojson');
     G.pick.munis = res.features || [];
     G.pick.level = 'munis';
+    loadPickerGwi(G.pick.munis);   // GW-7 water-stress tint (background)
     G.pick.state = state;
     // Fit view
     let minLon=Infinity,maxLon=-Infinity,minLat=Infinity,maxLat=-Infinity;
@@ -886,6 +887,9 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
     ctx.globalAlpha = isHover ? 0.9 : 0.7;
     ctx.fill();
     ctx.globalAlpha = 1;
+    // GW-7: subtle amber→red wash on water-stressed municipalities
+    const tint = gwiTint(feature.properties.gemeinde_code);
+    if (tint && !isHover) { ctx.fillStyle = tint; ctx.fill(); }
     if (isEnh) {
       // Cyan glow for lidar-enhanced municipalities
       ctx.save();
@@ -1646,6 +1650,8 @@ async function loadViewportGeometry(b, opts) {
   // of the ~7 MB whole-KG export; FARM-2 INVEKOS fields). Background, never awaited.
   if (needLanduse) loadViewportLanduse(b);
   loadSchlaege(b);
+  loadGwPoints(b);          // GW-2 Messstellen
+  loadWaterProtection(b);   // GW-5 Wasserschutzgebiete
   for (const it of (data.footprints||[])) {
     const id = it.footprint_id;
     if (!id || G.fpIds.has(id) || !it.geometry) continue;
@@ -2569,7 +2575,8 @@ function handleEvent(d) {
     case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,''); loadClaimed().then(()=>render()); break;
     case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;
     case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
-    case 'parcel_harvested': if (d.player !== G.player?.name) toast((d.forest ? '🪓 ' : '🌾 ')+d.player+' erntet '+d.coins+'🪙',''); loadClaimed().then(()=>render()); break;
+    case 'parcel_harvested': if (d.player !== G.player?.name) toast((d.forest ? '🪓 ' : d.meadow ? '🏛 ' : '🌾 ')+d.player+(d.meadow ? ' ' + tr('holt Förderung') + ' ' : ' erntet ')+d.coins+'🪙'+(d.drought >= 2 ? ' ☀️' : ''),''); loadClaimed().then(()=>render()); break;
+    case 'well_dug': if (d.player !== G.player?.name) toast('🕳️ '+d.player+' '+tr('gräbt einen Brunnen')+' ('+String(d.depth_m).replace('.', ',')+' m)',''); loadClaimed().then(()=>{ invalidateBase(); render(); }); break;
     case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
     case 'challenge_completed':
       if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); Herald.completed(d.title); loadChallenges(); updateStatsFromServer(); }
@@ -2642,10 +2649,10 @@ function hillshade(lp) {
 // polygons on every frame — the main reason slow phones stuttered.
 let _base = null, _baseSig = '', _baseAt = 0;
 function baseSignature(W, H) {
-  let conv = 0; for (const c of G.claimed) if (c.converted_to) conv++;
+  let conv = 0; for (const c of G.claimed) { if (c.converted_to) conv++; if (c.well_at) conv += 1000; }
   return [G.cam.lon.toFixed(7), G.cam.lat.toFixed(7), G.cam.zoom.toFixed(4), W, H,
     G.parcelPolys.length, G.parcels.length, G.buildingFootprints.length, G.landusePolys.length,
-    G.claimed.length, conv, G.lidarGen, G.n2kVisible ? 1 : 0, Object.keys(G.n2kSites).length,
+    G.claimed.length, conv, G.lidarGen, G.n2kVisible ? 1 : 0, Object.keys(G.n2kSites).length, G.wpZones.length,
     Object.keys(G.osmLines).length, Object.keys(G.waterAreas || {}).length,
     G.atBorder ? 1 : 0, G.baseGen || 0].join('|');
 }
@@ -2663,6 +2670,8 @@ function drawBaseLayers(ctx, W, H, claimMap) {
 
   // ---- Natura 2000 protected-area overlay (enhanced mode) ----
   if (G.n2kVisible) drawN2KOverlay(ctx);
+  // ---- Wasserschutz-/Schongebiete (GW-5) — same toggle as Natura 2000 ----
+  if (G.n2kVisible) drawWaterProtection(ctx);
 
   // ---- OSM water areas (rivers/lakes as closed polygons, feedback #16) ----
   drawWaterAreas(ctx);
@@ -2694,6 +2703,9 @@ function drawBaseLayers(ctx, W, H, claimMap) {
 
   // ---- Trees on forest parcels ----
   drawForestSprites(ctx, claimMap);
+
+  // ---- Brunnen on owned fields (GW-1) ----
+  drawWells(ctx, claimMap);
 
   // ---- Draw real building footprints ----
   if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
@@ -2733,6 +2745,10 @@ function render() {
 
   // ---- Similar-parcels overlay (below treasures, above parcels) ----
   if (G.similar) drawSimilarParcels(ctx);
+
+  // ---- Messstellen (GW-2) + Wassertropfen-Reise (GW-6) ----
+  drawGwStations(ctx);
+  if (G.flow) drawFlowPath(ctx);
 
   // ---- Treasures ----
   _treasuresOnScreen = 0;
@@ -7430,6 +7446,7 @@ function initGameInput() {
   gc.addEventListener('mousedown', e => {
     G.drag = { active:true, sx:e.clientX, sy:e.clientY, slon:G.cam.lon, slat:G.cam.lat, moved:false };
     G.geo.follow = false; // manual pan disables GPS follow-mode
+    if (G.flow) G.flow.follow = false;
     gc.classList.add('dragging');
   });
   gc.addEventListener('mousemove', e => {
@@ -7467,6 +7484,8 @@ function initGameInput() {
       e.preventDefault();
       G.drag = {active:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,slon:G.cam.lon,slat:G.cam.lat,moved:false,wasPinch:false};
       G.geo.follow = false; // manual pan disables GPS follow-mode
+      if (G.flow) G.flow.follow = false;
+    if (G.flow) G.flow.follow = false;
     } else if (e.touches.length===2) {
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       touchDist = Math.sqrt(dx*dx+dy*dy);
@@ -7544,7 +7563,7 @@ function initGameInput() {
   n2kBtn.onclick = () => {
     G.n2kVisible = !G.n2kVisible;
     n2kBtn.classList.toggle('off', !G.n2kVisible);
-    toast(G.n2kVisible ? '🛡️ Schutzgebiete sichtbar' : '🛡️ Schutzgebiete ausgeblendet', '');
+    toast(G.n2kVisible ? '🛡️ ' + tr('Schutzgebiete sichtbar') + ' (Natura 2000 · 💧 ' + tr('Wasserschutz') + ')' : '🛡️ ' + tr('Schutzgebiete ausgeblendet'), '');
     render();
   };
 
@@ -7894,6 +7913,10 @@ function onGameClick(e) {
   const simHit = hitSimilarMarker(x, y);
   if (simHit) { openSimilarResult(simHit); return; }
 
+  // Messstellen sprites (GW-2)
+  const stHit = hitStation(x, y);
+  if (stHit) { openStation(stHit); return; }
+
   // Similar-parcels edge arrow: fly to the nearest off-screen result that way
   if (G.similar && G._simEdgeArrows) {
     for (const a of G._simEdgeArrows) {
@@ -8076,6 +8099,7 @@ function showParcelPopup(f, tappedFp) {
       cropEl.title = 'INVEKOS ' + (G.schlagYear || '') + ' · AMA, CC BY 4.0';
     } else if (cropEl) cropEl.style.display = cropL.style.display = 'none';
   }
+  renderFieldEconomyRows(f, claim);
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
   renderBuildingRows(tappedFp);
@@ -8090,8 +8114,17 @@ function showParcelPopup(f, tappedFp) {
     // My parcel — show harvest/convert/sell + any incoming offers
     let html = '';
     if (isCropField(p)) {
-      const fs = fieldStage(p, claim);
-      if (fs.stage === 'ripe') html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🌾 Ernten (+${harvestYield(area)}🪙)</button>`;
+      const fs = fieldStage(p, claim), eco = fieldEconomy(pid);
+      if (fs.stage === 'ripe') html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🌾 ${tr('Ernten')} (+${eco ? eco.total : harvestYield(area)}🪙)</button>`;
+      else if (fs.stage === 'meadow') {
+        // FARM-1: meadows collect the Förderung once per cycle (gated by harvested_at)
+        const since = claim.harvested_at ? (Date.now() - Date.parse(claim.harvested_at)) / 1000 : Infinity;
+        const wait = FIELD_CYCLE_S - since;
+        const amt = eco ? eco.subsidy : null;
+        if (wait > 0) html += `<button class="btn btn-secondary btn-small" disabled title="${tr('Nächste Auszahlung in')} ${fmtMin(wait)}">🏛 ${tr('Förderung')} ${tr('in')} ${fmtMin(wait)}</button>`;
+        else if (amt == null || amt > 0) html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🏛 ${tr('Förderung abholen')} (${amt != null ? '+' + amt + '🪙' : '…'})</button>`;
+      }
+      html += wellButtonHTML(G.sel, claim);
     }
     if (isForestParcel(G.sel, claim)) {
       // Forest stand: harvest the timber (coins now, stand regrows) or set it
@@ -8103,8 +8136,9 @@ function showParcelPopup(f, tappedFp) {
       html += `<button class="btn btn-primary btn-small" onclick="doConvert('wildforest')" ${fs.stage !== 'baumholz' ? 'disabled title="' + tr('Der Wald muss erst nachwachsen') + '"' : ''}>🌳 ${tr('Naturwald')} (+${e ? e.wild_xp : '…'}⚡)</button>`;
       if (!(pid in G.forestValues)) fetchForestValue(G.sel).then(() => { if (G.sel && G.sel.properties.parcel_id === pid) showParcelPopup(G.sel, G.selFp); });
     } else {
+      const wpHere = !!waterProtectionAt(...featureLonLat(G.sel));
       html += `
-      <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')">🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')}</button>
+      <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')" ${wpHere ? 'title="' + tr('Wasserschutzgebiet: Trinkwasser-Bonus ×1,5') + '"' : ''}>🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')} (+${wpHere ? '150⚡ 💧' : '100⚡'})</button>
       <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>`;
     }
     html += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
@@ -8408,6 +8442,9 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     if (pid in G.forestValues) { if (G.forestValues[pid]) for (const r of forestPopupRows(G.forestValues[pid], claim)) rows.push(r); }
     else fetchForestValue(G.sel).then(() => { if (G.sel && G.sel.properties.parcel_id === pid) showParcelPopup(G.sel, G.selFp); });   // re-render rows + action buttons
   }
+
+  // Water: Messstelle bonus, Wasserschutzgebiet, Wasserweg (GW-2/5/6)
+  waterPopupRows(pid, rows);
 
   // Natura 2000: is parcel inside a loaded site polygon?
   const [pLon, pLat] = G.sel ? featureLonLat(G.sel) : [null, null];
@@ -8886,8 +8923,10 @@ window.doClaim = async function() {
     area_sqm:p.area_sqm||0, landuse:extractLuCode('',p),
     building_count:p.building_count||0, total_building_area:p.total_building_area_sqm||0,
     tall_tree_count:tt.count, tall_tree_max_h:tt.maxH,
+    gw_station: !!stationOnParcel(p.parcel_id),
   });
   if (res.error) { toast(res.error,'err'); return; }
+  if (res.station_bonus_xp > 0) setTimeout(() => toast('📏 ' + tr('Pegelwart') + ': +' + res.station_bonus_xp + '⚡ ' + tr('für die Messstelle'), 'ok'), 900);
   if (res.tall_bonus_xp > 0) {
     toast('🏴 Gekauft für '+res.price+'🪙! 🌲 Riesenbaum-Bonus: +'+res.tall_bonus_xp+'⚡','ok');
   } else {
@@ -8904,22 +8943,25 @@ window.doHarvest = async function() {
   if (!G.sel) return;
   const p = G.sel.properties;
   const sf = parcelSchlag(p);
-  const res = await POST('/api/harvest-parcel', {session_id:G.session.id, player_id:G.player.id, parcel_id:p.parcel_id, crop_group: sf ? sf.properties.crop_group : ''});
+  const res = await POST('/api/harvest-parcel', {session_id:G.session.id, player_id:G.player.id, parcel_id:p.parcel_id, crop_group: sf ? sf.properties.crop_group : '', organic: !!(sf && sf.properties.organic)});
   if (res.error) { toast(res.error,'err'); return; }
   const [lon, lat] = featureLonLat(G.sel);
   spawnCollectFX({lon, lat}, '+' + res.coins + ' 🪙', TREASURE_RARITY.coins);
-  toast('🌾 ' + tr('Geerntet') + ': +' + res.coins + '🪙 +' + res.xp + '⚡','ok');
+  delete G.fieldEco[p.parcel_id];
+  toast(harvestToast(res), 'ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
 };
 
 window.doConvert = async function(to) {
   if (!G.sel) return;
+  const [cLon, cLat] = featureLonLat(G.sel);
   const res = await POST('/api/convert-parcel', {
     session_id:G.session.id, player_id:G.player.id,
-    parcel_id:G.sel.properties.parcel_id, convert_to:to,
+    parcel_id:G.sel.properties.parcel_id, convert_to:to, lon: cLon, lat: cLat,
   });
   if (res.error) { toast(res.error,'err'); return; }
+  if (res.water_protection) setTimeout(() => toast('💧 ' + tr('Wasserschutzgebiet') + ': ' + tr('Trinkwasser-Bonus') + ' ×1,5⚡', 'ok'), 900);
   if (to === 'wildforest') { FOREST.scenes.delete(G.sel.properties.parcel_id + ':wild'); toast('🌳 ' + tr('Naturwald') + '! ~' + Math.round(res.co2_t || 0) + ' t CO₂ ' + tr('bleiben im Wald') + ' · +' + res.xp_reward + '⚡', 'ok'); }
   else toast('🌿 Umgewandelt! +'+res.xp_reward+'⚡','ok');
   G.player = res.player; updateStats();
@@ -9157,6 +9199,12 @@ setInterval(() => {
   const fs = fieldStage(p, claim);
   const el = document.getElementById('pp-field'); if (el) el.textContent = fieldStageLabel(fs);
   const hasBtn = !!document.querySelector('#pp-actions [onclick="doHarvest()"]');
+  if (fs.stage === 'meadow') {
+    // Förderung gate: re-render when the wait ends (button turns gold)
+    const since = claim?.harvested_at ? (Date.now() - Date.parse(claim.harvested_at)) / 1000 : Infinity;
+    if (fs.mine && !claim.converted_to && (since >= FIELD_CYCLE_S) !== hasBtn) showParcelPopup(G.sel, G.selFp);
+    return;
+  }
   if (fs.mine && !claim.converted_to && (fs.stage === 'ripe') !== hasBtn) showParcelPopup(G.sel, G.selFp);
 }, 5000);
 // Sparkle animation for treasures, top-tree sway + GPS pulse
@@ -10104,7 +10152,7 @@ function updateWaterChip() {
     sbVal.className = known ? st.cls : '';
   }
   // Herald: first time a drought (level ≥ 2) shows up under the camera.
-  if (dr.level >= 2 && known) Herald.hint('drought');
+  if (dr.level >= 2 && known && !G.flow) Herald.hint('drought');
   // N2K chip in drawN2KOverlay sits below the badge row — refresh so it doesn't overlap.
   if (G.n2kVisible && Object.keys(G.n2kSites).length) render();
 }
@@ -10237,4 +10285,465 @@ function renderDossier(d) {
     }
   }
   body.innerHTML = html;
+}
+
+// ---- Field economy (drought × Förderung) in the parcel popup ----
+/** Cached /api/field-economy for an owned field (60 s). Triggers a re-render when it lands. */
+function fieldEconomy(pid) {
+  const e = G.fieldEco[pid];
+  if (e && e.d && Date.now() - e.t < 60000) return e.d;
+  if (e && e.loading) return e.d || null;
+  const f = G.sel && G.sel.properties.parcel_id === pid ? G.sel : polyById(pid);
+  if (!f) return null;
+  const sf = parcelSchlag(f.properties);
+  G.fieldEco[pid] = { t: Date.now(), d: e ? e.d : null, loading: true };
+  GET('/api/field-economy?session_id=' + G.session.id + '&parcel_id=' + encodeURIComponent(pid) + '&crop_group=' + encodeURIComponent(sf ? sf.properties.crop_group || '' : '') + (sf && sf.properties.organic ? '&organic=1' : ''))
+    .then(d => {
+      G.fieldEco[pid] = { t: Date.now(), d: d && !d.error ? d : null };
+      if (G.sel && G.sel.properties.parcel_id === pid && document.getElementById('parcel-popup').classList.contains('open')) showParcelPopup(G.sel, G.selFp);
+    }).catch(() => { G.fieldEco[pid] = { t: Date.now() - 50000, d: null }; });
+  return e ? e.d : null;
+}
+function renderFieldEconomyRows(f, claim) {
+  const el = document.getElementById('pp-eco'), l = document.getElementById('pp-eco-l');
+  const wEl = document.getElementById('pp-well'), wL = document.getElementById('pp-well-l');
+  if (!el) return;
+  const p = f.properties, pid = p.parcel_id;
+  const mine = claim && claim.player_id === G.player?.id && !claim.converted_to && isCropField(p);
+  if (!mine) { el.style.display = l.style.display = 'none'; wEl.style.display = wL.style.display = 'none'; return; }
+  const eco = fieldEconomy(pid), fs = fieldStage(p, claim);
+  el.style.display = l.style.display = '';
+  l.textContent = fs.stage === 'meadow' ? '🏛 ' + tr('Förderung') : tr('Ernte');
+  if (!eco) el.innerHTML = '<span class="kg-dim">…</span>';
+  else {
+    let h = '';
+    if (fs.stage !== 'meadow') h += '🌾 ' + eco.crop + '🪙';
+    if (eco.subsidy > 0) h += fs.stage === 'meadow' ? eco.subsidy + '🪙 <span class="kg-dim">' + tr('alle 40 min') + '</span>' : (h ? ' + ' : '') + '🏛 ' + eco.subsidy + '🪙';
+    if (fs.stage !== 'meadow' && eco.subsidy > 0) h += ' = <b style="color:var(--gold)">' + eco.total + '🪙</b>';
+    if (!h) h = '<span class="kg-dim">' + tr('keine Förderung') + '</span>';
+    const notes = [];
+    if (eco.drought >= 1 && fs.stage !== 'meadow') notes.push('<span class="pp-eco bad">☀️ ' + tr(eco.label || 'Dürre') + ' ×' + (eco.yield_factor || 1).toFixed(2).replace(/0$/, '').replace('.', ',') + (eco.well ? ' · 🕳️ ' + tr('Brunnen schützt') : '') + '</span>');
+    if (eco.organic && eco.subsidy > 0) notes.push('<span class="pp-eco">🌿 ' + tr('Bio-Prämie') + '</span>');
+    el.innerHTML = h + notes.join('');
+  }
+  // Brunnen row (after digging)
+  if (claim.well_at) {
+    wEl.style.display = wL.style.display = '';
+    wL.textContent = '🕳️ ' + tr('Brunnen');
+    const prot = eco && eco.well && eco.drought >= 1 ? null : (G.dossiers[padKG(claim.kg_code)]?.game?.well_protection);
+    wEl.textContent = (claim.well_depth_m ? String(claim.well_depth_m).replace('.', ',') + ' m · ' : '') + tr('schützt') + ' ' + fmtPct(prot != null ? prot : 0.25);
+  } else { wEl.style.display = wL.style.display = 'none'; }
+}
+function harvestToast(res) {
+  const e = res.economy;
+  if (!e) return '🌾 ' + tr('Geerntet') + ': +' + res.coins + '🪙 +' + res.xp + '⚡';
+  const parts = [];
+  if (e.crop > 0) parts.push('🌾 +' + e.crop + '🪙');
+  if (e.subsidy > 0) parts.push('🏛 ' + tr('Förderung') + ' +' + e.subsidy + '🪙');
+  let s = parts.join(' · ') + ' · +' + res.xp + '⚡';
+  if (e.drought >= 1 && e.crop > 0 && e.base > 0) s += ' · ☀️ ' + tr(e.label || 'Dürre') + ' −' + Math.round((1 - e.crop / e.base) * 100) + '%';
+  return s;
+}
+
+// ---- Brunnen (GW-1 well) ----
+async function fetchWellQuote(f) {
+  const pid = f.properties.parcel_id;
+  if (pid in G.wellQuotes) return G.wellQuotes[pid];
+  G.wellQuotes[pid] = null;
+  const [lon, lat] = featureLonLat(f);
+  try { const q = await GET('/api/well-quote?lon=' + lon.toFixed(5) + '&lat=' + lat.toFixed(5)); G.wellQuotes[pid] = q && !q.error ? q : undefined; }
+  catch (e) { G.wellQuotes[pid] = undefined; }
+  if (G.wellQuotes[pid] === undefined) delete G.wellQuotes[pid];
+  return G.wellQuotes[pid];
+}
+function wellButtonHTML(f, claim) {
+  if (!claim || claim.well_at) return '';
+  const pid = f.properties.parcel_id, q = G.wellQuotes[pid];
+  if (!(pid in G.wellQuotes)) fetchWellQuote(f).then(() => { if (G.sel && G.sel.properties.parcel_id === pid) showParcelPopup(G.sel, G.selFp); });
+  if (!q) return `<button class="btn btn-secondary btn-small" disabled>🕳️ ${tr('Brunnen graben')} (…)</button>`;
+  const dep = String(q.depth_m).replace('.', ',');
+  const title = `${tr('Grundwasser in')} ~${dep} m (${tr(q.aquifer || '')}) · ${tr('schützt')} ${fmtPct(q.protection)} ${tr('der Ernte vor Dürre')}` + (q.station ? ` · ${tr('Messstelle')} ${esc(q.station.name)} ${fmtDist(q.station.distance_m)}` : '');
+  const poor = G.player.coins < q.price;
+  return `<button class="btn btn-secondary btn-small" onclick="doDigWell()" title="${title}" ${poor ? 'disabled' : ''}>🕳️ ${tr('Brunnen graben')} (−${q.price}🪙 · ${dep} m)</button>`;
+}
+window.doDigWell = async function() {
+  if (!G.sel) return;
+  const p = G.sel.properties, [lon, lat] = featureLonLat(G.sel);
+  const res = await POST('/api/dig-well', { session_id: G.session.id, player_id: G.player.id, parcel_id: p.parcel_id, lon, lat });
+  if (res.error) { toast(res.error, 'err'); return; }
+  spawnCollectFX({ lon, lat }, '💧 ' + tr('Brunnen') + ' +' + res.xp + '⚡', TREASURE_RARITY.xp);
+  toast('🕳️ ' + tr('Brunnen gegraben') + ' · ' + String(res.depth_m).replace('.', ',') + ' m · ' + tr('schützt') + ' ' + fmtPct(res.protection) + ' ' + tr('der Ernte') + ' · +' + res.xp + '⚡', 'ok');
+  G.player = res.player; updateStats();
+  delete G.fieldEco[p.parcel_id];
+  await loadClaimed(); invalidateBase(); render(); showParcelPopup(G.sel); loadChallenges();
+};
+/** Pixel well sprite on a field (base layer, zoom ≥ 16). Hash-stable position inside the parcel. */
+function drawWellSprite(ctx, x, y, u) {
+  const px = (dx, dy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x + dx * u, y + dy * u, w * u, h * u); };
+  px(-4, 1, 8, 2, 'rgba(0,0,0,0.25)');           // shadow
+  px(-4, -2, 8, 4, '#8a8478'); px(-3, -3, 6, 1, '#a09a8c');  // stone ring
+  px(-2, -2, 4, 2, '#1e3a5a'); px(-1, -2, 2, 1, '#4a8ad0');  // water
+  px(-4, -9, 1, 8, '#6a4a28'); px(3, -9, 1, 8, '#6a4a28');   // posts
+  px(-5, -11, 10, 2, '#8a3a2a'); px(-4, -12, 8, 1, '#a04a34'); // roof
+  px(-1, -8, 2, 1, '#c8a040');                                // winch
+}
+function wellPointFor(f) {
+  if (f._well) return f._well;
+  const g = f.geometry, b = geoBounds(g), rings = geomAllRings(g), hash = simpleHash(f.properties.parcel_id || '');
+  for (let i = 0; i < 12; i++) {
+    const lon = b.w + (b.e - b.w) * (0.25 + ((hash >> (i % 5)) % 50) / 100), lat = b.s + (b.n - b.s) * (0.25 + ((hash >> ((i + 2) % 7)) % 50) / 100);
+    if (pipRings(lon, lat, rings)) return (f._well = [lon, lat]);
+  }
+  return (f._well = [(b.w + b.e) / 2, (b.s + b.n) / 2]);
+}
+function drawWells(ctx, claimMap) {
+  if (G.cam.zoom < 16) return;
+  const u = G.cam.zoom >= 18.5 ? 3 : 2;
+  for (const c of G.claimed) {
+    if (!c.well_at) continue;
+    const f = polyById(c.parcel_id); if (!f || !isAreaGeom(f.geometry)) continue;
+    const [lon, lat] = wellPointFor(f);
+    const [x, y] = toScreen(lon, lat);
+    if (x < -20 || y < -20 || x > gc.width + 20 || y > gc.height + 20) continue;
+    drawWellSprite(ctx, x, y, u);
+  }
+}
+
+// ---- GW-2 Messstellen (points, no geometry) ----
+const GW_CAT = {
+  groundwater_station: { de: 'Grundwasser-Messstelle', icon: '📏', color: '#4aa8e8' },
+  nitrate_station:     { de: 'Nitrat-Messstelle',      icon: '🧪', color: '#c8e04a' },
+  power_plant:         { de: 'Wasserkraftwerk',        icon: '⚡', color: '#e0c040' },
+  water_quality_site:  { de: 'Gewässergüte-Messstelle', icon: '🛟', color: '#e07040' },
+};
+/** Sibling of loadBboxLayer for point layers: tile + id dedup, ready:false retries. */
+async function loadPointLayer(b, o) {
+  const q = v => Math.round(v / 0.002) * 0.002;
+  const tileKey = [q(b.w), q(b.s), q(b.e), q(b.n)].map(x => x.toFixed(3)).join(',');
+  if (o.tiles.has(tileKey)) return 0;
+  o.tiles.add(tileKey);
+  let data;
+  try { data = await GET(o.url + '?west=' + b.w + '&south=' + b.s + '&east=' + b.e + '&north=' + b.n); }
+  catch (e) { o.tiles.delete(tileKey); return 0; }
+  if (!data || data.pending || data.ready === false || data.error) {
+    o.tiles.delete(tileKey);
+    const attempt = (o.attempts[tileKey] || 0) + 1;
+    if (attempt <= 3 && !(data && data.error)) {
+      o.attempts[tileKey] = attempt;
+      const wait = Math.min(Math.max(+(data && data.retry_after_s) || 4, 3), 30) * 1000 * attempt;
+      setTimeout(() => { const v = viewBounds(); if (b.e >= v.w && b.w <= v.e && b.n >= v.s && b.s <= v.n) loadPointLayer(b, o); }, wait);
+    }
+    return 0;
+  }
+  let added = 0;
+  for (const it of (data[o.key] || [])) {
+    const id = o.idOf(it);
+    if (!id || o.ids.has(id) || it.lon == null || it.lat == null) continue;
+    o.ids.add(id); o.onPoint(it); added++;
+  }
+  if (added) o.done(added, data);
+  return added;
+}
+function loadGwPoints(b) {
+  loadPointLayer(b, {
+    url: '/api/water/points', key: 'points', tiles: G.gwTiles, ids: G.gwPointIds, attempts: G.gwAttempts, idOf: it => it.id,
+    onPoint: it => G.gwPoints.push(it),
+    done: () => { G._stByParcel = null; render(); if (G.sel) showParcelPopup(G.sel, G.selFp); },
+  });
+}
+/** GW-5 Wasserschutz-/Schongebiete polygons for one viewport tile. */
+function loadWaterProtection(b) {
+  loadBboxLayer(b, {
+    url: '/api/water/protection', key: 'zones', tiles: G.wpTiles, ids: G.wpIds, attempts: (loadWaterProtection._a = loadWaterProtection._a || {}),
+    idOf: it => it.id,
+    onFeature: (props, geometry) => { G.wpZones.push({ type: 'Feature', properties: props, geometry, bbox: geoBounds(geometry) }); },
+    done: () => { invalidateBase(); render(); },
+  });
+}
+function stationOnParcel(pid) {
+  if (!G._stByParcel) { G._stByParcel = {}; for (const s of G.gwPoints) if (s.parcel_id) (G._stByParcel[s.parcel_id] = G._stByParcel[s.parcel_id] || []).push(s); }
+  return G._stByParcel[pid] ? G._stByParcel[pid][0] : null;
+}
+function stationsOnParcel(pid) { stationOnParcel(pid); return G._stByParcel[pid] || []; }
+window.setGwVisible = function(on) { G.gwVisible = !!on; localStorage.setItem('gwVisible', on ? '1' : '0'); render(); };
+
+let _drawnStations = [];
+function drawStationSprite(ctx, x, y, cat, u, t) {
+  const px = (dx, dy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(x + dx * u), Math.round(y + dy * u), Math.max(1, w * u), Math.max(1, h * u)); };
+  px(-3, 0, 6, 2, 'rgba(0,0,0,0.3)');
+  switch (cat) {
+    case 'groundwater_station':   // striped gauge post with a level marker
+      px(-1, -12, 3, 12, '#e8e8e8'); for (let i = 0; i < 6; i += 2) px(-1, -12 + i * 2, 3, 2, '#d03030');
+      px(-3, -13, 7, 1, '#222'); px(-3, -14, 7, 1, '#4aa8e8');
+      px(2, -6 + Math.round(Math.sin(t) * 1.5), 3, 1, '#4aa8e8'); break;
+    case 'nitrate_station':       // flask
+      px(-1, -12, 3, 4, '#c8d8e0'); px(-3, -8, 7, 6, '#c8d8e0'); px(-3, -5, 7, 3, '#b8e040'); px(-4, -2, 9, 1, '#5a6a70'); break;
+    case 'power_plant':           // turbine house with a spinning wheel
+      px(-5, -8, 10, 8, '#8a8478'); px(-6, -10, 12, 2, '#a04a34'); px(-1, -6, 2, 4, '#3a3a48');
+      { const a = t * 2; for (let k = 0; k < 4; k++) { const ang = a + k * Math.PI / 2; px(6 + Math.round(Math.cos(ang) * 2.5), -5 + Math.round(Math.sin(ang) * 2.5), 1, 1, '#e0c040'); } px(6, -5, 1, 1, '#fff'); }
+      break;
+    default:                      // probe buoy
+      { const bob = Math.round(Math.sin(t * 1.3)); px(-3, -4 + bob, 7, 3, '#e07040'); px(-1, -8 + bob, 3, 4, '#f0f0f0'); px(0, -9 + bob, 1, 1, '#ff4030'); px(-4, -1 + bob, 9, 1, '#2a5a8a'); }
+  }
+}
+function drawGwStations(ctx) {
+  _drawnStations = [];
+  if (!G.gwVisible || G.cam.zoom < 15 || !G.gwPoints.length) return;
+  const u = G.cam.zoom >= 18 ? 3 : G.cam.zoom >= 16.5 ? 2 : 1.5, t = Date.now() / 600;
+  const W = gc.width, H = gc.height, seen = {};
+  ctx.save();
+  for (const s of G.gwPoints) {
+    let [x, y] = toScreen(s.lon, s.lat);
+    if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
+    const k = Math.round(x / 4) + ',' + Math.round(y / 4);           // co-located points fan out
+    const n = seen[k] = (seen[k] || 0) + 1; x += (n - 1) * 12 * u;
+    drawStationSprite(ctx, x, y, s.category, u, t + n);
+    _drawnStations.push({ s, x, y, r: 10 * u });
+    if (G.cam.zoom >= 17 && n === 1) {
+      ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      const lbl = (GW_CAT[s.category] || {}).icon + ' ' + String(s.name || '').replace(/\s+/g, ' ').slice(0, 22);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 1, y + 4);
+      ctx.fillStyle = '#cfe8ff'; ctx.fillText(lbl, x, y + 3);
+    }
+  }
+  ctx.restore();
+}
+function hitStation(x, y) {
+  let best = null, bd = Infinity;
+  for (const d of _drawnStations) { const dd = Math.hypot(d.x - x, d.y - (y + 6)); if (dd < Math.max(14, d.r) && dd < bd) { bd = dd; best = d.s; } }
+  return best;
+}
+function stationMetricRows(s) {
+  const m = s.metrics || {}, rows = [];
+  if (m.gw_level_m != null) rows.push(['💧 ' + tr('Pegel'), fmtNum(m.gw_level_m, 2) + ' m ü.A.']);
+  if (m.gw_trend_m_per_decade != null) rows.push(['📉 ' + tr('Trend'), (m.gw_trend_m_per_decade > 0 ? '+' : '') + fmtNum(m.gw_trend_m_per_decade, 2) + ' m/10 J' + (m.gw_p_value != null && m.gw_p_value < 0.05 ? ' <span class="kg-dim">' + tr('signifikant') + '</span>' : '')]);
+  if (m.no3_mg_l != null) rows.push(['🧪 Nitrat', fmtNum(m.no3_mg_l, 1) + ' mg/l' + (m.no3_latest_year ? ' <span class="kg-dim">(' + m.no3_latest_year + ')</span>' : '')]);
+  if (m.no3_trend_mg_l_per_yr != null) rows.push(['📉 ' + tr('Trend'), (m.no3_trend_mg_l_per_yr > 0 ? '+' : '') + fmtNum(m.no3_trend_mg_l_per_yr, 2) + ' mg/l·a']);
+  if (m.capacity_mw != null) rows.push(['⚡ ' + tr('Leistung'), fmtNum(m.capacity_mw, 1) + ' MW']);
+  if (m.chem_status) rows.push(['🧪 ' + tr('Chemie'), tr(m.chem_status)]);
+  if (m.eco_status) rows.push(['🐟 ' + tr('Ökologie'), tr(m.eco_status)]);
+  if (m.at_risk) rows.push(['⚠️ ' + tr('Risiko'), tr(m.at_risk)]);
+  return rows;
+}
+window.openStation = async function(s) {
+  if (typeof s === 'string') s = G.gwPoints.find(p => p.id === s) || { id: s };
+  const pop = document.getElementById('station-popup'), body = document.getElementById('station-body');
+  const cat = GW_CAT[s.category] || { de: 'Messstelle', icon: '📏' };
+  document.getElementById('station-title').textContent = cat.icon + ' ' + (s.name || s.id).replace(/\s+/g, ' ');
+  document.getElementById('dossier-popup').classList.remove('open');
+  pop.classList.add('open');
+  const rows = [['🏷️ ' + tr('Art'), tr(cat.de)]].concat(stationMetricRows(s));
+  if (s.parcel_id) rows.push(['📍 ' + tr('Parzelle'), '<span class="pp-ez-link" onclick="DEV.parcel(\'' + esc(s.parcel_id) + '\')">' + esc(s.parcel_id) + ' ▸</span>']);
+  body.innerHTML = ppRows(rows) + '<div class="kg-loading" id="station-hist">' + tr('Lade Verlauf…') + '</div>';
+  let h = G.stationHist[s.id];
+  if (!h) { try { h = await GET('/api/water/station/' + encodeURIComponent(s.id)); } catch (e) { h = null; } if (h && !h.error && !h.pending) G.stationHist[s.id] = h; }
+  const hist = (h && h.history) || [];
+  const box = document.getElementById('station-hist'); if (!box) return;
+  const key = ['gw_level_m', 'no3_mg_l', 'generation_gwh', 'capacity_mw'].find(k => hist.some(r => r[k] != null));
+  if (!hist.length || !key) { box.textContent = tr('Kein Verlauf verfügbar'); return; }
+  const series = hist.filter(r => r[key] != null).map(r => ({ x: String(r.as_of).slice(0, 4), v: r[key] }));
+  const unit = key === 'gw_level_m' ? 'm ü.A.' : key === 'no3_mg_l' ? 'mg/l' : key === 'generation_gwh' ? 'GWh' : 'MW';
+  box.className = '';
+  box.innerHTML = '<div class="ds-title"><span>' + tr('Verlauf') + ' · ' + unit + '</span><span>' + series[0].x + '–' + series[series.length - 1].x + '</span></div><canvas class="px-line" id="station-canvas"></canvas><div class="px-axis"><span>' + fmtNum(Math.min(...series.map(s => s.v)), 1) + '</span><span>' + fmtNum(Math.max(...series.map(s => s.v)), 1) + '</span></div>' +
+    (s.parcel_id && !G.claimed.find(c => c.parcel_id === s.parcel_id) ? '<div class="ds-rule">🎮 ' + tr('Wer diese Parzelle kauft, wird') + ' <b>' + tr('Pegelwart') + ' +80⚡</b></div>' : '') +
+    '<div class="ds-src">eHYD / WISE via groundwater-at · CC BY 4.0</div>';
+  drawPixelLine(document.getElementById('station-canvas'), series, key === 'no3_mg_l' ? [25, 50] : null);
+};
+/** Crisp 1-px stepped line chart with pixel markers (canvas sized to CSS box). */
+function drawPixelLine(cv, series, thresholds) {
+  if (!cv) return;
+  const W = cv.clientWidth || 300, H = 64; cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(0, 0, W, H);
+  const vs = series.map(s => s.v), mn = Math.min(...vs), mx = Math.max(...vs), span = (mx - mn) || 1;
+  const X = i => Math.round(4 + i * (W - 8) / Math.max(1, series.length - 1)), Y = v => Math.round(H - 6 - (v - mn) / span * (H - 14));
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)'; for (let y = 8; y < H; y += 12) { ctx.beginPath(); ctx.moveTo(0, y + .5); ctx.lineTo(W, y + .5); ctx.stroke(); }
+  if (thresholds) for (const t of thresholds) if (t >= mn && t <= mx) { ctx.fillStyle = 'rgba(224,80,64,0.6)'; ctx.fillRect(0, Y(t), W, 1); }
+  ctx.fillStyle = '#4aa8e8';
+  for (let i = 0; i < series.length; i++) {
+    const x = X(i), y = Y(series[i].v);
+    if (i > 0) { const px = X(i - 1), py = Y(series[i - 1].v); ctx.fillRect(px, Math.min(py, y), 1, Math.abs(y - py) + 1); ctx.fillRect(px, y, x - px, 1); }
+    ctx.fillStyle = i === series.length - 1 ? '#ffd700' : '#8ac8ff'; ctx.fillRect(x - 1, y - 1, 3, 3); ctx.fillStyle = '#4aa8e8';
+  }
+}
+
+// ---- GW-5 Wasserschutzgebiete overlay (base layer, shares #btn-n2k) ----
+function drawWaterProtection(ctx) {
+  if (!G.wpZones.length) return;
+  const W = gc.width, H = gc.height, v = viewBounds();
+  ctx.save();
+  for (const z of G.wpZones) {
+    const b = z.bbox; if (b.e < v.w || b.w > v.e || b.n < v.s || b.s > v.n) continue;
+    const rings = geomAllRings(z.geometry); if (!rings.length) continue;
+    ctx.beginPath();
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const ring of rings) for (let i = 0; i < ring.length; i++) { const [x, y] = toScreen(ring[i][0], ring[i][1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(60,140,220,0.14)'; ctx.fill('evenodd');
+    ctx.save(); ctx.clip('evenodd');
+    ctx.strokeStyle = 'rgba(60,140,220,0.25)'; ctx.lineWidth = 1;
+    const x0 = Math.max(minX, -30), x1 = Math.min(maxX, W + 30), y0 = Math.max(minY, -30), y1 = Math.min(maxY, H + 30);
+    ctx.beginPath(); for (let x = x0 - (y1 - y0); x < x1; x += 12) { ctx.moveTo(x, y0); ctx.lineTo(x + (y1 - y0), y1); } ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(80,160,240,0.8)'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+    if (G.cam.zoom >= 16 && maxX - minX > 60 && maxY - minY > 30) {
+      const cx = (Math.max(minX, 0) + Math.min(maxX, W)) / 2, cy = (Math.max(minY, 0) + Math.min(maxY, H)) / 2;
+      ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const lbl = '💧 ' + tr(z.properties.type === 'schongebiet' ? 'Schongebiet' : 'Wasserschutz');
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, cx + 1, cy + 1); ctx.fillStyle = '#c8e8ff'; ctx.fillText(lbl, cx, cy);
+    }
+  }
+  ctx.restore();
+}
+function waterProtectionAt(lon, lat) {
+  for (const z of G.wpZones) { const b = z.bbox; if (lon < b.w || lon > b.e || lat < b.s || lat > b.n) continue; if (pipGeom(lon, lat, z.geometry)) return z; }
+  return null;
+}
+/** Water rows for the parcel popup (Gelände section): Messstelle bonus, Wasserschutz badge, Wasserweg. */
+function waterPopupRows(pid, rows) {
+  const sts = stationsOnParcel(pid);
+  if (sts.length) {
+    const claim = G.claimed.find(c => c.parcel_id === pid);
+    const s = sts[0], cat = GW_CAT[s.category] || { de: 'Messstelle', icon: '📏' };
+    rows.push(['📏 ' + tr('Messstelle'), '<span class="pp-ez-link" onclick="openStation(\'' + esc(s.id) + '\')">' + esc(String(s.name || '').replace(/\s+/g, ' ').slice(0, 26)) + ' ▸</span>' + (sts.length > 1 ? ' <span class="kg-dim">+' + (sts.length - 1) + '</span>' : '') + (!claim ? ' <b style="color:var(--gold)">+80⚡ ' + tr('Pegelwart') + '</b>' : '')]);
+  }
+  const f = G.sel; if (!f) return;
+  const [lon, lat] = featureLonLat(f);
+  const z = waterProtectionAt(lon, lat);
+  if (z) rows.push(['💧 ' + tr('Schutzgebiet'), '<span class="pp-water-badge">' + tr(z.properties.type === 'schongebiet' ? 'Wasserschongebiet' : 'Wasserschutzgebiet') + '</span>' + (z.properties.zone ? ' <span class="kg-dim">Zone ' + esc(String(z.properties.zone)) + '</span>' : '') + ' <span class="kg-dim">· ' + tr('Naturschutz') + ' ×1,5⚡</span>']);
+  rows.push(['🌊 ' + tr('Wasserweg'), '<span class="pp-ez-link" onclick="startFlow()">💧 ' + tr('Weg des Wassers') + ' ▸</span>']);
+}
+
+// ---- GW-6 Wassertropfen-Reise ----
+window.startFlow = async function(lon, lat) {
+  if (lon == null) { if (G.sel) [lon, lat] = featureLonLat(G.sel); else { lon = G.cam.lon; lat = G.cam.lat; } }
+  const chip = document.getElementById('flow-chip'), txt = document.getElementById('flow-chip-text');
+  chip.style.display = ''; txt.textContent = '💧 ' + tr('Der Tropfen sucht seinen Bach…');
+  document.getElementById('dossier-popup').classList.remove('open');
+  let d;
+  try { d = await GET('/api/water/flowpath?lon=' + lon.toFixed(4) + '&lat=' + lat.toFixed(4)); } catch (e) { d = null; }
+  if (!d || d.error || d.pending || !d.geometry || !d.geometry.coordinates || d.geometry.coordinates.length < 2) {
+    txt.textContent = '💧 ' + tr(d && d.pending ? 'Flussdaten werden geladen — gleich nochmal' : 'Kein Fließweg gefunden'); setTimeout(clearFlow, 3500); return;
+  }
+  const pts = d.geometry.coordinates;
+  // cumulative distances (m) along the line → constant-speed droplet
+  const cum = [0]; const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540;
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot((pts[i][0] - pts[i - 1][0]) * kx, (pts[i][1] - pts[i - 1][1]) * ky));
+  const gauges = [];
+  for (const r of (d.reaches || [])) if (r.gauge) gauges.push(r);
+  // Journey: 14 s + 0.35 s/km, capped 45 s. The camera rides along with the droplet
+  // (zoom 14.5) — manual pan releases it; ✕ on the chip ends the trip.
+  const dur = Math.min(45000, 14000 + (d.total_km || 0) * 350);
+  G.flow = { d, pts, cum, total: cum[cum.length - 1], t0: performance.now() + 900, dur, origin: [lon, lat], gauges, gaugePts: null, follow: true, names: [] };
+  const names = []; for (const r of (d.reaches || [])) if (r.river && names[names.length - 1] !== r.river) names.push(r.river);
+  if (d.exit && d.exit.river && names[names.length - 1] !== d.exit.river) names.push(d.exit.river);
+  const sea = { black_sea: 'Schwarzes Meer', north_sea: 'Nordsee', adriatic: 'Adria', mediterranean: 'Mittelmeer' }[d.exit && d.exit.sea] || (d.exit && d.exit.sea) || '';
+  G.flow.names = names; G.flow.sea = sea;
+  G.flow.title = (names.length ? names.join(' → ') + (sea ? ' → ' + tr(sea) : '') : tr('Fließweg')) + ' · ' + fmtNum(d.total_km, d.total_km < 10 ? 1 : 0) + ' km' + (d.exit && d.exit.clipped_at_border ? ' ' + tr('bis zur Grenze') : '');
+  txt.textContent = '💧 ' + G.flow.title;
+  document.getElementById('parcel-popup').classList.remove('open');
+  flyTo(lon, lat, 14.5);
+  flowAnimLoop();
+};
+window.clearFlow = function() { G.flow = null; document.getElementById('flow-chip').style.display = 'none'; render(); };
+function flowAnimLoop() {
+  const F = G.flow; if (!F) return;
+  const now = performance.now(), ph = Math.min(1, Math.max(0, (now - F.t0) / F.dur));
+  if (F.follow && !flyAnim) {
+    const p = pointAlong(F, ph * F.total);
+    // time-based lerp so a slow frame (tiles streaming in) never lets the camera fall behind the drop
+    const k = Math.min(1, (now - (F._lastFrame || now - 40)) / 160); F._lastFrame = now;
+    G.cam.lon += (p[0] - G.cam.lon) * k; G.cam.lat += (p[1] - G.cam.lat) * k;
+    if (now - (F._lastLoad || 0) > 2500) { F._lastLoad = now; loadMoreParcels(); }
+    const txt = document.getElementById('flow-chip-text');
+    if (txt) txt.textContent = '💧 ' + (ph >= 1 ? G.flow.title : fmtNum(ph * F.total / 1000, 0) + ' / ' + fmtNum(F.total / 1000, 0) + ' km · ' + (riverAt(F, ph * F.total) || '')) ;
+    if (ph >= 1 && !F._arrived) { F._arrived = true; F.follow = false; renderMini(); toast('🌊 ' + tr('Angekommen') + ': ' + G.flow.title, 'ok'); }
+  }
+  render();
+  requestAnimationFrame(() => { if (G.flow) setTimeout(flowAnimLoop, 40); });
+}
+function riverAt(F, dist) {
+  let acc = 0;
+  for (const r of (F.d.reaches || [])) { acc += (r.length_km || 0) * 1000; if (dist <= acc) return r.river || ''; }
+  return (F.d.exit && F.d.exit.river) || '';
+}
+function drawFlowPath(ctx) {
+  const F = G.flow; if (!F) return;
+  const W = gc.width, H = gc.height;
+  ctx.save();
+  // polyline (dark outline + blue core + travelling dashes)
+  ctx.beginPath();
+  for (let i = 0; i < F.pts.length; i++) { const [x, y] = toScreen(F.pts[i][0], F.pts[i][1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,10,30,0.85)'; ctx.lineWidth = 8; ctx.stroke();
+  ctx.strokeStyle = '#26d8ff'; ctx.lineWidth = 4; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = 2; ctx.setLineDash([5, 11]); ctx.lineDashOffset = -((performance.now() - F.t0) / 25) % 16; ctx.stroke(); ctx.setLineDash([]);
+  // origin marker
+  { const [x, y] = toScreen(F.origin[0], F.origin[1]); ctx.fillStyle = '#ffd700'; ctx.fillRect(x - 3, y - 3, 6, 6); ctx.fillStyle = '#000'; ctx.fillRect(x - 1, y - 1, 2, 2); }
+  // gauges: pixel gauge-post checkpoints with name + mean flow
+  if (F.gaugePts === null) {
+    F.gaugePts = [];
+    let acc = 0;
+    for (const r of (F.d.reaches || [])) {
+      const lenM = (r.length_km || 0) * 1000;
+      if (r.gauge) {  // place at end of that reach along the line
+        const dist = Math.min(F.total, acc + lenM);
+        F.gaugePts.push({ g: r.gauge, river: r.river, pt: pointAlong(F, dist) });
+      }
+      acc += lenM;
+    }
+  }
+  for (const gp of F.gaugePts) {
+    const [x, y] = toScreen(gp.pt[0], gp.pt[1]);
+    if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
+    drawStationSprite(ctx, x, y, 'groundwater_station', 1.5, 0);
+    ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const lbl = '📏 ' + gp.g.name + (gp.g.flow_mean_m3s != null ? ' · ' + fmtNum(gp.g.flow_mean_m3s, gp.g.flow_mean_m3s < 10 ? 1 : 0) + ' m³/s' : '');
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillText(lbl, x + 1, y + 5); ctx.fillStyle = '#cfe8ff'; ctx.fillText(lbl, x, y + 4);
+  }
+  // travelling droplet — one journey of F.dur ms, then loops
+  const ph = F._arrived ? (((performance.now() - F.t0) % F.dur) / F.dur) : Math.min(1, Math.max(0, (performance.now() - F.t0) / F.dur));
+  const p = pointAlong(F, ph * F.total), [dx, dy] = toScreen(p[0], p[1]);
+  const bob = Math.sin(performance.now() / 120) * 1.5;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(dx - 4, dy + 2, 8, 2);
+  const s2 = 2;   // droplet drawn at 2 px per unit so it reads at every zoom
+  const dp = (ox, oy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(dx + ox * s2, dy + (oy + bob) * s2, w * s2, h * s2); };
+  dp(-4, -6, 8, 1, '#0a2a4a'); dp(-5, -5, 10, 5, '#0a2a4a'); dp(-4, 0, 8, 1, '#0a2a4a'); dp(-3, 1, 6, 1, '#0a2a4a'); dp(-2, -8, 4, 2, '#0a2a4a');   // outline
+  dp(-3, -5, 6, 1, '#26d8ff'); dp(-4, -4, 8, 4, '#26d8ff'); dp(-3, 0, 6, 1, '#26d8ff'); dp(-1, -7, 2, 2, '#26d8ff');
+  dp(-3, -3, 2, 2, '#ffffff'); dp(1, -1, 1, 1, '#0a6aa0');
+  if (ph > 0.985 && F.d.exit) { ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.fillStyle = '#ffd700'; ctx.fillText('→ ' + (F.d.exit.river || ''), dx, dy - 18); }
+  ctx.restore();
+}
+function pointAlong(F, dist) {
+  const c = F.cum; let lo = 0, hi = c.length - 1;
+  while (lo < hi - 1) { const m = (lo + hi) >> 1; if (c[m] <= dist) lo = m; else hi = m; }
+  const seg = (c[hi] - c[lo]) || 1, f = Math.max(0, Math.min(1, (dist - c[lo]) / seg));
+  return [F.pts[lo][0] + (F.pts[hi][0] - F.pts[lo][0]) * f, F.pts[lo][1] + (F.pts[hi][1] - F.pts[lo][1]) * f];
+}
+
+// ---- GW-7 picker tint by groundwater stress ----
+// gwi.json is per KG; the picker draws Gemeinden. /spatial/kgs (fields=kg_code,
+// gemeinde_code) for the state's bbox gives the relation (~18 KB gz, cached by
+// our proxy) → mean GWI per Gemeinde → subtle tint (good→none, watch→amber, stressed→red).
+G.gwiByGemeinde = {};
+async function loadPickerGwi(munis) {
+  try {
+    if (!G.gwi) { const d = await GET('/api/water/gwi'); if (d && d.kgs) G.gwi = d; }
+    if (!G.gwi || !munis || !munis.length) return;
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const f of munis) { const b = geoBounds(f.geometry); if (b.w < w) w = b.w; if (b.e > e) e = b.e; if (b.s < s) s = b.s; if (b.n > n) n = b.n; }
+    const key = [w, s, e, n].map(v => v.toFixed(2)).join(',');
+    if (loadPickerGwi._done === key) return; loadPickerGwi._done = key;
+    const r = await GET(CAD + '/spatial/kgs?west=' + w.toFixed(3) + '&south=' + s.toFixed(3) + '&east=' + e.toFixed(3) + '&north=' + n.toFixed(3) + '&fields=kg_code,gemeinde_code&limit=5000');
+    const acc = {};
+    for (const k of ((r && r.data && r.data.kgs) || [])) { const g = G.gwi.kgs[padKG(k.kg_code)]; if (!g) continue; const a = acc[k.gemeinde_code] = acc[k.gemeinde_code] || [0, 0]; a[0] += g[0]; a[1]++; }
+    for (const gc in acc) G.gwiByGemeinde[gc] = acc[gc][0] / acc[gc][1];
+    if (typeof drawPick === 'function') drawPick();
+  } catch (e) { console.warn('picker gwi', e); }
+}
+function gwiTint(gemeindeCode) {
+  const v = G.gwiByGemeinde[String(gemeindeCode)];
+  if (v == null || v < 0.3) return null;
+  const t = Math.min(1, (v - 0.3) / 0.4);          // 0 at watch threshold → 1 at gwi 0.7
+  return 'rgba(' + Math.round(200 + 40 * t) + ',' + Math.round(120 - 70 * t) + ',40,' + (0.12 + 0.2 * t).toFixed(2) + ')';
 }
