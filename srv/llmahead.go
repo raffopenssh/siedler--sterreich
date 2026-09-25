@@ -80,6 +80,18 @@ var aheadUsed = map[string]string{
 	"CAD-2":  "game.js: extractLuCode() prefers dominant_ns; popup lists landuse_areas in m²; price uses it",
 	"HOLZ-2": "server: timberStatePrices() in timber.go (Holzernte prices)",
 	"FARM-2": "server: GET /api/schlaege → game.js loadSchlaege(): real crop textures + 'Feld' popup row",
+	"ALL-1":  "server: llmKG() in dossier.go → GET /api/dossier/{kg} (gw + holz + farm /llm/kg in parallel)",
+	"ALL-1b": "server: llmGet() negative-caches the 404 no_data contract for 1 h (dossier.go)",
+	"GW-1":   "server: GET /api/water/point, wellQuote() → POST /api/dig-well prices the Brunnen by depth_to_gw_m_est (water.go)",
+	"GW-2":   "server: GET /api/water/points (bbox) + /api/water/station/{id} (history) — Messstellen as landmarks",
+	"GW-3":   "server: droughtFrom() in dossier.go — season_profile + now.status → drought level 0..3 scales harvest yield",
+	"GW-4":   "server: now block → droughtState.status/sigma in /api/dossier + /api/drought; wellProtection() halves when very_low",
+	"GW-5":   "server: GET /api/water/protection (bbox) + inWaterProtection() → Naturschutz XP ×1.5 inside a Wasserschutzgebiet",
+	"GW-6":   "server: GET /api/water/flowpath (24 h cache, 3-decimal quantized) — Wassertropfen-Reise",
+	"GW-7":   "server: GET /api/water/gwi (24 h) for the municipality picker tint",
+	"GW-8":   "server: stationOnParcel() on POST /api/claim-parcel (gw_station hint) → +80 XP Pegelwart; GET /api/water/parcel/{pid}",
+	"HOLZ-1": "server: forestBlock() in dossier.go → 'Wald' tab of the Gemeinde-Chronik (24-year loss/harvest/CO₂ timeline)",
+	"FARM-1": "server: farmBlock() + subsidyCoins() — Förderung paid on every harvest and once per cycle on meadows (eur_per_ha_median, ×1.3 organic)",
 }
 
 var aheadItems = []aheadItem{

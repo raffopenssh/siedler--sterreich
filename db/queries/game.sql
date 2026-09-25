@@ -243,3 +243,6 @@ DELETE FROM api_cache WHERE cache_key LIKE ?;
 
 -- name: HarvestParcel :exec
 UPDATE parcel_claims SET harvested_at = CURRENT_TIMESTAMP, harvests = harvests + 1 WHERE id = ?;
+
+-- name: SetParcelWell :exec
+UPDATE parcel_claims SET well_at = CURRENT_TIMESTAMP, well_depth_m = ? WHERE id = ?;

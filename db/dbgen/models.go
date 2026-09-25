@@ -77,6 +77,8 @@ type ParcelClaim struct {
 	TallTrees     int64      `json:"tall_trees"`
 	HarvestedAt   *time.Time `json:"harvested_at"`
 	Harvests      int64      `json:"harvests"`
+	WellAt        *time.Time `json:"well_at"`
+	WellDepthM    float64    `json:"well_depth_m"`
 }
 
 type ParcelOffer struct {

@@ -213,6 +213,19 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/convert-parcel", s.handleConvertParcel)
 	mux.HandleFunc("POST /api/harvest-parcel", s.handleHarvestParcel)
 	mux.HandleFunc("POST /api/harvest-forest", s.handleHarvestForest)
+	// Sibling dossiers (GW-*, HOLZ-1, FARM-1) + water mechanics — dossier.go / water.go
+	mux.HandleFunc("GET /api/dossier/{kg}", s.handleDossier)
+	mux.HandleFunc("GET /api/drought", s.handleSessionDrought)
+	mux.HandleFunc("GET /api/water/point", s.handleWaterPoint)
+	mux.HandleFunc("GET /api/water/points", s.handleWaterPoints)
+	mux.HandleFunc("GET /api/water/station/{id}", s.handleWaterStation)
+	mux.HandleFunc("GET /api/water/protection", s.handleWaterProtection)
+	mux.HandleFunc("GET /api/water/flowpath", s.handleWaterFlowpath)
+	mux.HandleFunc("GET /api/water/gwi", s.handleWaterGWI)
+	mux.HandleFunc("GET /api/water/parcel/{pid...}", s.handleWaterParcel)
+	mux.HandleFunc("GET /api/well-quote", s.handleWellQuote)
+	mux.HandleFunc("POST /api/dig-well", s.handleDigWell)
+	mux.HandleFunc("GET /api/field-economy", s.handleFieldEconomy)
 	mux.HandleFunc("GET /api/forest-value", s.handleForestValue)
 	mux.HandleFunc("POST /api/claim-treasure", s.handleClaimTreasure)
 	mux.HandleFunc("POST /api/complete-challenge", s.handleCompleteChallenge)
@@ -860,6 +873,7 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		Landuse           string  `json:"landuse"`
 		BuildingCount     int     `json:"building_count"`
 		TotalBuildingArea float64 `json:"total_building_area"`
+		GwStation         bool    `json:"gw_station"` // GW-8 hint: a Messstelle is snapped to this parcel
 		TallTreeCount     int     `json:"tall_tree_count"`
 		TallTreeMaxH      float64 `json:"tall_tree_max_h"`
 	}
@@ -924,8 +938,17 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 		Coins: int64(-price),
 		ID:    req.PlayerID,
 	})
+	// GW-8 Pegelwart: the parcel carries a real measuring point (groundwater
+	// or nitrate station, water-quality site, power plant). Only checked when
+	// the client saw one there (G.gwPoints parcel_id), verified upstream.
+	stationBonus, stationCat := 0, ""
+	if req.GwStation {
+		if ok, cat := s.stationOnParcel(req.ParcelID); ok {
+			stationBonus, stationCat = 80, cat
+		}
+	}
 	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
-		Xp: int64(10 + tallBonus),
+		Xp: int64(10 + tallBonus + stationBonus),
 		ID: req.PlayerID,
 	})
 
@@ -939,11 +962,13 @@ func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
 	quests := s.autoCompleteChallenges(r.Context(), req.SessionID, req.PlayerID)
 	updatedPlayer, _ := s.Q.GetPlayerByID(r.Context(), req.PlayerID)
 	jsonResp(w, map[string]any{
-		"success":       true,
-		"price":         price,
-		"player":        updatedPlayer,
-		"tall_bonus_xp": tallBonus,
-		"quests":        quests,
+		"success":          true,
+		"price":            price,
+		"player":           updatedPlayer,
+		"tall_bonus_xp":    tallBonus,
+		"station_bonus_xp": stationBonus,
+		"station_category": stationCat,
+		"quests":           quests,
 	})
 }
 
@@ -1069,10 +1094,12 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID string `json:"session_id"`
-		PlayerID  string `json:"player_id"`
-		ParcelID  string `json:"parcel_id"`
-		ConvertTo string `json:"convert_to"` // biodiversity, forest, wetland, meadow
+		SessionID string  `json:"session_id"`
+		PlayerID  string  `json:"player_id"`
+		ParcelID  string  `json:"parcel_id"`
+		ConvertTo string  `json:"convert_to"` // biodiversity, forest, wetland, meadow
+		Lon       float64 `json:"lon"`        // parcel centroid (optional) → GW-5 Wasserschutzgebiet bonus
+		Lat       float64 `json:"lat"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -1131,6 +1158,14 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "unknown conversion", 400)
 		return
 	}
+	// GW-5: a meadow that stays a meadow above a drinking-water aquifer is
+	// worth more — Naturschutz/Naturwald inside a Wasserschutz-/Schongebiet ×1.5 XP.
+	if (req.ConvertTo == "biodiversity" || req.ConvertTo == "wildforest") && req.Lon != 0 && req.Lat != 0 {
+		if zt, zone := s.inWaterProtection(req.Lon, req.Lat); zt != "" {
+			xpReward = xpReward * 3 / 2
+			resp["water_protection"] = map[string]any{"type": zt, "zone": zone}
+		}
+	}
 	convertTo := req.ConvertTo
 	s.Q.ConvertParcel(r.Context(), dbgen.ConvertParcelParams{
 		ConvertedTo: &convertTo,
@@ -1179,6 +1214,7 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 		PlayerID  string `json:"player_id"`
 		ParcelID  string `json:"parcel_id"`
 		CropGroup string `json:"crop_group"` // FARM-2 INVEKOS class, "" = hash kind
+		Organic   bool   `json:"organic"`    // FARM-2 Schlag organic flag → ÖPUL premium on the Förderung
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -1207,19 +1243,31 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	fp := fieldPhaseAtCrop(req.ParcelID, now, req.CropGroup)
+	base := int64(0)
 	if fp.Stage == "meadow" {
+		// Meadows are not harvested — but they collect the Förderung (FARM-1)
+		// once per cycle, gated by the same harvested_at timestamp.
+		if claim.HarvestedAt != nil && now.Sub(*claim.HarvestedAt) < fieldCycle {
+			jsonErr(w, "Förderung schon abgeholt — nächste Auszahlung in "+fmtMinutes(fieldCycle-now.Sub(*claim.HarvestedAt)), 409)
+			return
+		}
+	} else {
+		if fp.Stage != "ripe" {
+			jsonErr(w, "Das Feld ist noch nicht reif", 409)
+			return
+		}
+		if claim.HarvestedAt != nil && !claim.HarvestedAt.Before(fp.CycleStart) {
+			jsonErr(w, "Schon geerntet — das Feld muss erst wieder wachsen", 409)
+			return
+		}
+		base = harvestYield(claim.AreaSqm)
+	}
+	eco := s.harvestPayout(claim.KgCode, claim, base, req.Organic)
+	if eco.Total <= 0 {
 		jsonErr(w, "Eine Weide erntet man nicht — die Kühe machen das", 400)
 		return
 	}
-	if fp.Stage != "ripe" {
-		jsonErr(w, "Das Feld ist noch nicht reif", 409)
-		return
-	}
-	if claim.HarvestedAt != nil && !claim.HarvestedAt.Before(fp.CycleStart) {
-		jsonErr(w, "Schon geerntet — das Feld muss erst wieder wachsen", 409)
-		return
-	}
-	coins := harvestYield(claim.AreaSqm)
+	coins := eco.Total
 	xp := 10 + coins/5
 	ctx := r.Context()
 	s.Q.HarvestParcel(ctx, claim.ID)
@@ -1229,10 +1277,11 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 	player, _ := s.Q.GetPlayerByID(ctx, req.PlayerID)
 	s.broadcast(req.SessionID, map[string]any{
 		"type": "parcel_harvested", "parcel_id": req.ParcelID, "player": player.Name, "coins": coins,
+		"meadow": fp.Stage == "meadow", "drought": eco.Drought,
 	})
 	jsonResp(w, map[string]any{
-		"success": true, "coins": coins, "xp": xp, "player": player, "quests": quests,
-		"harvested_at": now, "next_ripe_at": fp.RipeAt.Add(fieldCycle),
+		"success": true, "coins": coins, "xp": xp, "player": player, "quests": quests, "economy": eco,
+		"harvested_at": now, "next_ripe_at": nextPayoutAt(fp, now),
 	})
 }
 

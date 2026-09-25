@@ -53,7 +53,9 @@ type fieldPhase struct {
 // are grassland, not a harvestable crop).
 var cropMeadow = map[string]bool{"gruenland": true, "alm": true, "brache": true}
 
-func fieldPhaseAt(parcelID string, now time.Time) fieldPhase { return fieldPhaseAtCrop(parcelID, now, "") }
+func fieldPhaseAt(parcelID string, now time.Time) fieldPhase {
+	return fieldPhaseAtCrop(parcelID, now, "")
+}
 
 // fieldPhaseAtCrop: like fieldPhaseAt, but when the client knows the real
 // INVEKOS crop group (fieldKindFor in game.js) that decides meadow-vs-crop

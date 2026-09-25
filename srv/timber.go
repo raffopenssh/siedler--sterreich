@@ -296,31 +296,31 @@ type timberAssortment struct {
 }
 
 type timberEstimate struct {
-	ParcelID    string  `json:"parcel_id"`
-	Source      string  `json:"source"` // v3 | lidar | landuse | none
-	IsForest    bool    `json:"is_forest"`
-	AreaHa      float64 `json:"area_ha"`
-	CanopyFrac  float64 `json:"canopy_frac"`
-	HMean       float64 `json:"h_mean_m"`
-	HMax        float64 `json:"h_max_m,omitempty"`
-	NTrees      int     `json:"n_trees,omitempty"`
-	Vfm         float64 `json:"vfm"`        // standing stock, Vorratsfestmeter
-	VfmPerHa    float64 `json:"vfm_per_ha"` // per canopy ha
-	Efm         float64 `json:"efm"`        // harvestable (bark + losses removed)
-	CO2t        float64 `json:"co2_t"`      // stored in the stems (≈0.9 t/Vfm)
-	Species     map[string]float64 `json:"species"` // shares: spruce_fir, larch, pine, broadleaf
+	ParcelID    string                      `json:"parcel_id"`
+	Source      string                      `json:"source"` // v3 | lidar | landuse | none
+	IsForest    bool                        `json:"is_forest"`
+	AreaHa      float64                     `json:"area_ha"`
+	CanopyFrac  float64                     `json:"canopy_frac"`
+	HMean       float64                     `json:"h_mean_m"`
+	HMax        float64                     `json:"h_max_m,omitempty"`
+	NTrees      int                         `json:"n_trees,omitempty"`
+	Vfm         float64                     `json:"vfm"`        // standing stock, Vorratsfestmeter
+	VfmPerHa    float64                     `json:"vfm_per_ha"` // per canopy ha
+	Efm         float64                     `json:"efm"`        // harvestable (bark + losses removed)
+	CO2t        float64                     `json:"co2_t"`      // stored in the stems (≈0.9 t/Vfm)
+	Species     map[string]float64          `json:"species"`    // shares: spruce_fir, larch, pine, broadleaf
 	Assortments map[string]timberAssortment `json:"assortments"`
-	GrossEur    float64 `json:"gross_eur"`
-	CostEur     float64 `json:"cost_eur"`
-	CostPerEfm  float64 `json:"cost_per_efm"`
-	NetEur      float64 `json:"net_eur"`
-	Coins       int64   `json:"coins"`     // full-value harvest payout
-	WildXP      int64   `json:"wild_xp"`   // Naturwald XP reward
-	Prices      timberPrices `json:"prices"`
-	Elev        float64 `json:"elev_m,omitempty"`
-	Slope       float64 `json:"slope_deg,omitempty"`
-	V3          string  `json:"v3,omitempty"` // "" | ok | cold | error | off
-	TookMs      int64   `json:"took_ms"`
+	GrossEur    float64                     `json:"gross_eur"`
+	CostEur     float64                     `json:"cost_eur"`
+	CostPerEfm  float64                     `json:"cost_per_efm"`
+	NetEur      float64                     `json:"net_eur"`
+	Coins       int64                       `json:"coins"`   // full-value harvest payout
+	WildXP      int64                       `json:"wild_xp"` // Naturwald XP reward
+	Prices      timberPrices                `json:"prices"`
+	Elev        float64                     `json:"elev_m,omitempty"`
+	Slope       float64                     `json:"slope_deg,omitempty"`
+	V3          string                      `json:"v3,omitempty"` // "" | ok | cold | error | off
+	TookMs      int64                       `json:"took_ms"`
 }
 
 // v3cold remembers KGs whose product is still downloading upstream so we don't
@@ -381,14 +381,14 @@ func (s *Server) parcelGeometry(ctx context.Context, pid string) (json.RawMessag
 }
 
 type v3Summary struct {
-	NTrees        int                `json:"n_trees"`
-	AreaHaCanopy  float64            `json:"area_ha_canopy"`
-	AreaHaTotal   float64            `json:"area_ha_total"`
-	HMean         float64            `json:"h_mean_m"`
-	HMax          float64            `json:"h_max_m"`
-	Volume        float64            `json:"volume_m3_est_total"`
-	ByLeaf        map[string]float64 `json:"by_leaf_type"`
-	BySpecies     map[string]float64 `json:"by_species_hint"`
+	NTrees       int                `json:"n_trees"`
+	AreaHaCanopy float64            `json:"area_ha_canopy"`
+	AreaHaTotal  float64            `json:"area_ha_total"`
+	HMean        float64            `json:"h_mean_m"`
+	HMax         float64            `json:"h_max_m"`
+	Volume       float64            `json:"volume_m3_est_total"`
+	ByLeaf       map[string]float64 `json:"by_leaf_type"`
+	BySpecies    map[string]float64 `json:"by_species_hint"`
 }
 
 // v3Trees: the srtm product-backed single-tree inventory — ~0.2 s when the
