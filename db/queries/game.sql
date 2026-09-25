@@ -246,3 +246,6 @@ UPDATE parcel_claims SET harvested_at = CURRENT_TIMESTAMP, harvests = harvests +
 
 -- name: SetParcelWell :exec
 UPDATE parcel_claims SET well_at = CURRENT_TIMESTAMP, well_depth_m = ? WHERE id = ?;
+
+-- name: SetPlayerAgent :exec
+UPDATE players SET agent = ? WHERE id = ?;

@@ -158,6 +158,12 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
 
 	// Roadmap + conformance harness for sibling data services (see llmahead.go)
+	mux.HandleFunc("GET /llms.txt", s.handleLLMsTxt)
+	mux.HandleFunc("GET /llm/game", s.handleLLMGame)
+	mux.HandleFunc("GET /llm/game/{$}", s.handleLLMGame)
+	mux.HandleFunc("GET /api/agent/look", s.handleAgentLook)
+	mux.HandleFunc("GET /api/agent/municipality", s.handleAgentMunicipality)
+	mux.HandleFunc("POST /api/agent/claim", s.handleAgentClaim)
 	mux.HandleFunc("GET /llm/ahead", s.handleLLMAhead)
 	mux.HandleFunc("GET /llm/ahead/{$}", s.handleLLMAhead)
 	mux.HandleFunc("GET /llm/ahead/check/{service}", s.handleLLMAheadCheck)
@@ -273,7 +279,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/similar", s.handleSimilarParcels)
 
 	slog.Info("starting Siedler Österreich", "addr", addr)
-	return http.ListenAndServe(addr, securityHeaders(gzipMiddleware(mux)))
+	return http.ListenAndServe(addr, securityHeaders(rateLimitMiddleware(gzipMiddleware(mux))))
 }
 
 // ---- Gzip Middleware ----
@@ -577,7 +583,8 @@ func (s *Server) handleSuggestName(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Agent string `json:"agent"` // /llm/game: short model label → 🤖 player, quick-phrase chat only
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -587,6 +594,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if len(req.Name) < 2 || len(req.Name) > 30 {
 		jsonErr(w, "Name must be 2-30 characters", 400)
 		return
+	}
+	req.Agent = strings.TrimSpace(req.Agent)
+	if req.Agent != "" {
+		if len(req.Agent) > 40 || !filterName(req.Agent) {
+			jsonErr(w, "agent label must be a short, non-personal model name", 400)
+			return
+		}
+		// Humans must always be able to tell: agents wear the 🤖 prefix.
+		if !strings.HasPrefix(req.Name, agentPrefix) {
+			req.Name = agentPrefix + req.Name
+		}
 	}
 	if !filterName(req.Name) {
 		w.Header().Set("Content-Type", "application/json")
@@ -620,6 +638,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonErr(w, "Failed to create player", 500)
 		return
+	}
+	if req.Agent != "" {
+		s.Q.SetPlayerAgent(r.Context(), dbgen.SetPlayerAgentParams{Agent: req.Agent, ID: playerID})
 	}
 
 	player, _ := s.Q.GetPlayerByID(r.Context(), playerID)
@@ -879,27 +900,36 @@ func (s *Server) handleGetBiodiversity(w http.ResponseWriter, r *http.Request) {
 
 // ---- Game Actions ----
 
+// claimReq is the body of POST /api/claim-parcel. The browser fills it from
+// the viewport data it rendered; the agent API (agent.go) fills it
+// server-side from cadastre so a script cannot understate area or landuse.
+type claimReq struct {
+	SessionID         string  `json:"session_id"`
+	PlayerID          string  `json:"player_id"`
+	ParcelID          string  `json:"parcel_id"`
+	KgCode            string  `json:"kg_code"`
+	Gnr               string  `json:"gnr"`
+	Ez                string  `json:"ez"`
+	AreaSqm           float64 `json:"area_sqm"`
+	Landuse           string  `json:"landuse"`
+	BuildingCount     int     `json:"building_count"`
+	TotalBuildingArea float64 `json:"total_building_area"`
+	GwStation         bool    `json:"gw_station"` // GW-8 hint: a Messstelle is snapped to this parcel
+	TallTreeCount     int     `json:"tall_tree_count"`
+	TallTreeMaxH      float64 `json:"tall_tree_max_h"`
+}
+
 func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		SessionID         string  `json:"session_id"`
-		PlayerID          string  `json:"player_id"`
-		ParcelID          string  `json:"parcel_id"`
-		KgCode            string  `json:"kg_code"`
-		Gnr               string  `json:"gnr"`
-		Ez                string  `json:"ez"`
-		AreaSqm           float64 `json:"area_sqm"`
-		Landuse           string  `json:"landuse"`
-		BuildingCount     int     `json:"building_count"`
-		TotalBuildingArea float64 `json:"total_building_area"`
-		GwStation         bool    `json:"gw_station"` // GW-8 hint: a Messstelle is snapped to this parcel
-		TallTreeCount     int     `json:"tall_tree_count"`
-		TallTreeMaxH      float64 `json:"tall_tree_max_h"`
-	}
+	var req claimReq
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
 		return
 	}
+	s.claimParcel(w, r, req)
+}
 
+// claimParcel is the shared purchase core for the browser and agent APIs.
+func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimReq) {
 	// Check if already claimed
 	if _, err := s.Q.GetParcelClaim(r.Context(), dbgen.GetParcelClaimParams{
 		SessionID: req.SessionID,
@@ -1721,6 +1751,11 @@ func (s *Server) handlePostChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if player.ChatRulesAccepted == 0 {
 		jsonErr(w, "rules_required", 428)
+		return
+	}
+	if player.Agent != "" && (req.Quick < 1 || req.Quick > len(quickPhrases)) {
+		// Datenschutz §7: agents never free-text at (possibly minor) humans.
+		jsonErr(w, "agents may only send quick phrases (quick=1..N, see GET /api/chat/rules)", 403)
 		return
 	}
 	switch sess.ChatMode {

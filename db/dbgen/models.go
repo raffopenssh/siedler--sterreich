@@ -110,6 +110,7 @@ type Player struct {
 	ChatMutedUntil    *time.Time `json:"-"`
 	ChatBanned        int64      `json:"-"`
 	ChatRulesAccepted int64      `json:"chat_rules_accepted"`
+	Agent             string     `json:"agent"`
 }
 
 type PlayerBlock struct {

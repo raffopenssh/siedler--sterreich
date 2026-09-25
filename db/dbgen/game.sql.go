@@ -713,7 +713,7 @@ func (q *Queries) GetPendingOffersForSeller(ctx context.Context, arg GetPendingO
 }
 
 const getPlayerByID = `-- name: GetPlayerByID :one
-SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted FROM players WHERE id = ?
+SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted, agent FROM players WHERE id = ?
 `
 
 func (q *Queries) GetPlayerByID(ctx context.Context, id string) (Player, error) {
@@ -735,12 +735,13 @@ func (q *Queries) GetPlayerByID(ctx context.Context, id string) (Player, error) 
 		&i.ChatMutedUntil,
 		&i.ChatBanned,
 		&i.ChatRulesAccepted,
+		&i.Agent,
 	)
 	return i, err
 }
 
 const getPlayerByName = `-- name: GetPlayerByName :one
-SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted FROM players WHERE name = ?
+SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted, agent FROM players WHERE name = ?
 `
 
 func (q *Queries) GetPlayerByName(ctx context.Context, name string) (Player, error) {
@@ -762,12 +763,13 @@ func (q *Queries) GetPlayerByName(ctx context.Context, name string) (Player, err
 		&i.ChatMutedUntil,
 		&i.ChatBanned,
 		&i.ChatRulesAccepted,
+		&i.Agent,
 	)
 	return i, err
 }
 
 const getPlayerByToken = `-- name: GetPlayerByToken :one
-SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted FROM players WHERE rejoin_token = ?
+SELECT id, name, rejoin_token, municipality_code, municipality_name, coins, biodiversity_score, level, xp, created_at, last_seen, chat_strikes, chat_muted_until, chat_banned, chat_rules_accepted, agent FROM players WHERE rejoin_token = ?
 `
 
 func (q *Queries) GetPlayerByToken(ctx context.Context, rejoinToken string) (Player, error) {
@@ -789,6 +791,7 @@ func (q *Queries) GetPlayerByToken(ctx context.Context, rejoinToken string) (Pla
 		&i.ChatMutedUntil,
 		&i.ChatBanned,
 		&i.ChatRulesAccepted,
+		&i.Agent,
 	)
 	return i, err
 }
@@ -1155,7 +1158,7 @@ func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]Pa
 }
 
 const getSessionPlayers = `-- name: GetSessionPlayers :many
-SELECT p.id, p.name, p.rejoin_token, p.municipality_code, p.municipality_name, p.coins, p.biodiversity_score, p.level, p.xp, p.created_at, p.last_seen, p.chat_strikes, p.chat_muted_until, p.chat_banned, p.chat_rules_accepted FROM players p
+SELECT p.id, p.name, p.rejoin_token, p.municipality_code, p.municipality_name, p.coins, p.biodiversity_score, p.level, p.xp, p.created_at, p.last_seen, p.chat_strikes, p.chat_muted_until, p.chat_banned, p.chat_rules_accepted, p.agent FROM players p
 JOIN session_players sp ON sp.player_id = p.id
 WHERE sp.session_id = ?
 `
@@ -1185,6 +1188,7 @@ func (q *Queries) GetSessionPlayers(ctx context.Context, sessionID string) ([]Pl
 			&i.ChatMutedUntil,
 			&i.ChatBanned,
 			&i.ChatRulesAccepted,
+			&i.Agent,
 		); err != nil {
 			return nil, err
 		}
@@ -1502,6 +1506,20 @@ type SetParcelWellParams struct {
 
 func (q *Queries) SetParcelWell(ctx context.Context, arg SetParcelWellParams) error {
 	_, err := q.db.ExecContext(ctx, setParcelWell, arg.WellDepthM, arg.ID)
+	return err
+}
+
+const setPlayerAgent = `-- name: SetPlayerAgent :exec
+UPDATE players SET agent = ? WHERE id = ?
+`
+
+type SetPlayerAgentParams struct {
+	Agent string `json:"agent"`
+	ID    string `json:"id"`
+}
+
+func (q *Queries) SetPlayerAgent(ctx context.Context, arg SetPlayerAgentParams) error {
+	_, err := q.db.ExecContext(ctx, setPlayerAgent, arg.Agent, arg.ID)
 	return err
 }
 
