@@ -102,6 +102,11 @@ func bboxParams(r *http.Request) (qs, key string, ok bool) {
 // bbox endpoint, keep only `arrayKey` (+ passthrough scalars), round coords,
 // drop props the client never reads, cache when upstream reports ready.
 func (s *Server) bboxProxy(w http.ResponseWriter, r *http.Request, cachePrefix, upstream, arrayKey string, drop map[string]bool, scalars []string, ttl time.Duration) {
+	s.bboxProxyOpt(w, r, cachePrefix, upstream, arrayKey, drop, scalars, ttl, false)
+}
+
+// bboxProxyOpt: points=true keeps rows without geometry (lon/lat point layers).
+func (s *Server) bboxProxyOpt(w http.ResponseWriter, r *http.Request, cachePrefix, upstream, arrayKey string, drop map[string]bool, scalars []string, ttl time.Duration, points bool) {
 	qs, key, ok := bboxParams(r)
 	if !ok {
 		jsonErr(w, "west,south,east,north required", 400)
@@ -139,7 +144,11 @@ func (s *Server) bboxProxy(w http.ResponseWriter, r *http.Request, cachePrefix, 
 		fmt.Fprintf(&b, `{"%s":[`, arrayKey)
 		n := 0
 		for _, it := range arr {
-			if it["geometry"] == nil {
+			if points {
+				if it["lon"] == nil || it["lat"] == nil {
+					continue
+				}
+			} else if it["geometry"] == nil {
 				continue
 			}
 			for k := range drop {
@@ -189,4 +198,21 @@ func (s *Server) handleViewportLanduse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSchlaege(w http.ResponseWriter, r *http.Request) {
 	s.bboxProxy(w, r, "schlaege:", farmAPI+"/api/schlaege?limit=3000&", "fields",
 		map[string]bool{"snar_code": true}, []string{"year", "source", "license"}, 24*time.Hour)
+}
+
+// GET /api/trees?west&south&east&north  (LID-2)
+// Tree apices from the srtm-lidar index: the ≤5 tallest measured trees per
+// cadastre parcel with height + crown diameter. Anchors the forest sprites
+// where the real dominant trees stand and feeds giant-tree gameplay for
+// every indexed KG (not only the ones whose 1 MB lidar-slim is loaded).
+func (s *Server) handleTrees(w http.ResponseWriter, r *http.Request) {
+	s.bboxProxyOpt(w, r, "trees:", lidarAPI+"/trees/bbox?min_height=8&limit=2000&", "trees",
+		map[string]bool{"kg_code": true}, []string{"source"}, 6*time.Hour, true)
+}
+
+// GET /api/hofstellen?west&south&east&north  (FARM-4)
+// AMA INVEKOS farmsteads (hashed ids, no names): the real "home" of a farm's EZ.
+func (s *Server) handleHofstellen(w http.ResponseWriter, r *http.Request) {
+	s.bboxProxyOpt(w, r, "hof:", farmAPI+"/api/hofstellen?", "points",
+		nil, []string{"year", "source", "license"}, 24*time.Hour, true)
 }

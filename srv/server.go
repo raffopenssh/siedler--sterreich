@@ -250,6 +250,8 @@ func (s *Server) Serve(addr string) error {
 	// Sibling roadmap consumers (see siblings.go): viewport landuse slice, INVEKOS fields
 	mux.HandleFunc("GET /api/viewport-landuse", s.handleViewportLanduse)
 	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
+	mux.HandleFunc("GET /api/trees", s.handleTrees)           // LID-2 tree apices
+	mux.HandleFunc("GET /api/hofstellen", s.handleHofstellen) // FARM-4 farmsteads
 
 	// Building & KG info (slim, aggregated, cached)
 	mux.HandleFunc("GET /api/building-info", s.handleBuildingInfo)

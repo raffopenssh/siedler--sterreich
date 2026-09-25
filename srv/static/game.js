@@ -921,6 +921,10 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
 }
 
 function simpleHash(s) { let h=0; for(let i=0;i<s.length;i++) h=((h<<5)-h)+s.charCodeAt(i); return h>>>0; }
+/** Stable pseudo-random in [0,1) for (seed, i) — a proper integer mix, unlike
+ *  `(seed + i*k) % 10000`, whose points fall on a lattice and miss most of a
+ *  polygon once i gets large. */
+function prand(seed, i) { let h = (seed ^ (i * 0x9E3779B1)) >>> 0; h = Math.imul(h ^ (h >>> 16), 0x85EBCA6B) >>> 0; h = Math.imul(h ^ (h >>> 13), 0xC2B2AE35) >>> 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
 
 function centroidOf(ring) {
   let sx=0, sy=0;
@@ -1652,6 +1656,8 @@ async function loadViewportGeometry(b, opts) {
   loadSchlaege(b);
   loadGwPoints(b);          // GW-2 Messstellen
   loadWaterProtection(b);   // GW-5 Wasserschutzgebiete
+  loadTrees(b);             // LID-2 measured tree apices
+  loadHofstellen(b);        // FARM-4 farmsteads
   for (const it of (data.footprints||[])) {
     const id = it.footprint_id;
     if (!id || G.fpIds.has(id) || !it.geometry) continue;
@@ -1921,6 +1927,21 @@ function loadWaterForKG(kg) {
   }).catch(e => console.error('water_parcels failed:', kg, e));
   fetchParcels(0);
 
+  // Watercourse centrelines for every KG (not only enhanced ones): they are the
+  // river on screen and the track of the Wassertropfen-Reise (refineFlow).
+  GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=water').then(d => {
+    const lines = [];
+    for (const f of (d.features || d.data?.features || [])) {
+      if (!f.geometry || f.geometry.type !== 'LineString') continue;
+      const coords = f.geometry.coordinates, pts = new Float64Array(coords.length * 2);
+      for (let i = 0; i < coords.length; i++) { pts[i*2] = coords[i][0]; pts[i*2+1] = coords[i][1]; }
+      const pr = f.properties || {};
+      lines.push({ cat: 'water', fclass: pr.fclass, major: !!pr.major, name: pr.name, pts });
+    }
+    G.osmLines[kg] = (G.osmLines[kg] || []).concat(lines);
+    if (lines.length) { invalidateBase(); render(); if (G.flow) refineFlow(G.flow); }
+  }).catch(e => console.error('osm water failed:', kg, e));
+
   GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=water_area').then(d => {
     const areas = [];
     for (const f of (d.features || [])) {
@@ -1968,7 +1989,7 @@ async function fetchEnhancedKG(kg) {
   }).catch(e => console.error('lidar kg failed:', kg, e));
 
   // 2. OSM roads/rail lines (water areas/parcels come via loadWaterForKG)
-  GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=road,water,rail').then(d => {
+  GET('/api/cadastre/osm/geometry?kg='+kg+'&cat=road,rail').then(d => {
     const feats = d.features || d.data?.features || [];
     const lines = [];
     for (const f of feats) {
@@ -1979,7 +2000,7 @@ async function fetchEnhancedKG(kg) {
       const pr = f.properties || {};
       lines.push({ cat: pr.cat, fclass: pr.fclass, major: !!pr.major, name: pr.name, pts });
     }
-    G.osmLines[kg] = lines;
+    G.osmLines[kg] = (G.osmLines[kg] || []).concat(lines);
     render();
   }).catch(e => console.error('osm geometry failed:', kg, e));
 
@@ -2402,7 +2423,7 @@ function questBriefing(c) {
       L('🌾', tr('Jetzt!'), tr('Ein Acker von dir ist reif — die 🌾-Marker zeigen ihn. Tipp drauf und ernte, bevor die Bauern es tun.') + (left > 1 ? `\n${tr('Noch')} <b>${left}</b> ${tr('Ernten fehlen.')}` : ''));
       brief.act = { label: tr('Zum reifen Acker'), run: () => { const o = ripe[0]; questPing(o.ll[0], o.ll[1], Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(o.f), 850); } };
     } else if (soon) {
-      L('🌱', tr('Geduld'), tr('Äcker reifen alle 40 Minuten, jeder zu seiner Zeit. Dein nächster ist in') + ` <b>${fmtMin(soon.fs.ripeInS)}</b> ` + tr('reif — dann erscheint ein 🌾-Marker.'));
+      L('🌱', tr('Geduld'), tr('Äcker reifen alle 60 Minuten, jeder zu seiner Zeit. Dein nächster ist in') + ` <b>${fmtMin(soon.fs.ripeInS)}</b> ` + tr('reif — dann erscheint ein 🌾-Marker.'));
       brief.act = { label: tr('Zum Acker'), run: () => questPing(soon.ll[0], soon.ll[1], Math.max(G.cam.zoom, 17)) };
     } else {
       L('🌾', tr('So geht’s'), tr('Kauf dir einen Acker (Nutzung „Äcker/Wiesen/Weiden“). Goldene Felder sind gerade reif — ein Kauf zur Erntezeit zahlt sich sofort aus.'));
@@ -2657,6 +2678,8 @@ function baseSignature(W, H) {
     G.atBorder ? 1 : 0, G.baseGen || 0].join('|');
 }
 function drawBaseLayers(ctx, W, H, claimMap) {
+  // Real relief (LID-4) replaces the per-parcel slope tint while tiles cover the view.
+  _reliefActive = G.reliefOn && _reliefLastDrew;
   // ---- Background terrain ----
   ctx.fillStyle = '#3a6828';
   ctx.fillRect(0, 0, W, H);
@@ -2694,6 +2717,9 @@ function drawBaseLayers(ctx, W, H, claimMap) {
     }
   }
 
+  // ---- Real relief: 25 m DTM hillshade tiles under sprites/buildings (LID-4) ----
+  _reliefLastDrew = drawRelief(ctx);
+
   // ---- OSM roads + rail on top of parcels (enhanced mode) ----
   drawOSMLines(ctx, 'road');
   drawOSMLines(ctx, 'rail');
@@ -2709,6 +2735,9 @@ function drawBaseLayers(ctx, W, H, claimMap) {
 
   // ---- Draw real building footprints ----
   if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
+
+  // ---- Hofstellen: tractor + bales beside the real farmstead (FARM-4) ----
+  drawHofstellen(ctx);
 }
 
 function render() {
@@ -3148,6 +3177,17 @@ function tallIndex() {
   const keys = new Set();
   for (const kg in G.topTrees) for (const t of (G.topTrees[kg] || [])) { treeKey(t); t._kg = kg; if (keys.has(t._k)) continue; keys.add(t._k); all.push(t); }
   all.sort((a, b) => b.height_m - a.height_m);
+  // Proximity dedupe (~12 m): the same crown arrives from lidar-slim and the
+  // LID-2 apex index with slightly different coordinates — keep the taller.
+  const near = new Map(), CELL = 0.00015, kept = [];
+  for (const t of all) {
+    const gx = Math.floor(t.lon / CELL), gy = Math.floor(t.lat / CELL);
+    let dup = false;
+    for (let dx = -1; dx <= 1 && !dup; dx++) for (let dy = -1; dy <= 1; dy++) if (near.has((gx + dx) + ':' + (gy + dy))) { dup = true; break; }
+    if (dup) continue;
+    near.set(gx + ':' + gy, 1); kept.push(t);
+  }
+  all.length = 0; all.push(...kept);
   const cells = new Map();
   for (const t of all) {
     const k = Math.floor(t.lon * 100) + ':' + Math.floor(t.lat * 100);
@@ -4228,14 +4268,14 @@ function drawParcelPoly(ctx, f, claimMap) {
   if (G.cam.zoom >= 14 && !isWater) {
     const lp = G.lidarParcels[parcelId];
     if (lp && lp.elev != null) {
-      const hs = hillshade(lp);
+      const hs = _reliefActive ? 0 : hillshade(lp);
       if (hs < -0.03) {
         ctx.fillStyle = 'rgba(15,20,45,' + Math.min(0.42, -hs * 0.5).toFixed(3) + ')';
         ctx.fill();
       } else if (hs > 0.03) {
         ctx.fillStyle = 'rgba(255,245,210,' + Math.min(0.30, hs * 0.38).toFixed(3) + ')';
         ctx.fill();
-      } else {
+      } else if (!_reliefActive) {
         const kt = G.lidarKGTerrain[lp.kg];
         if (kt && kt.emax > kt.emin) {
           const n = Math.max(0, Math.min(1, (lp.elev - kt.emin) / (kt.emax - kt.emin)));
@@ -4674,12 +4714,12 @@ function cropLabel(f) {
 }
 
 // ---- Field crop cycle (contract shared with srv/fieldcycle.go) ----
-// Every Acker runs ploughed → growing → ripe → stubble on a 40-min real-time
+// Every Acker runs ploughed → growing → ripe → stubble on a 60-min real-time
 // cycle, phase-shifted by the parcel hash so neighbours ripen at different
 // times (~¼ of all fields are ripe at any moment). NPC farmers harvest at the
 // end of the ripe window — unless the owner does it first, which is the only
 // thing ever stored (claim.harvested_at). Converted fields lie fallow (Brache).
-const FIELD_CYCLE_S = 40 * 60, FIELD_GROW_AT = 0.30, FIELD_RIPE_AT = 0.60, FIELD_STUBBLE_AT = 0.85;
+const FIELD_CYCLE_S = 60 * 60, FIELD_GROW_AT = 0.30, FIELD_RIPE_AT = 0.60, FIELD_STUBBLE_AT = 0.85;
 /** Avalanche mix so sequential GNRs don't share a phase (mirrors hashMix in fieldcycle.go). */
 function hashMix(h) { h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0; return (h ^ (h >>> 16)) >>> 0; }
 function isCropField(p) { return extractLuCode('', p) === '48'; }
@@ -4808,7 +4848,8 @@ function drawFieldPattern(ctx, rings, hash, stage) {
   ctx.save();
   ctx.clip();
   ctx.fillStyle = pat;
-  ctx.globalAlpha = z >= 16 ? 1 : 0.7;
+  // Texture stays a hint under the colour — the stage tint and sprites carry the read.
+  ctx.globalAlpha = z >= 16 ? 0.5 : 0.35;
   ctx.fill();
   ctx.restore();
 }
@@ -6163,11 +6204,22 @@ function drawForestSprites(ctx, claimMap) {
       variantFn = (i) => v[(hash + i) % v.length];
     }
 
+    // Zoomed in, a 2 ha stand must not stay a 30-sprite lake of green: raise the
+    // cap with the on-screen area (one tree per ~1400 px² at most, ≤ 260/parcel).
+    if (G.cam.zoom >= 15.5 && style !== 'orchard') {
+      const pxArea = Math.max(0, Math.min(sx2, gc.width) - Math.max(sx1, 0)) * Math.max(0, Math.min(sy2, gc.height) - Math.max(sy1, 0));
+      const want = Math.min(260, Math.floor(pxArea / 1400));
+      if (want > treeCount) treeCount = want;
+    }
     // Scale by lidar-measured canopy fraction (skip 'reforested' — that's a
     // game-state look, not a measured natural stand). Always keep ≥1 tree.
     if (style !== 'reforested' && densMul < 1) {
       treeCount = Math.max(1, Math.round(treeCount * densMul));
     }
+    // LID-2: the parcel's measured dominant trees stand where they really are;
+    // the procedural filler makes room for them.
+    const apex = (style === 'forest' || style === 'plantation') ? apexTreesOf(f.properties.parcel_id) : null;
+    if (apex) treeCount = Math.max(0, treeCount - apex.length);
 
     // Draw bright green underglow for reforested parcels
     if (style === 'reforested') {
@@ -6189,15 +6241,17 @@ function drawForestSprites(ctx, claimMap) {
       ctx.setLineDash([]);
     }
 
-    for (let i = 0; i < treeCount; i++) {
-      const t = (hash + i * 7919) % 10000 / 10000;
-      const u = (hash + i * 3571) % 10000 / 10000;
-      const lon = b.w + (b.e - b.w) * t;
-      const lat = b.s + (b.n - b.s) * u;
+    // Sample until treeCount trees actually land inside the parcel (bbox
+    // rejection), bounded so slivers can't loop forever.
+    for (let i = 0, placed = 0; i < treeCount * 4 && placed < treeCount; i++) {
+      const lon = b.w + (b.e - b.w) * prand(hash, i);
+      const lat = b.s + (b.n - b.s) * prand(hash ^ 0x5bd1e995, i);
       if (!pipRings(lon, lat, coords)) continue;
+      placed++;
       const [tx, ty] = toScreen(lon, lat);
       drawTree(ctx, tx, ty, variantFn(i), hash + i);
     }
+    if (apex) for (let i = apex.length - 1; i >= 0; i--) drawApexTree(ctx, apex[i], hash, i === 0);
 
     // Draw growth indicators on reforested parcels (small sprouts between trees)
     if (style === 'reforested') {
@@ -9375,7 +9429,7 @@ window.DEV = {
     resizeGame(); render();
   },
   // ---- Game clock (Date.now shim): freeze for deterministic frames, warp to
-  // fast-forward the 40-min field cycle / forest regrowth. Display-only — the
+  // fast-forward the 60-min field cycle / forest regrowth. Display-only — the
   // server keeps real time, so harvest calls may still be refused.
   _realNow: null, _offsetMs: 0, _frozenAt: null,
   _installClock() {
@@ -9631,7 +9685,7 @@ const Herald = {
     if (this.mode === 'intro' && this.el.classList.contains('show')) return; // don't interrupt the intro
     const H = {
       first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Mach es noch einmal auf und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das bringt XP und zählt zum 30 %-Ziel.') },
-      first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 40 Minuten — jeder zu seiner Zeit. Ist deiner golden, zeigt ein 🌾-Marker: ernten bringt Münzen. Wartest du zu lang, ernten die Bauern. Oder lass ihn als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen — das zählt zum Naturschutz.') },
+      first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 60 Minuten — jeder zu seiner Zeit. Ist deiner golden, zeigt ein 🌾-Marker: ernten bringt Münzen. Wartest du zu lang, ernten die Bauern. Oder lass ihn als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen — das zählt zum Naturschutz.') },
       trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen dir, wo sie stehen. Kauf dir eine Parzelle mit so einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
       drought: { icon:'☀️', tag: tr('Dürre'), html: tr('Das Grundwasser steht hier') + ' <b>' + fmtSigma(G.drought?.sigma || 0) + '</b> ' + tr('unter normal — deine Felder tragen nur') + ' <b>×' + ((G.dossiers[G.drought?.kg]?.game?.yield_factor) ?? 0.6).toFixed(1).replace('.', ',') + '</b>. ' + tr('Ein 🕳️ Brunnen schützt, Brache zählt zum Naturschutz.') + ' <span class="pp-ez-link" onclick="openDossier(null,\'water\')">📖 ' + tr('Chronik') + '</span>' },
       enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Da gibt’s echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz, dann siehst du sie.') },
@@ -10281,7 +10335,7 @@ function renderDossier(d) {
       if (tm.length) html += '<div class="ds-title"><span>' + tr('Top-Maßnahmen') + '</span></div><div class="pp-grid" style="font-size:16px">' + tm.map(m => '<span>' + Math.round(m.share * 100) + ' %</span><b>' + esc(String(m.name).replace(/\s*\(Artikel.*$/, '').slice(0, 60)) + '</b>').join('') + '</div>';
       const hist = fm.history || [];
       if (hist.length >= 2) html += '<div class="ds-title"><span>' + tr('Förderung') + ' €/Jahr</span></div>' + pxChart(hist.map(h => ({ v: h.total_eur, label: h.year, cls: h.year === fm.as_of ? 'cur' : '' })), { fmt: fmtEur });
-      html += '<div class="ds-rule">🎮 🏛 ' + tr('Förderung') + ': <b>' + fmtNum(g.subsidy_per_ha || 0, 1) + '🪙/ha</b> ' + tr('pro Ernte') + ' — ' + tr('Wiesen holen sie alle 40 Minuten ab, Bio-Schläge kriegen mehr.') + '</div>';
+      html += '<div class="ds-rule">🎮 🏛 ' + tr('Förderung') + ': <b>' + fmtNum(g.subsidy_per_ha || 0, 1) + '🪙/ha</b> ' + tr('pro Ernte') + ' — ' + tr('Wiesen holen sie alle 60 Minuten ab, Bio-Schläge kriegen mehr.') + '</div>';
       html += '<div class="ds-src">farm-subsidies · AMA Transparenzdatenbank ' + (fm.as_of || '') + ' · CC BY 4.0</div>';
     }
   }
@@ -10319,7 +10373,7 @@ function renderFieldEconomyRows(f, claim) {
   else {
     let h = '';
     if (fs.stage !== 'meadow') h += '🌾 ' + eco.crop + '🪙';
-    if (eco.subsidy > 0) h += fs.stage === 'meadow' ? eco.subsidy + '🪙 <span class="kg-dim">' + tr('alle 40 min') + '</span>' : (h ? ' + ' : '') + '🏛 ' + eco.subsidy + '🪙';
+    if (eco.subsidy > 0) h += fs.stage === 'meadow' ? eco.subsidy + '🪙 <span class="kg-dim">' + tr('alle 60 min') + '</span>' : (h ? ' + ' : '') + '🏛 ' + eco.subsidy + '🪙';
     if (fs.stage !== 'meadow' && eco.subsidy > 0) h += ' = <b style="color:var(--gold)">' + eco.total + '🪙</b>';
     if (!h) h = '<span class="kg-dim">' + tr('keine Förderung') + '</span>';
     const notes = [];
@@ -10580,13 +10634,9 @@ function drawWaterProtection(ctx) {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const ring of rings) for (let i = 0; i < ring.length; i++) { const [x, y] = toScreen(ring[i][0], ring[i][1]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
     ctx.closePath();
-    ctx.fillStyle = 'rgba(60,140,220,0.14)'; ctx.fill('evenodd');
-    ctx.save(); ctx.clip('evenodd');
-    ctx.strokeStyle = 'rgba(60,140,220,0.25)'; ctx.lineWidth = 1;
-    const x0 = Math.max(minX, -30), x1 = Math.min(maxX, W + 30), y0 = Math.max(minY, -30), y1 = Math.min(maxY, H + 30);
-    ctx.beginPath(); for (let x = x0 - (y1 - y0); x < x1; x += 12) { ctx.moveTo(x, y0); ctx.lineTo(x + (y1 - y0), y1); } ctx.stroke();
-    ctx.restore();
-    ctx.strokeStyle = 'rgba(80,160,240,0.8)'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+    // quiet blue wash + thin dashed edge — no hatch, the colour is the signal
+    ctx.fillStyle = 'rgba(60,140,220,0.10)'; ctx.fill('evenodd');
+    ctx.strokeStyle = 'rgba(80,160,240,0.55)'; ctx.lineWidth = 1; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
     if (G.cam.zoom >= 16 && maxX - minX > 60 && maxY - minY > 30) {
       const cx = (Math.max(minX, 0) + Math.min(maxX, W)) / 2, cy = (Math.max(minY, 0) + Math.min(maxY, H)) / 2;
       ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -10634,7 +10684,9 @@ window.startFlow = async function(lon, lat) {
   for (const r of (d.reaches || [])) if (r.gauge) gauges.push(r);
   // Journey: 14 s + 0.35 s/km, capped 45 s. The camera rides along with the droplet
   // (zoom 14.5) — manual pan releases it; ✕ on the chip ends the trip.
-  const dur = Math.min(45000, 14000 + (d.total_km || 0) * 350);
+  // Unhurried: 20 s + 1.5 s/km, capped 150 s (65 km Kainach→Mur ≈ 2 min) — the
+  // river meanders are the point, and tiles stream in comfortably at this pace.
+  const dur = Math.min(150000, 20000 + (d.total_km || 0) * 1500);
   G.flow = { d, pts, cum, total: cum[cum.length - 1], t0: performance.now() + 900, dur, origin: [lon, lat], gauges, gaugePts: null, follow: true, names: [] };
   const names = []; for (const r of (d.reaches || [])) if (r.river && names[names.length - 1] !== r.river) names.push(r.river);
   if (d.exit && d.exit.river && names[names.length - 1] !== d.exit.river) names.push(d.exit.river);
@@ -10643,13 +10695,16 @@ window.startFlow = async function(lon, lat) {
   G.flow.title = (names.length ? names.join(' → ') + (sea ? ' → ' + tr(sea) : '') : tr('Fließweg')) + ' · ' + fmtNum(d.total_km, d.total_km < 10 ? 1 : 0) + ' km' + (d.exit && d.exit.clipped_at_border ? ' ' + tr('bis zur Grenze') : '');
   txt.textContent = '💧 ' + G.flow.title;
   document.getElementById('parcel-popup').classList.remove('open');
-  flyTo(lon, lat, 14.5);
+  refineFlow(G.flow);   // ride the OSM river where its lines are already loaded
+  flyTo(lon, lat, 15);
   flowAnimLoop();
 };
 window.clearFlow = function() { G.flow = null; document.getElementById('flow-chip').style.display = 'none'; render(); };
 function flowAnimLoop() {
   const F = G.flow; if (!F) return;
-  const now = performance.now(), ph = Math.min(1, Math.max(0, (now - F.t0) / F.dur));
+  const now = performance.now();
+  if (now - (F._lastRefine || 0) > 1500) { F._lastRefine = now; refineFlow(F); }
+  const ph = Math.min(1, Math.max(0, (now - F.t0) / F.dur));
   if (F.follow && !flyAnim) {
     const p = pointAlong(F, ph * F.total);
     // time-based lerp so a slow frame (tiles streaming in) never lets the camera fall behind the drop
@@ -10765,4 +10820,322 @@ Object.assign(window.DEV, {
   async flow(lon, lat) { if (lon === false) { clearFlow(); return null; } await startFlow(lon, lat); return G.flow && { total_km: G.flow.d.total_km, exit: G.flow.d.exit, reaches: G.flow.d.n_reaches, title: G.flow.title }; },
   /** Water layers state (for screenshots): DEV.water() */
   water() { return { kg: G.waterKG, drought: G.drought, stations: G.gwPoints.length, zones: G.wpZones.length, wells: G.claimed.filter(c => c.well_at).length, gwVisible: G.gwVisible, flow: !!G.flow }; },
+});
+
+// ================= REALISM LAYERS: RELIEF (LID-4) · TREE APICES (LID-2) · HOFSTELLEN (FARM-4) =================
+// All three are viewport-tiled, background, never block loading. Data is real:
+// 25 m DTM hillshade tiles, lidar-measured tree apices, INVEKOS farmsteads.
+
+G.apexTrees = []; G.apexIds = new Set(); G.apexTiles = new Set(); G.apexAttempts = {};
+G.apexByParcel = {};      // parcel_id → [{lon,lat,h,crown,broad}] (≤5 tallest measured trees)
+G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts = {};
+G.reliefOn = localStorage.getItem('reliefOn') !== '0';
+
+// ---- LID-4 hillshade tiles (WebMercator PNG, transparent = no data) ----
+const RELIEF_BASE = 'https://srtm-lidar-at.exe.xyz:8000/tiles/hillshade/';
+const _relief = new Map();          // "z/x/y" → {img|null(empty), canvas, at}
+const RELIEF_MAX_TILES = 400;
+function reliefZoom() { return Math.min(15, Math.max(10, Math.round(G.cam.zoom + 1))); }
+function lonToTx(lon, z) { return (lon + 180) / 360 * Math.pow(2, z); }
+function latToTy(lat, z) { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z); }
+function txToLon(x, z) { return x / Math.pow(2, z) * 360 - 180; }
+function tyToLat(y, z) { const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z); return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); }
+function reliefTile(z, x, y) {
+  const k = z + '/' + x + '/' + y;
+  let t = _relief.get(k);
+  if (t) { t.at = performance.now(); return t; }
+  t = { img: null, canvas: null, at: performance.now(), loading: true };
+  _relief.set(k, t);
+  if (_relief.size > RELIEF_MAX_TILES) {   // evict the 50 least recently used
+    [..._relief.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, 50).forEach(e => _relief.delete(e[0]));
+  }
+  const img = new Image(); img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    t.loading = false;
+    // Re-centre: upstream flat ground ≈ grey 180. Shift to 128 so an 'overlay'
+    // composite is neutral on flat land, darkens slopes facing away from the
+    // NW sun and lightens lit slopes. Slight gain so 25 m relief still reads.
+    const c = document.createElement('canvas'); c.width = c.height = 256;
+    const cx = c.getContext('2d'); cx.drawImage(img, 0, 0);
+    try {
+      const id = cx.getImageData(0, 0, 256, 256), d = id.data;
+      let any = false;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] === 0) continue; any = true;
+        // gentle: shadows never deeper than -40, lit slopes up to +60
+        const v = Math.max(88, Math.min(188, 128 + (d[i] - 180) * 1.0));
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      if (!any) { t.canvas = null; return; }
+      cx.putImageData(id, 0, 0);
+    } catch (e) { /* tainted (no CORS) → draw raw */ }
+    t.canvas = c; invalidateBase(); render();
+  };
+  img.onerror = () => { t.loading = false; t.canvas = null; };   // 204 no-data / offline
+  img.src = RELIEF_BASE + k + '.png';
+  return t;
+}
+/** Draws the real relief under the sprites. Returns true when at least one
+ *  tile with data covered the view (then the per-parcel slope tint is skipped). */
+function drawRelief(ctx) {
+  if (!G.reliefOn || G.cam.zoom < 12.5) return false;
+  const z = reliefZoom(), b = viewBounds();
+  const x0 = Math.floor(lonToTx(b.w, z)), x1 = Math.floor(lonToTx(b.e, z));
+  const y0 = Math.floor(latToTy(b.n, z)), y1 = Math.floor(latToTy(b.s, z));
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 48) return false;
+  let drew = false;
+  // Assemble the tiles on one viewport-sized scratch canvas first, so the blur
+  // that hides the 25 m cells at high zoom doesn't create seams at tile edges.
+  const W = gc.width, H = gc.height;
+  if (!_reliefScratch || _reliefScratch.width !== W || _reliefScratch.height !== H) { _reliefScratch = document.createElement('canvas'); _reliefScratch.width = W; _reliefScratch.height = H; }
+  const sc = _reliefScratch.getContext('2d');
+  sc.clearRect(0, 0, W, H); sc.imageSmoothingEnabled = true;
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+    const t = reliefTile(z, x, y);
+    if (!t.canvas) continue;
+    const [sx0, sy0] = toScreen(txToLon(x, z), tyToLat(y, z));
+    const [sx1, sy1] = toScreen(txToLon(x + 1, z), tyToLat(y + 1, z));
+    sc.drawImage(t.canvas, sx0, sy0, sx1 - sx0 + 0.5, sy1 - sy0 + 0.5);
+    drew = true;
+  }
+  if (!drew) return false;
+  // 25 m DTM cell in screen px → blur radius; strength fades as you zoom in,
+  // where parcel-scale detail (fields, trees, buildings) should dominate.
+  const cellPx = 25 / (111320 * Math.cos(G.cam.lat * Math.PI / 180)) * mapScale();
+  const zm = G.cam.zoom;
+  ctx.save();
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalAlpha = zm < 15 ? 0.34 : zm < 16.5 ? 0.26 : zm < 18 ? 0.16 : 0.1;
+  if (cellPx > 12) ctx.filter = 'blur(' + Math.min(24, Math.round(cellPx / 3)) + 'px)';
+  ctx.drawImage(_reliefScratch, 0, 0);
+  ctx.restore();
+  return true;
+}
+let _reliefScratch = null;
+let _reliefActive = false, _reliefLastDrew = false;
+
+// ---- LID-2 tree apices ----
+function loadTrees(b) {
+  loadPointLayer(b, {
+    url: '/api/trees', key: 'trees', tiles: G.apexTiles, ids: G.apexIds, attempts: G.apexAttempts,
+    idOf: it => it.lon.toFixed(6) + ',' + it.lat.toFixed(6),
+    onPoint: it => {
+      const h = +it.h_m || 0; if (h < 8 || h > 60) return;
+      const crown = +it.crown_d_m || 0;
+      // crown/height ratio → broadleaf; merged multi-crown blobs (>40 m) tell nothing
+      const t = { lon: it.lon, lat: it.lat, h, crown, pid: it.parcel_id || '', broad: crown > 0 && crown < 40 && crown / h > 0.62 };
+      G.apexTrees.push(t);
+      if (t.pid) (G.apexByParcel[t.pid] = G.apexByParcel[t.pid] || []).push(t);
+    },
+    done: () => {
+      // giants ≥ 25 m join the giant-tree pool; tallIndex() dedupes against lidar-slim trees by distance
+      const g = G.topTrees['apex'] = G.topTrees['apex'] || [];
+      const seen = new Set(g.map(t => t.lon.toFixed(5) + ',' + t.lat.toFixed(5)));
+      for (const t of G.apexTrees) {
+        if (t.h < 32) continue;   // slim-capped KGs already carry ≥25 m; apex giants must be truly tall
+        const k = t.lon.toFixed(5) + ',' + t.lat.toFixed(5); if (seen.has(k)) continue; seen.add(k);
+        g.push({ height_m: t.h, lon: t.lon, lat: t.lat, broad: t.broad ? 1 : 0, apex: 1 });
+      }
+      G.lidarGen++; invalidateBase(); render();
+    },
+  });
+}
+/** Real measured trees of a parcel (≤5 tallest), tallest first. */
+function apexTreesOf(pid) { return G.apexByParcel[pid] || null; }
+/** Sprite variant for a measured tree: species hint from crown shape, size class from height. */
+function apexVariant(t, hash) {
+  if (t.broad) return (hash + Math.round(t.h)) % 2;      // oak / beech
+  return (hash + Math.round(t.h)) % 3 === 0 ? 7 : 5;      // fir / mixed conifer
+}
+/** Draw one measured tree at its real position, scaled by its lidar height
+ *  (15 m → 1.0, 30 m → ~1.6). Height tag for the parcel's tallest at zoom ≥ 17.5. */
+function drawApexTree(ctx, t, hash, tallest) {
+  const [x, y] = toScreen(t.lon, t.lat);
+  if (x < -30 || y < -40 || x > gc.width + 30 || y > gc.height + 30) return;
+  const k = Math.max(0.85, Math.min(1.7, 0.6 + t.h / 30));
+  ctx.save(); ctx.translate(x, y); ctx.scale(k, k);
+  drawTree(ctx, 0, 0, apexVariant(t, hash), hash + Math.round(t.h * 7));
+  ctx.restore();
+  if (tallest && G.cam.zoom >= 17.5) {
+    ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const lbl = fmtNum(t.h, 0) + ' m';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 1, y + 3); ctx.fillStyle = '#d8f0c0'; ctx.fillText(lbl, x, y + 2);
+  }
+}
+
+// ---- FARM-4 Hofstellen (farmsteads) ----
+function loadHofstellen(b) {
+  loadPointLayer(b, {
+    url: '/api/hofstellen', key: 'points', tiles: G.hofTiles, ids: G.hofIds, attempts: G.hofAttempts, idOf: it => it.id,
+    onPoint: it => G.hofstellen.push(it),
+    done: () => { G._hofByParcel = null; invalidateBase(); render(); if (G.sel) showParcelPopup(G.sel, G.selFp); },
+  });
+}
+/** Farmstead(s) whose point lies inside the parcel (index rebuilt lazily as polygons/points arrive). */
+function hofOnParcel(pid) {
+  if (!G._hofByParcel || G._hofByParcel._n !== G.hofstellen.length || G._hofByParcel._p !== G.parcelPolys.length) {
+    const idx = { _n: G.hofstellen.length, _p: G.parcelPolys.length };
+    for (const h of G.hofstellen) {
+      const f = parcelAt(h.lon, h.lat); if (!f) continue;
+      h._pid = f.properties.parcel_id;
+      (idx[h._pid] = idx[h._pid] || []).push(h);
+    }
+    G._hofByParcel = idx;
+  }
+  return G._hofByParcel[pid] || null;
+}
+/** Parcel polygon containing a point (bbox prefilter, even-odd all rings). */
+function parcelAt(lon, lat) {
+  for (const f of G.parcelPolys) {
+    const p = f.properties;
+    if (p.lon != null && (Math.abs(p.lon - lon) > 0.02 || Math.abs(p.lat - lat) > 0.02)) continue;
+    if (pipGeom(lon, lat, f.geometry)) return f;
+  }
+  return null;
+}
+const HOF_SIZE = { s: 'kleiner Hof', m: 'mittlerer Hof', l: 'großer Hof' };
+function hofLabel(h) { return (HOF_SIZE[h.size_class] || 'Hofstelle') + (h.organic ? ' · 🌿 Bio' : ''); }
+/** Pixel tractor + hay bales beside the farmstead point (2000s Settlers look). */
+function drawHofSprite(ctx, x, y, u, seed) {
+  const px = (ox, oy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(x + ox * u), Math.round(y + oy * u), w * u, h * u); };
+  px(-7, 1, 15, 2, 'rgba(0,0,0,0.25)');                         // shadow
+  // tractor: big rear wheel, small front wheel, red body, black cab, exhaust
+  px(-6, -3, 4, 4, '#1a1a1a'); px(-5, -2, 2, 2, '#666');        // rear wheel
+  px(1, -2, 3, 3, '#1a1a1a'); px(2, -1, 1, 1, '#666');          // front wheel
+  px(-4, -5, 7, 3, '#b8281c'); px(-3, -4, 5, 1, '#d84030');     // body
+  px(-4, -8, 3, 3, '#2a2a2a'); px(-3, -7, 1, 1, '#8ad0ff');     // cab + window
+  px(1, -7, 1, 3, '#444');                                       // exhaust
+  if (seed % 3 !== 1) { px(-8 + (seed % 2), -7, 1, 1, '#999'); }  // puff
+  // hay bales
+  px(5, -3, 3, 3, '#c8a040'); px(5, -3, 3, 1, '#e0c060'); px(6, -2, 1, 1, '#a08030');
+  if (seed % 2) { px(8, -3, 3, 3, '#c8a040'); px(8, -3, 3, 1, '#e0c060'); }
+}
+function drawHofstellen(ctx) {
+  if (G.cam.zoom < 15 || !G.hofstellen.length) return;
+  const u = G.cam.zoom >= 18.5 ? 3 : G.cam.zoom >= 16.5 ? 2 : 1;
+  const b = viewBounds();
+  for (const h of G.hofstellen) {
+    if (h.lon < b.w || h.lon > b.e || h.lat < b.s || h.lat > b.n) continue;
+    // stand the sprite just SE of the point so it sits beside the building footprint, not on it
+    const [x, y] = toScreen(h.lon, h.lat);
+    const seed = simpleHash(h.id);
+    drawHofSprite(ctx, x + 10 * u, y + 8 * u, u, seed);
+    if (G.cam.zoom >= 17) {
+      ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      const lbl = (h.organic ? '🌿 ' : '🚜 ') + tr('Hofstelle');
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 10 * u + 1, y + 10 * u + 1); ctx.fillStyle = '#ffe9a8'; ctx.fillText(lbl, x + 10 * u, y + 10 * u);
+    }
+  }
+}
+
+// ---- GW-6 refinement: let the droplet ride the OSM river we draw ----
+// MERIT flow paths have ~500 m vertices (90 m DEM); OSM waterways are the
+// lines on screen. Whenever consecutive path vertices snap (≤ 250 m) to the
+// same merged OSM watercourse, the straight segment is replaced by the real
+// meanders. Runs lazily as KGs (and their OSM lines) stream in along the way.
+let _riverChains = null, _riverChainsKey = '';
+function riverChains() {
+  const key = Object.keys(G.osmLines).map(k => k + ':' + G.osmLines[k].length).join('|');
+  if (_riverChains && _riverChainsKey === key) return _riverChains;
+  const lines = [];
+  for (const kg in G.osmLines) for (const ln of G.osmLines[kg]) {
+    if (ln.cat !== 'water') continue;
+    if (ln.fclass !== 'river' && ln.fclass !== 'stream' && ln.fclass !== 'canal' && ln.fclass !== 'drain') continue;
+    if (ln.pts.length < 4) continue;
+    lines.push({ pts: Array.from(ln.pts), name: ln.name || '', fclass: ln.fclass, used: false });
+  }
+  // merge ways that touch end-to-start (same name or unnamed) into chains
+  const key5 = (lon, lat) => lon.toFixed(5) + ',' + lat.toFixed(5);
+  const byStart = new Map();
+  for (const l of lines) { const k = key5(l.pts[0], l.pts[1]); (byStart.get(k) || byStart.set(k, []).get(k)).push(l); }
+  const chains = [];
+  for (const l of lines) {
+    if (l.used) continue; l.used = true;
+    let pts = l.pts.slice(), cur = l, guard = 0;
+    while (guard++ < 200) {
+      const k = key5(pts[pts.length - 2], pts[pts.length - 1]);
+      const nx = (byStart.get(k) || []).find(m => !m.used && (!m.name || !cur.name || m.name === cur.name));
+      if (!nx) break;
+      nx.used = true; pts = pts.concat(nx.pts.slice(2)); cur = nx;
+    }
+    let w = 1e9, e = -1e9, s = 1e9, n = -1e9;
+    for (let i = 0; i < pts.length; i += 2) { if (pts[i] < w) w = pts[i]; if (pts[i] > e) e = pts[i]; if (pts[i + 1] < s) s = pts[i + 1]; if (pts[i + 1] > n) n = pts[i + 1]; }
+    chains.push({ pts, name: l.name, fclass: l.fclass, bbox: { w, e, s, n } });
+  }
+  _riverChains = chains; _riverChainsKey = key;
+  return chains;
+}
+/** Nearest point on any chain within maxM metres → {ci, seg, t, d, lon, lat}. */
+function snapToRiver(lon, lat, maxM, chains) {
+  const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540, pad = maxM / 100000;
+  let best = null;
+  for (let ci = 0; ci < chains.length; ci++) {
+    const c = chains[ci], b = c.bbox;
+    if (lon < b.w - pad || lon > b.e + pad || lat < b.s - pad || lat > b.n + pad) continue;
+    const p = c.pts;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = (p[i] - lon) * kx, ay = (p[i + 1] - lat) * ky, bx = (p[i + 2] - lon) * kx, by = (p[i + 3] - lat) * ky;
+      const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+      let t = L > 0 ? -(ax * dx + ay * dy) / L : 0; t = Math.max(0, Math.min(1, t));
+      const qx = ax + dx * t, qy = ay + dy * t, d = Math.hypot(qx, qy);
+      // prefer the main river over a parallel ditch at similar distance
+      const de = d * (c.fclass === 'river' ? 0.5 : c.fclass === 'canal' ? 0.8 : 1);
+      if (d < maxM && (!best || de < best.de)) best = { ci, seg: i, t, d, de, lon: lon + qx / kx, lat: lat + qy / ky };
+    }
+  }
+  return best;
+}
+function refineFlow(F) {
+  const chains = riverChains(); if (!chains.length) return;
+  F.refined = F.refined || new Array(F.pts.length).fill(false);   // per original vertex index (segment i → i+1)
+  const src = F.src || (F.src = F.pts.map(p => p.slice()));
+  if (!F.snap || F.snapKey !== _riverChainsKey) { F.snap = src.map(p => snapToRiver(p[0], p[1], 250, chains)); F.snapKey = _riverChainsKey; }
+  let changed = false;
+  // segment i (src[i] → src[i+1]) rides the river when both ends snap to the same chain
+  const seg = new Array(src.length - 1).fill(null);
+  for (let i = 0; i + 1 < src.length; i++) {
+    const a = F.snap[i], b = F.snap[i + 1];
+    if (a && b && a.ci === b.ci) seg[i] = { a, b };
+  }
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    // a vertex adjacent to a refined segment sits ON the river, never beside it (no spurs)
+    const onRiver = (i > 0 && seg[i - 1]) || (i < seg.length && seg[i]);
+    out.push(onRiver ? [F.snap[i].lon, F.snap[i].lat] : src[i]);
+    if (i >= seg.length || !seg[i]) continue;
+    const { a, b } = seg[i];
+    const p = chains[a.ci].pts, fwd = (a.seg + a.t) < (b.seg + b.t);
+    const from = fwd ? a : b, to = fwd ? b : a, mid = [];
+    for (let s = from.seg + 2; s <= to.seg; s += 2) mid.push([p[s], p[s + 1]]);
+    if (!fwd) mid.reverse();
+    out.push(...mid);
+    if (!F.refined[i]) { F.refined[i] = true; changed = true; }
+  }
+  if (!changed) return;
+  // rebuild the distance table; keep the droplet at the same fraction of its current reach
+  const ph = F.total ? Math.min(1, Math.max(0, (performance.now() - F.t0) / F.dur)) : 0;
+  const cum = [0]; const kx = 111320 * Math.cos(F.origin[1] * Math.PI / 180), ky = 110540;
+  for (let i = 1; i < out.length; i++) cum.push(cum[i - 1] + Math.hypot((out[i][0] - out[i - 1][0]) * kx, (out[i][1] - out[i - 1][1]) * ky));
+  F.pts = out; F.cum = cum; F.total = cum[cum.length - 1]; F.gaugePts = null;
+  F.t0 = performance.now() - ph * F.dur;
+  F.refinedCount = F.refined.filter(Boolean).length;
+}
+
+Object.assign(window.DEV, {
+  /** Relief (hillshade) on/off, or stats. */
+  relief(on) {
+    if (on != null) { G.reliefOn = !!on; localStorage.setItem('reliefOn', on ? '1' : '0'); invalidateBase(); render(); }
+    let data = 0, empty = 0, loading = 0; for (const t of _relief.values()) { if (t.loading) loading++; else if (t.canvas) data++; else empty++; }
+    return { on: G.reliefOn, zoom: reliefZoom(), tiles: _relief.size, data, empty, loading, active: _reliefActive };
+  },
+  /** Measured tree apices: counts, giants, tallest, per-parcel sample. */
+  apex(pid) {
+    if (pid) return apexTreesOf(pid);
+    const hs = G.apexTrees.map(t => t.h).sort((a, b) => b - a);
+    return { trees: G.apexTrees.length, parcels: Object.keys(G.apexByParcel).length, giants: hs.filter(h => h >= 25).length, tallest: hs[0] || null, broad: G.apexTrees.filter(t => t.broad).length, tiles: G.apexTiles.size };
+  },
+  /** Farmsteads in view + which parcels they sit on. */
+  hof() { hofOnParcel(''); const b = viewBounds(); return G.hofstellen.filter(h => h.lon >= b.w && h.lon <= b.e && h.lat >= b.s && h.lat <= b.n).map(h => ({ id: h.id, lon: h.lon, lat: h.lat, size: h.size_class, organic: h.organic, parcel: h._pid || null })); },
+  /** River snapping status of the running Wasserweg. */
+  flowInfo() { const F = G.flow; if (!F) return null; return { pts: F.pts.length, src: (F.src || F.pts).length, refinedSegs: F.refinedCount || 0, chains: riverChains().length, total_km: +(F.total / 1000).toFixed(1), dur_s: F.dur / 1000, title: F.title }; },
 });

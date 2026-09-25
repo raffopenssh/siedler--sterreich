@@ -15,7 +15,7 @@ import (
 // window. Nothing about this is stored: the only persisted state is
 // parcel_claims.harvested_at for fields a player actually harvested.
 const (
-	fieldCycle = 40 * time.Minute
+	fieldCycle = 60 * time.Minute
 	// stage boundaries as cycle fractions
 	fieldGrowAt    = 0.30 // ploughed → growing
 	fieldRipeAt    = 0.60 // growing → ripe
