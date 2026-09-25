@@ -116,10 +116,17 @@ the current bbox** in ~100ms:
 - **Never gate polygon loading on zoom/span.** `viewBounds()` is in *device*
   pixels, so span thresholds trip much earlier than expected on wide/retina
   screens. Only the capped 800-row `/spatial/bbox` point fallback is span-gated.
-- Landuse backdrop: the viewport endpoint carries **no** landuse polygons. For
-  non-enhanced KGs seen for the first time, `loadLanduseBackground(kg)` still streams
-  the landuse layer in the background (deduped via `G.landuseKGs`). Enhanced KGs skip
-  it (lidar dominant-type + OSM cover the backdrop).
+- Landuse backdrop (CAD-1): `/api/viewport` carries no landuse polygons; for
+  tiles containing a non-enhanced KG, `loadViewportLanduse(b)` fetches the
+  same bbox from `GET /api/viewport-landuse` (upstream `/spatial/landuse`,
+  `tolerance_m=1`, ~90 KB gz per tile, 6 h cache) via the shared
+  `loadBboxLayer()` helper (tile + feature dedup, `ready:false` retries).
+  Enhanced KGs skip it (lidar dominant-type + OSM cover the backdrop). The
+  old whole-KG `export/geojson?layers=landuse` stream (~7 MB) is gone.
+- Per-parcel landuse (CAD-2): viewport parcel rows carry `dominant_ns` and
+  `landuse_areas {code: m²}` measured from polygons. `extractLuCode()` prefers
+  `dominant_ns` over symbol-count weighting; `getLanduseName()` lists the
+  measured shares. Point-fallback parcels still use the weighted mode.
 
 ## Map Rendering
 
@@ -522,6 +529,30 @@ LOD/animation machinery, counts into `NATURE.onScreen`) draws
   source/date, CO₂) in the Gelände section; `#pp-field` row shows the stand
   stage. `G.forestValues[pid]` is the lazy cache; the fetch callback re-runs
   `showParcelPopup` so the action buttons pick up the coins/XP.
+
+## Sibling roadmap — `/llm/ahead` (`srv/llmahead.go`) and what we consume
+
+`GET /llm/ahead` is the to-do list we hand the sibling data services
+(cadastre, srtm, holz, farm, gw) plus a live conformance harness
+(`/llm/ahead/check/{service}`). Nearly everything is green upstream; the
+checkbox in the markdown means **used by the game**, driven by the
+`aheadUsed` map (ID → where in our code). `?unused=1` (or `?used=0`, also
+on `?format=json`) lists only items we don't consume yet — that is the view
+to give an agent. **When you start consuming an item, add it to `aheadUsed`.**
+
+Consumed today (`srv/siblings.go` unless noted):
+- **ALL-4** `prewarmMunicipality()` on session create → cadastre + srtm `POST /prewarm` for the Gemeinde's KGs.
+- **CAD-1** `GET /api/viewport-landuse` (see Viewport fast path).
+- **CAD-2** `dominant_ns` / `landuse_areas` (game.js, no server code).
+- **HOLZ-2** `timberStatePrices()` in `timber.go`: `/data/prices/state/{1-9}.json` (3 KB) replaces the 736 KB catalogue; catalogue path kept as fallback.
+- **FARM-2** `GET /api/schlaege` → `loadSchlaege(b)` per viewport tile (24 h cache). AMA INVEKOS
+  field polygons (`crop_group`, `snar_name`, `area_ha`, `organic`; CC BY 4.0).
+  `parcelSchlag(p)` = Schlag under the parcel centroid (cached per `G.schlagGen`);
+  `fieldKindFor(p, hash)` maps `CROP_GROUPS` → field kind (getreide 0 sheaves,
+  mais/sonst 1 maize stooks, obst/wein 2 haystacks, gruenland/alm/brache 3 meadow),
+  falling back to the hash. Cycle *phase* stays hash-based. Popup row `#pp-crop`
+  ("Anbau: 🌽 Körnermais · 6,3 ha · 🌿 Bio"). `doHarvest()` sends `crop_group`;
+  server `fieldPhaseAtCrop()` uses it for meadow-vs-crop (`cropMeadow` mirrors `CROP_MEADOW`).
 
 ## Quests → Herald briefings
 
