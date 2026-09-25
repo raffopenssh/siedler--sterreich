@@ -49,8 +49,24 @@ type fieldPhase struct {
 	RipeUntil  time.Time // NPC harvest time of that window
 }
 
-func fieldPhaseAt(parcelID string, now time.Time) fieldPhase {
+// cropMeadow mirrors CROP_MEADOW in game.js (FARM-2 INVEKOS crop groups that
+// are grassland, not a harvestable crop).
+var cropMeadow = map[string]bool{"gruenland": true, "alm": true, "brache": true}
+
+func fieldPhaseAt(parcelID string, now time.Time) fieldPhase { return fieldPhaseAtCrop(parcelID, now, "") }
+
+// fieldPhaseAtCrop: like fieldPhaseAt, but when the client knows the real
+// INVEKOS crop group (fieldKindFor in game.js) that decides meadow-vs-crop
+// instead of the hash; the cycle phase stays hash-based either way.
+func fieldPhaseAtCrop(parcelID string, now time.Time, crop string) fieldPhase {
 	k := fieldKind(parcelID)
+	if crop != "" {
+		if cropMeadow[crop] {
+			k = 3
+		} else if k == 3 {
+			k = 0
+		}
+	}
 	cs := fieldCycle.Seconds()
 	off := float64(hashMix(jsHash(parcelID)) % uint32(cs))
 	t := math.Mod(float64(now.Unix())+off, cs) / cs

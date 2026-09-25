@@ -71,6 +71,17 @@ type aheadItem struct {
 	Manual          bool // no automatic check
 }
 
+// aheadUsed: items the game actually consumes today → where. Rendered as [x]
+// in the roadmap; ?unused=1 hides them so an implementing agent only reads
+// what still matters to us (green in the harness ≠ used in the game).
+var aheadUsed = map[string]string{
+	"ALL-4":  "server: prewarmMunicipality() on POST /api/session/create (cadastre + srtm)",
+	"CAD-1":  "server: GET /api/viewport-landuse → game.js loadViewportLanduse() (replaces whole-KG landuse export)",
+	"CAD-2":  "game.js: extractLuCode() prefers dominant_ns; popup lists landuse_areas in m²; price uses it",
+	"HOLZ-2": "server: timberStatePrices() in timber.go (Holzernte prices)",
+	"FARM-2": "server: GET /api/schlaege → game.js loadSchlaege(): real crop textures + 'Feld' popup row",
+}
+
 var aheadItems = []aheadItem{
 	// ---- cross-cutting: the sibling spec nobody implements yet ----
 	{ID: "ALL-1", Prio: "P1", Services: []string{"*"}, Title: "GET /llm/kg/{kg_code} (sibling spec)",
@@ -567,6 +578,7 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	svcF := r.URL.Query().Get("service")
 	itemF := r.URL.Query().Get("item")
+	unusedOnly := r.URL.Query().Get("unused") == "1" || r.URL.Query().Get("used") == "0"
 	if r.URL.Query().Get("format") == "json" || strings.HasPrefix(r.Header.Get("Accept"), "application/json") {
 		type jItem struct {
 			ID       string   `json:"id"`
@@ -577,6 +589,7 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 			Why      string   `json:"why"`
 			Check    string   `json:"check,omitempty"`
 			Manual   bool     `json:"manual,omitempty"`
+			Used     string   `json:"used_by_game,omitempty"`
 		}
 		out := struct {
 			Version  string         `json:"version"`
@@ -584,7 +597,7 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 			Fixture  map[string]any `json:"fixture"`
 			Harness  string         `json:"harness"`
 			Items    []jItem        `json:"items"`
-		}{Version: "2026-09-24", Services: aheadServices, Harness: s.aheadURL() + "/check/{service}?item=&base=&force=1",
+		}{Version: "2026-09-25", Services: aheadServices, Harness: s.aheadURL() + "/check/{service}?item=&base=&force=1",
 			Fixture: map[string]any{"kg_code": fxKG, "gemeinde_code": fxGem, "bbox": fxBBoxCSV, "no_data_kg": fxNoDataKG}}
 		for _, it := range aheadItems {
 			if svcF != "" && !itemAppliesTo(it, svcF) {
@@ -593,7 +606,10 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 			if itemF != "" && !strings.EqualFold(itemF, it.ID) {
 				continue
 			}
-			ji := jItem{ID: it.ID, Prio: it.Prio, Services: it.Services, Title: it.Title, Spec: it.Spec, Why: it.Why, Manual: it.Manual}
+			if unusedOnly && aheadUsed[it.ID] != "" {
+				continue
+			}
+			ji := jItem{ID: it.ID, Prio: it.Prio, Services: it.Services, Title: it.Title, Spec: it.Spec, Why: it.Why, Manual: it.Manual, Used: aheadUsed[it.ID]}
 			if it.Check != nil {
 				m := it.Check.Method
 				if m == "" {
@@ -608,15 +624,16 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	w.Write(renderAheadMarkdown(s.aheadURL(), svcF, itemF))
+	w.Write(renderAheadMarkdown(s.aheadURL(), svcF, itemF, unusedOnly))
 }
 
-func renderAheadMarkdown(self, svcF, itemF string) []byte {
+func renderAheadMarkdown(self, svcF, itemF string, unusedOnly bool) []byte {
 	var b strings.Builder
 	if itemF == "" {
 		fmt.Fprintf(&b, "# Siedler Österreich → sibling services: AHEAD list\n\n")
 		fmt.Fprintf(&b, "Consumer: https://siedler-oesterreich.exe.xyz:8000 (browser game on live Austrian cadastre). Terse by design.\n")
-		fmt.Fprintf(&b, "Machine form: %s?format=json   Filter: ?service=cadastre|srtm|holz|farm|gw  ?item=ID\n\n", self)
+		fmt.Fprintf(&b, "Machine form: %s?format=json   Filter: ?service=cadastre|srtm|holz|farm|gw  ?item=ID  ?unused=1 (only items the game does not consume yet — start here)\n", self)
+		fmt.Fprintf(&b, "Checkbox = **used by the game** (where: 'used:' line), not 'implemented upstream' — that is what %s/check/<service> tells you.\n\n", self)
 		fmt.Fprintf(&b, "## Protocol (for the implementing agent)\n")
 		fmt.Fprintf(&b, "1. `curl -s %s/check/<service>` → JSON pass/fail per item, P1 first in next_steps.\n", self)
 		fmt.Fprintf(&b, "2. Implement one item. Deploy. `curl -s '%s/check/<service>?item=<ID>&force=1'` (cached 60 s otherwise; `&base=https://<host>:<port>` for a public staging instance).\n", self)
@@ -634,6 +651,14 @@ func renderAheadMarkdown(self, svcF, itemF string) []byte {
 			if !itemAppliesTo(it, svc.Slug) || (itemF != "" && !strings.EqualFold(itemF, it.ID)) {
 				continue
 			}
+			used := aheadUsed[it.ID]
+			if unusedOnly && used != "" {
+				continue
+			}
+			mark := " "
+			if used != "" {
+				mark = "x"
+			}
 			if !any {
 				fmt.Fprintf(&b, "## %s — %s (%s)\ncheck: %s/check/%s\n\n", svc.Slug, svc.Base, svc.Repo, self, svc.Slug)
 				any = true
@@ -641,11 +666,14 @@ func renderAheadMarkdown(self, svcF, itemF string) []byte {
 			// shared items: print once in full under the first service, short ref afterwards
 			if shared := it.Services[0] == "*" || len(it.Services) > 1; shared {
 				if svc.Slug != firstServiceFor(it) {
-					fmt.Fprintf(&b, "- [ ] **%s** %s %s → see under %s\n", it.ID, it.Prio, it.Title, firstServiceFor(it))
+					fmt.Fprintf(&b, "- [%s] **%s** %s %s → see under %s\n", mark, it.ID, it.Prio, it.Title, firstServiceFor(it))
 					continue
 				}
 			}
-			fmt.Fprintf(&b, "- [ ] **%s** %s — %s\n  - spec: %s\n  - why: %s\n", it.ID, it.Prio, it.Title, it.Spec, it.Why)
+			fmt.Fprintf(&b, "- [%s] **%s** %s — %s\n  - spec: %s\n  - why: %s\n", mark, it.ID, it.Prio, it.Title, it.Spec, it.Why)
+			if used != "" {
+				fmt.Fprintf(&b, "  - used: %s\n", used)
+			}
 			if it.Check != nil && !it.Manual {
 				m := it.Check.Method
 				if m == "" {

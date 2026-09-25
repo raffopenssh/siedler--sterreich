@@ -234,6 +234,9 @@ func (s *Server) Serve(addr string) error {
 	// Viewport polygon geometry (parcels + footprints) straight from upstream R-tree.
 	// Replaces whole-KG export/geojson loads for map rendering.
 	mux.HandleFunc("GET /api/viewport", s.handleViewport)
+	// Sibling roadmap consumers (see siblings.go): viewport landuse slice, INVEKOS fields
+	mux.HandleFunc("GET /api/viewport-landuse", s.handleViewportLanduse)
+	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
 
 	// Building & KG info (slim, aggregated, cached)
 	mux.HandleFunc("GET /api/building-info", s.handleBuildingInfo)
@@ -677,6 +680,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Natura-2000 bonus treasures: placed asynchronously (fast API, but don't block session create)
 	go s.generateN2KTreasures(context.Background(), sessionID, req.MunicipalityName)
+	go s.prewarmMunicipality(req.MunicipalityCode, req.MunicipalityName) // ALL-4
 
 	session, _ := s.Q.GetSession(r.Context(), sessionID)
 	jsonResp(w, map[string]any{
@@ -1174,6 +1178,7 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		PlayerID  string `json:"player_id"`
 		ParcelID  string `json:"parcel_id"`
+		CropGroup string `json:"crop_group"` // FARM-2 INVEKOS class, "" = hash kind
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -1201,7 +1206,7 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	fp := fieldPhaseAt(req.ParcelID, now)
+	fp := fieldPhaseAtCrop(req.ParcelID, now, req.CropGroup)
 	if fp.Stage == "meadow" {
 		jsonErr(w, "Eine Weide erntet man nicht — die Kühe machen das", 400)
 		return
@@ -2296,7 +2301,7 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int, *pendingIn
 		"compactness": true,
 	}
 	// Parcel 'status' is always the same literal and unused by the renderer.
-	dropParcel := map[string]bool{"status": true}
+	dropParcel := map[string]bool{"status": true, "landuse_areas_source": true}
 	extract := func(body []byte, key string, drop map[string]bool) (items []json.RawMessage, ready bool, truncated bool) {
 		var parsed map[string]json.RawMessage
 		if json.Unmarshal(body, &parsed) != nil {

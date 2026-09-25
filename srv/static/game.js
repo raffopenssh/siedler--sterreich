@@ -164,6 +164,14 @@ const G = {
   parcelPolys: [],      // from export/geojson (polygon data for current KGs)
   buildingFootprints: [], // real building footprint polygons from cadastre
   landusePolys: [],     // real landuse polygons (forests, roads, water, etc.)
+  luTiles: new Set(),   // viewport-landuse tiles fetched (CAD-1)
+  luIds: new Set(),     // landuse polygon dedup keys
+  schlaege: [],         // INVEKOS field polygons (FARM-2): {properties:{id,snar_name,crop_group,area_ha,organic}, geometry}
+  schlagIds: new Set(),
+  schlagTiles: new Set(),
+  schlagGen: 0,         // bumps when fields arrive → parcel→field cache revalidates
+  schlagYear: 0,
+  cropByParcel: {},     // parcel_id → {gen, f|null}
   ezIndex: {},          // kg_code+ez → [parcel features] for quick grouping
   ezHighlight: null,    // {kg, ez} of currently highlighted EZ group
   claimed: [],          // from our DB
@@ -1585,40 +1593,8 @@ async function fetchKGLayer(kg, layer, pagesize) {
   return features;
 }
 
-/** Stream the landuse backdrop for a KG in the background (never blocks loading).
- *  Landuse is only a visual backdrop — in enhanced mode terrain comes from lidar
- *  dominant-type and roads/water from OSM, so it need not gate the game.
- *
- *  For ENHANCED (lidar) KGs we skip the cadastre landuse layer entirely: it's the
- *  single heaviest payload (~7MB vs ~0.85MB parcels / ~2MB footprints), and srtm's
- *  per-parcel dominant_type land cover + OSM road/water lines already provide a
- *  richer, measured backdrop. This is the biggest load-time win. */
-function loadLanduseBackground(kg, attempt) {
-  if (G.enhancedKGs.has(kg)) return; // lidar dom + OSM cover the backdrop — skip the 7MB fetch
-  if (!G.landuseKGs) G.landuseKGs = new Set();
-  if (G.landuseKGs.has(kg)) return; // already streamed
-  G.landuseKGs.add(kg);
-  attempt = attempt || 0;
-  fetchKGLayer(kg, 'landuse').then(landuse => {
-    let added = 0;
-    for (const f of landuse) {
-      if (f.geometry?.type === 'Polygon' || f.geometry?.type === 'MultiPolygon') {
-        G.landusePolys.push(f); added++;
-      }
-    }
-    if (added > 0) { render(); renderMini(); }
-  }).catch(e => {
-    if (e && e.pending && attempt < 4) {
-      // Upstream is still pulling this KG from Zenodo; the download keeps
-      // running server-side, so just come back later (only if still relevant).
-      G.landuseKGs.delete(kg);
-      const wait = Math.min(Math.max(e.retryAfter, 5), 60) * 1000 * (attempt + 1);
-      setTimeout(() => { if (G.kgsLoaded.has(kg)) loadLanduseBackground(kg, attempt + 1); }, wait);
-      return;
-    }
-    console.error('landuse bg fetch failed:', kg, e);
-  });
-}
+// (The whole-KG landuse streamer loadLanduseBackground() was replaced by the
+// per-tile CAD-1 slice loadViewportLanduse(); see loadViewportGeometry.)
 
 /** Fast viewport polygon load. Pulls parcel + footprint geometry for JUST the
  *  given bbox from the server's /api/viewport fast path (upstream R-tree, ~100ms,
@@ -1649,7 +1625,7 @@ async function loadViewportGeometry(b, opts) {
   // dropped, so let a subdivided re-fetch cover it.
   if (data.truncated) G.vpTiles.delete(tileKey);
 
-  let addedP = 0;
+  let addedP = 0, needLanduse = false;
   for (const it of (data.parcels||[])) {
     const id = it.parcel_id;
     if (!id || G.polyIds.has(id) || !it.geometry) continue;
@@ -1662,11 +1638,14 @@ async function loadViewportGeometry(b, opts) {
     if (props.kg_code) {
       G.kgsLoaded.add(props.kg_code);
       loadWaterForKG(props.kg_code);
-      // Non-enhanced KGs still get their landuse polygon backdrop streamed in
-      // (viewport endpoint carries parcels+footprints only). Enhanced KGs skip it.
-      if (!G.enhancedKGs.has(props.kg_code)) loadLanduseBackground(props.kg_code);
+      // Non-enhanced KGs get a landuse backdrop; enhanced KGs have lidar dom + OSM.
+      if (!G.enhancedKGs.has(props.kg_code)) needLanduse = true;
     }
   }
+  // Companion layers for this same tile (CAD-1 viewport landuse slice instead
+  // of the ~7 MB whole-KG export; FARM-2 INVEKOS fields). Background, never awaited.
+  if (needLanduse) loadViewportLanduse(b);
+  loadSchlaege(b);
   for (const it of (data.footprints||[])) {
     const id = it.footprint_id;
     if (!id || G.fpIds.has(id) || !it.geometry) continue;
@@ -1675,6 +1654,66 @@ async function loadViewportGeometry(b, opts) {
     G.buildingFootprints.push({ type:'Feature', properties: props, geometry });
   }
   return { added: addedP, ready: data.ready !== false, truncated: !!data.truncated, retryAfter: data.retry_after_s };
+}
+
+/** Generic viewport-sliced companion layer loader (shared by landuse + Schläge).
+ *  Dedups by quantized tile + feature key, retries ready:false tiles a few times
+ *  while the camera is still nearby. */
+async function loadBboxLayer(b, o) {
+  const q = v => Math.round(v / 0.002) * 0.002;
+  const tileKey = [q(b.w), q(b.s), q(b.e), q(b.n)].map(x => x.toFixed(3)).join(',');
+  if (o.tiles.has(tileKey)) return 0;
+  o.tiles.add(tileKey);
+  let data;
+  try { data = await GET(o.url + '?west=' + b.w + '&south=' + b.s + '&east=' + b.e + '&north=' + b.n); }
+  catch (e) { o.tiles.delete(tileKey); return 0; }
+  if (!data || data.pending || data.ready === false) {
+    o.tiles.delete(tileKey);
+    const attempt = (o.attempts[tileKey] || 0) + 1;
+    if (attempt <= 3) {
+      o.attempts[tileKey] = attempt;
+      const wait = Math.min(Math.max(+(data && data.retry_after_s) || 4, 3), 30) * 1000 * attempt;
+      setTimeout(() => { const v = viewBounds(); if (b.e >= v.w && b.w <= v.e && b.n >= v.s && b.s <= v.n) loadBboxLayer(b, o); }, wait);
+    }
+    return 0;
+  }
+  let added = 0;
+  for (const it of (data[o.key] || [])) {
+    if (!it.geometry || !isAreaGeom(it.geometry)) continue;
+    const id = o.idOf(it);
+    if (!id || o.ids.has(id)) continue;
+    o.ids.add(id);
+    const { geometry, ...props } = it;
+    o.onFeature(props, geometry, data);
+    added++;
+  }
+  if (added) o.done(added, data);
+  return added;
+}
+
+/** CAD-1: landuse polygons for one viewport tile (forest, water, roads, fields). */
+function loadViewportLanduse(b) {
+  loadBboxLayer(b, {
+    url: '/api/viewport-landuse', key: 'landuse', tiles: G.luTiles, ids: G.luIds, attempts: (loadViewportLanduse._a = loadViewportLanduse._a || {}),
+    idOf: it => { const r = biggestRing(it.geometry); return r && r.length ? it.kg_code + '|' + it.code + '|' + it.area_sqm + '|' + r[0][0] + ',' + r[0][1] : null; },
+    onFeature: (props, geometry) => { props.landuse_code = String(props.code || ''); G.landusePolys.push({ type: 'Feature', properties: props, geometry }); },
+    done: () => { render(); renderMini(); },
+  });
+}
+
+/** FARM-2: INVEKOS Schläge — the real crop on every field (AMA, CC BY 4.0). */
+function loadSchlaege(b) {
+  loadBboxLayer(b, {
+    url: '/api/schlaege', key: 'fields', tiles: G.schlagTiles, ids: G.schlagIds, attempts: (loadSchlaege._a = loadSchlaege._a || {}),
+    idOf: it => it.id,
+    onFeature: (props, geometry, data) => {
+      const r = biggestRing(geometry) || [];
+      let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+      for (const c of r) { if (c[0] < w) w = c[0]; if (c[0] > e) e = c[0]; if (c[1] < s) s = c[1]; if (c[1] > n) n = c[1]; }
+      G.schlaege.push({ type: 'Feature', properties: props, geometry, bbox: [w, s, e, n] });
+    },
+    done: (n, data) => { G.schlagGen++; if (data.year) G.schlagYear = data.year; render(); },
+  });
 }
 
 // ---- Viewport tiling / retry ----
@@ -2361,7 +2400,7 @@ function questBriefing(c) {
     } else {
       L('🌾', tr('So geht’s'), tr('Kauf dir einen Acker (Nutzung „Äcker/Wiesen/Weiden“). Goldene Felder sind gerade reif — ein Kauf zur Erntezeit zahlt sich sofort aus.'));
       const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
-      const f = DEV.parcelsNear(p => !owned.has(p.parcel_id) && isCropField(p) && fieldKind(simpleHash(p.parcel_id)) !== 3 && fieldStage(p, null).stage === 'ripe' && (p.area_sqm||0) > 800, 60)[0];
+      const f = DEV.parcelsNear(p => !owned.has(p.parcel_id) && isCropField(p) && fieldKindFor(p, simpleHash(p.parcel_id)) !== 3 && fieldStage(p, null).stage === 'ripe' && (p.area_sqm||0) > 800, 60)[0];
       if (f) brief.act = { label: tr('Reifen Acker zeigen'), run: async () => { const ff = DEV.find(f.parcel_id); if (!ff) return; const [lon, lat] = featureLonLat(ff); questPing(lon, lat, Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(ff), 850); } };
     }
   } else if (t === 'Holzknecht' || t === 'Waldhüter') {
@@ -4333,6 +4372,9 @@ function extractLuCode(lu, p) {
       return fc.some(c => /riverbank|river|stream|canal|drain/.test(c)) ? '59' : '60';
     }
   }
+  // CAD-2: upstream now measures the dominant NS class by polygon *area*
+  // (landuse_areas) — that beats any symbol-count weighting below.
+  if (p.dominant_ns && NS_TABLE[String(p.dominant_ns)]) return String(p.dominant_ns);
   // landuse_summary is the richest source and shares the weighting logic.
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
@@ -4392,6 +4434,18 @@ function getLanduseName(p) {
     const w = G.waterParcels[p.parcel_id];
     const base = LANDUSE_NAMES[extractLuCode('', p)] || 'Gewässer';
     return '💧 ' + base + (w.name ? ' – ' + w.name : '') + ' (' + Math.round(wf*100) + '% Wasser lt. OSM)';
+  }
+  // CAD-2: measured m² per NS class → "Äcker, Wiesen oder Weiden 86 %, Gebäude 14 %"
+  if (p.landuse_areas && typeof p.landuse_areas === 'object') {
+    const tot = Object.values(p.landuse_areas).reduce((a, b) => a + (+b || 0), 0);
+    const rows = Object.entries(p.landuse_areas).filter(([c, a]) => +a > 0 && NS_TABLE[c])
+      .sort((a, b) => b[1] - a[1]);
+    if (tot > 0 && rows.length) {
+      return rows.slice(0, 4).map(([c, a], i) => {
+        const pct = Math.round(a / tot * 100);
+        return NS_TABLE[c].name + (rows.length > 1 && (i > 0 || pct < 100) ? ' ' + Math.max(1, pct) + ' %' : '');
+      }).join(', ');
+    }
   }
   if (p.landuse_summary) {
     const parsed = parseLanduseSummary(p.landuse_summary);
@@ -4512,7 +4566,7 @@ function drawLanduseSprites(ctx, claimMap) {
         const [sx, sy] = toScreen(lon, lat);
         n++;
         if (kind === 3) drawMeadowSprite(ctx, sx, sy, (hash + r * 3 + c) % 5, hash + r * 31 + c);
-        else drawCropSprite(ctx, sx, sy, kind === 2 ? 'haystack' : 'sheaf', hash + r * 31 + c);
+        else drawCropSprite(ctx, sx, sy, kind === 2 ? 'haystack' : kind === 1 ? 'maize' : 'sheaf', hash + r * 31 + c);
       }
       continue;
     }
@@ -4548,6 +4602,59 @@ function drawLanduseSprites(ctx, claimMap) {
 // Cost: one clip + one fill per field parcel.
 function fieldKind(hash) { return Math.abs(hash) % 4; }   // 0,1,2 crop field (cycle) · 3 meadow (static)
 
+// ---- INVEKOS crops (FARM-2) ----
+// Where an AMA Schlag covers the parcel centroid, the *real* crop decides the
+// field kind (texture, sprites, meadow-vs-crop) instead of the parcel hash.
+// The cycle phase stays hash-based so neighbours still ripen at different
+// times. crop_group is the coarse class upstream derives from the SNAR code.
+const CROP_GROUPS = {
+  getreide: {kind: 0, emoji: '🌾', name: 'Getreide'},
+  mais:     {kind: 1, emoji: '🌽', name: 'Mais'},
+  sonst:    {kind: 1, emoji: '🌱', name: 'Feldfrucht'},
+  obst:     {kind: 2, emoji: '🍎', name: 'Obst'},
+  wein:     {kind: 2, emoji: '🍇', name: 'Wein'},
+  gruenland:{kind: 3, emoji: '🐄', name: 'Grünland'},
+  alm:      {kind: 3, emoji: '🏔️', name: 'Alm'},
+  brache:   {kind: 3, emoji: '🌼', name: 'Brache'},
+};
+const CROP_MEADOW = new Set(['gruenland', 'alm', 'brache']);
+/** Schlag feature covering the parcel centroid, or null. Cached per schlagGen. */
+function parcelSchlag(p) {
+  if (!p || !p.parcel_id || !G.schlaege.length) return null;
+  const c = G.cropByParcel[p.parcel_id];
+  if (c && (c.f || c.gen === G.schlagGen)) return c.f;
+  let lon = p.lon, lat = p.lat;
+  if (lon == null || lat == null) { const f = G.sel && G.sel.properties === p ? G.sel : null; if (f) [lon, lat] = featureLonLat(f); }
+  let hit = null;
+  if (lon != null) {
+    for (const f of G.schlaege) {
+      const bb = f.bbox;
+      if (lon < bb[0] || lon > bb[2] || lat < bb[1] || lat > bb[3]) continue;
+      if (pipGeom(lon, lat, f.geometry)) { hit = f; break; }
+    }
+  }
+  G.cropByParcel[p.parcel_id] = {gen: G.schlagGen, f: hit};
+  return hit;
+}
+function fieldKindFor(p, hash) {
+  const f = parcelSchlag(p);
+  const cg = f && CROP_GROUPS[f.properties.crop_group];
+  return cg ? cg.kind : fieldKind(hash);
+}
+/** "KÖRNERMAIS" → "Körnermais"; "MÄHWIESE/-WEIDE DREI UND MEHR NUTZUNGEN" → "Mähwiese/-Weide drei und mehr Nutzungen" */
+function cropName(f) {
+  const raw = String(f.properties.snar_name || '').toLowerCase();
+  const small = new Set(['und', 'mit', 'ohne', 'drei', 'zwei', 'mehr', 'als', 'oder', 'im', 'in', 'zur', 'für']);
+  return raw.split(' ').map((w, i) => (i > 0 && small.has(w)) ? w : w.replace(/(^|[\/-])(\p{L})/gu, (m, a, b) => a + b.toUpperCase())).join(' ');
+}
+function cropLabel(f) {
+  const pr = f.properties, cg = CROP_GROUPS[pr.crop_group] || CROP_GROUPS.sonst;
+  let name = cropName(f);
+  if (name.length > 26) name = cg.name;
+  const ha = pr.area_ha >= 1 ? pr.area_ha.toFixed(1).replace('.', ',') + ' ha' : Math.round(pr.area_ha * 10000) + ' m²';
+  return cg.emoji + ' ' + name + ' · ' + ha + (pr.organic ? ' · 🌿 ' + tr('Bio') : '');
+}
+
 // ---- Field crop cycle (contract shared with srv/fieldcycle.go) ----
 // Every Acker runs ploughed → growing → ripe → stubble on a 40-min real-time
 // cycle, phase-shifted by the parcel hash so neighbours ripen at different
@@ -4562,7 +4669,7 @@ function harvestYield(areaSqm) { return Math.max(5, Math.min(300, Math.round(are
 /** @returns {{kind,stage,t,ripeInS,harvested,mine}} stage ∈ fallow|meadow|ploughed|growing|ripe|stubble */
 function fieldStage(p, claim, now = Date.now()) {
   const hash = simpleHash(p.parcel_id || '');
-  const kind = fieldKind(hash);
+  const kind = fieldKindFor(p, hash);
   const mine = !!claim && claim.player_id === G.player?.id;
   if (claim?.converted_to) return {kind, stage: 'fallow', t: 0, ripeInS: 0, harvested: false, mine};
   if (kind === 3) return {kind, stage: 'meadow', t: 0, ripeInS: 0, harvested: false, mine};
@@ -4706,6 +4813,18 @@ function drawCropSprite(ctx, x, y, kind, seed) {
     px(-2, -6, 1, 1, UMB); px(3, -4, 1, 1, UMB);  // loose straw shading
     px(0, -13, 1, 4, '#5a4020');                  // pole tip
     if (seed % 3 === 0) { px(5, -2, 2, 1, GOLD); px(-7, -1, 2, 1, GOLD); } // fallen straw
+  } else if (kind === 'maize') {
+    // maize stook: dried stalks tied upright, two cobs peeking out, husk leaves
+    const lean = (seed % 3) - 1;
+    const LEAF = '#8aa050', DRY = '#c8b070', COB = '#e8c030', HUSK = '#a89860';
+    px(-4, 1, 8, 1, SH);
+    px(-2, -8, 4, 9, DRY); px(-1, -11, 2, 3, DRY);
+    px(-2, -8, 1, 9, HUSK); px(1, -8, 1, 9, HUSK);
+    px(-2, -3, 4, 1, '#5a4020');                  // tie
+    px(-4 + lean, -6, 2, 1, LEAF); px(-5 + lean, -7, 1, 1, LEAF);   // leaves
+    px(2 + lean, -5, 2, 1, LEAF); px(4 + lean, -6, 1, 1, LEAF);
+    px(-3, -7, 1, 3, COB); px(2, -6, 1, 3, COB);  // cobs
+    px(0 + lean, -12, 1, 1, HUSK); px(-1 + lean, -13, 1, 1, HUSK); px(1 + lean, -13, 1, 1, HUSK); // tassel
   } else {
     // sheaf: stalk bundle (trapezoid), tie band, fanned ears
     const lean = (seed % 3) - 1;
@@ -7942,6 +8061,17 @@ function showParcelPopup(f, tappedFp) {
     fieldL.textContent = tr('Wald');
     fieldEl.textContent = claim.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') + ' · ' + tr('außer Nutzung') : forestStageLabel(forestStage(claim));
   } else { fieldEl.style.display = fieldL.style.display = 'none'; }
+  {
+    // FARM-2: the real crop on this field (AMA INVEKOS Schlag under the parcel centroid)
+    const cropEl = document.getElementById('pp-crop'), cropL = document.getElementById('pp-crop-l');
+    const sf = cropEl ? parcelSchlag(p) : null;
+    if (sf) {
+      cropEl.style.display = cropL.style.display = '';
+      cropL.textContent = tr('Anbau');
+      cropEl.textContent = cropLabel(sf);
+      cropEl.title = 'INVEKOS ' + (G.schlagYear || '') + ' · AMA, CC BY 4.0';
+    } else if (cropEl) cropEl.style.display = cropL.style.display = 'none';
+  }
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
 
   renderBuildingRows(tappedFp);
@@ -8762,13 +8892,14 @@ window.doClaim = async function() {
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
   Herald.hint('first_claim');
-  if (isCropField(p) && fieldKind(simpleHash(p.parcel_id)) !== 3) Herald.hint('first_field');
+  if (isCropField(p) && fieldKindFor(p, simpleHash(p.parcel_id)) !== 3) Herald.hint('first_field');
 };
 
 window.doHarvest = async function() {
   if (!G.sel) return;
   const p = G.sel.properties;
-  const res = await POST('/api/harvest-parcel', {session_id:G.session.id, player_id:G.player.id, parcel_id:p.parcel_id});
+  const sf = parcelSchlag(p);
+  const res = await POST('/api/harvest-parcel', {session_id:G.session.id, player_id:G.player.id, parcel_id:p.parcel_id, crop_group: sf ? sf.properties.crop_group : ''});
   if (res.error) { toast(res.error,'err'); return; }
   const [lon, lat] = featureLonLat(G.sel);
   spawnCollectFX({lon, lat}, '+' + res.coins + ' 🪙', TREASURE_RARITY.coins);

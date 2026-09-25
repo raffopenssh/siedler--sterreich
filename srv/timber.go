@@ -127,12 +127,87 @@ func (s *Server) timberCatalog(ctx context.Context) (map[string]any, error) {
 	return m, nil
 }
 
+// kgStateDigit: Bundesland digit as used by /data/prices/state/{1-9}.json
+// (1 Bgld, 2 Ktn, 3 NÖ, 4 OÖ, 5 Sbg, 6 Stmk, 7 T, 8 Vbg, 9 W).
+var stateDigit = map[string]string{"Burgenland": "1", "Kärnten": "2", "Niederösterreich": "3", "Oberösterreich": "4",
+	"Salzburg": "5", "Steiermark": "6", "Tirol": "7", "Vorarlberg": "8", "Wien": "9"}
+
+// timberStatePrices (HOLZ-2) reads the ≤10 KB per-state price file instead of
+// the 700 KB catalogue: 7 LK series, latest value + date. Cached 24 h.
+func (s *Server) timberStatePrices(ctx context.Context, state string) (timberPrices, bool) {
+	p := fallbackPrices
+	p.State = state
+	digit, ok := stateDigit[state]
+	if !ok {
+		return p, false
+	}
+	key := "timber:state:" + digit
+	raw, err := s.Q.GetCachedData(ctx, key)
+	if err != nil {
+		cctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(cctx, "GET", timberAPI+"/data/prices/state/"+digit+".json", nil)
+		resp, err := upstreamClient.Do(req)
+		if err != nil {
+			return p, false
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return p, false
+		}
+		b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+		if err != nil || !json.Valid(b) {
+			return p, false
+		}
+		raw = string(b)
+		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: raw, ExpiresAt: time.Now().Add(24 * time.Hour)})
+	}
+	var d struct {
+		StateName string `json:"state_name"`
+		Series    map[string]struct {
+			Latest     float64 `json:"latest"`
+			LatestDate string  `json:"latest_date"`
+			Unit       string  `json:"unit"`
+		} `json:"series"`
+	}
+	if json.Unmarshal([]byte(raw), &d) != nil || len(d.Series) == 0 {
+		return p, false
+	}
+	minDate := fmt.Sprint(time.Now().Year() - 3)
+	set := func(dst *float64, code string, mul float64) {
+		sr, ok := d.Series[code]
+		if !ok || sr.Latest <= 0 || len(sr.LatestDate) < 4 || sr.LatestDate < minDate {
+			return
+		}
+		*dst = math.Round(sr.Latest*mul*100) / 100
+		if sr.LatestDate > p.Date {
+			p.Date = sr.LatestDate
+		}
+		p.Live = true
+	}
+	set(&p.Spruce, "LK_BLFIM2b", 1)
+	set(&p.Larch, "LK_BLLA3aplus", 1)
+	set(&p.Pine, "LK_BLKI2aplus", 1)
+	set(&p.Beech, "LK_BLBU3plus", 1)
+	set(&p.Industrial, "LK_ISFI_FMO", 1)
+	set(&p.FuelHard, "LK_BHH", 1.4) // EURO/RM → per Fm
+	set(&p.FuelSoft, "LK_BHW", 1.4)
+	if !p.Live {
+		return p, false
+	}
+	p.Source = "LK " + state + " (preise.agrarforschung.at)"
+	return p, true
+}
+
 // timberPricesFor extracts the regional assortment prices for a state from
 // the catalogue (LK chamber ranges), falling back to national STAT series and
 // finally to the built-in table. Units are normalised to EUR per Efm.
 func (s *Server) timberPricesFor(ctx context.Context, state string) timberPrices {
 	p := fallbackPrices
 	p.State = state
+	if sp, ok := s.timberStatePrices(ctx, state); ok {
+		return sp
+	}
 	cat, err := s.timberCatalog(ctx)
 	if err != nil {
 		log.Printf("timber catalog: %v", err)
