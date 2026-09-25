@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -38,6 +39,10 @@ type Server struct {
 	TemplatesDir string
 	StaticDir    string
 	Q            *dbgen.Queries
+
+	// CAD-5: last seen geometry assembly tag per KG (+ purge counter for /llm/ahead & DEV)
+	assemblySeen   sync.Map
+	assemblyPurges atomic.Int64
 
 	// SSE connections for real-time updates
 	sseClients map[string]map[chan string]bool // session_id -> set of channels
@@ -252,6 +257,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
 	mux.HandleFunc("GET /api/trees", s.handleTrees)           // LID-2 tree apices
 	mux.HandleFunc("GET /api/hofstellen", s.handleHofstellen) // FARM-4 farmsteads
+	mux.HandleFunc("GET /api/buildings", s.handleBuildings)   // LID-3 measured heights by footprint_id
 
 	// Building & KG info (slim, aggregated, cached)
 	mux.HandleFunc("GET /api/building-info", s.handleBuildingInfo)
@@ -665,6 +671,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := randomID(16)
 	inviteCode := randomID(6)
 
+	// Glitch #5: the picker sends the Gemeinde centroid, which for elongated
+	// municipalities sits in the forest 2 km from the village. Snap to the
+	// settlement (OSM place) when one is close by.
+	if lon, lat, ok := settlementCenter(req.MunicipalityName, req.CenterLon, req.CenterLat); ok {
+		req.CenterLon, req.CenterLat = lon, lat
+	}
+
 	err := s.Q.CreateSession(r.Context(), dbgen.CreateSessionParams{
 		ID:               sessionID,
 		Name:             req.Name,
@@ -805,6 +818,9 @@ func (s *Server) handleGetChallenges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.backfillChallenges(r.Context(), r.PathValue("id"), playerID)
+	// Glitch #1: quests satisfied before the client reconnected (or by actions
+	// that don't call autoComplete) stayed open forever. Sweep on every fetch.
+	s.autoCompleteChallenges(r.Context(), r.PathValue("id"), playerID)
 	challenges, err := s.Q.GetPlayerChallenges(r.Context(), dbgen.GetPlayerChallengesParams{
 		SessionID: r.PathValue("id"),
 		PlayerID:  playerID,
@@ -2263,6 +2279,56 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// watchAssembly (CAD-5): upstream tags every viewport response with the
+// geometry assembly version per KG touched. When a KG we have seen before
+// comes back with a new version/reprocessed_at, its old polygons in our
+// caches are wrong (ring order, tile-clipped area) — exactly the "parcel
+// looks fine but is unclickable" class. Purge the geometry caches once
+// instead of by hand after every upstream fix.
+func (s *Server) watchAssembly(body []byte) {
+	var top struct {
+		Assembly map[string]struct {
+			Version       string `json:"version"`
+			ReprocessedAt string `json:"reprocessed_at"`
+		} `json:"assembly"`
+	}
+	if json.Unmarshal(body, &top) != nil || len(top.Assembly) == 0 {
+		return
+	}
+	ctx := context.Background()
+	changed := []string{}
+	for kg, a := range top.Assembly {
+		if !validKG(kg) {
+			continue
+		}
+		tag := a.Version + "@" + a.ReprocessedAt
+		key := "assembly:" + kg
+		if cur, ok := s.assemblySeen.Load(kg); ok {
+			if cur.(string) != tag {
+				changed = append(changed, kg)
+			}
+		} else if old, err := s.Q.GetCachedData(ctx, key); err == nil && old != tag {
+			changed = append(changed, kg)
+		}
+		if cur, ok := s.assemblySeen.Load(kg); !ok || cur.(string) != tag {
+			s.assemblySeen.Store(kg, tag)
+			s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: key, Data: tag, ExpiresAt: time.Now().Add(365 * 24 * time.Hour)})
+		}
+	}
+	if len(changed) == 0 {
+		return
+	}
+	slog.Info("assembly version changed upstream — purging geometry caches", "kgs", changed)
+	// Viewport tiles are bbox-keyed (no KG in the key), so they all go; the
+	// per-id / per-KG caches only for the changed KGs.
+	s.DB.ExecContext(ctx, "DELETE FROM api_cache WHERE cache_key LIKE 'viewport:%' OR cache_key LIKE 'vplanduse:%' OR cache_key LIKE 'bldg:%'")
+	for _, kg := range changed {
+		s.DB.ExecContext(ctx, "DELETE FROM api_cache WHERE cache_key LIKE ? OR cache_key LIKE ? OR cache_key LIKE ? OR cache_key LIKE ?",
+			"geom:parcels:"+kg+"-%", "%/export/geojson%kg="+kg+"%", "%/spatial/%kg="+kg+"%", "timber:"+kg+"-%")
+	}
+	s.assemblyPurges.Add(1)
+}
+
 // buildViewportWarm calls buildViewport and, if upstream reported the tile not
 // fully warm (ready=false — some KG intersecting the bbox is still being
 // fetched from Zenodo, ~2s), retries a couple of times before answering.
@@ -2376,6 +2442,7 @@ func (s *Server) buildViewport(bboxQS, cacheKey string) ([]byte, int, *pendingIn
 	}
 	parcels, pReady, pTrunc := extract(pr.body, "parcels", dropParcel)
 	foots, fReady, fTrunc := extract(fr.body, "footprints", dropFootprint)
+	s.watchAssembly(pr.body)
 
 	var b bytes.Buffer
 	b.WriteString(`{"parcels":[`)
@@ -4006,9 +4073,10 @@ func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniName s
 		var sp struct {
 			Data struct {
 				Results []struct {
-					KgCode string  `json:"kg_code"`
-					Lon    float64 `json:"lon"`
-					Lat    float64 `json:"lat"`
+					KgCode  string  `json:"kg_code"`
+					Lon     float64 `json:"lon"`
+					Lat     float64 `json:"lat"`
+					AreaSqm float64 `json:"area_sqm"`
 				} `json:"results"`
 			} `json:"data"`
 		}
@@ -4018,10 +4086,22 @@ func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniName s
 		var local []struct {
 			Lon, Lat float64
 		}
+		// site_parcels is sorted by area desc: the first rows are the Danube
+		// bed and 3 km² Almen whose centroid floats on water/empty green
+		// (glitch #3). Prefer parcels ≤ 3 ha, whose centroid is land.
+		var big []struct{ Lon, Lat float64 }
 		for _, pr := range sp.Data.Results {
-			if kgSet[pr.KgCode] && pr.Lon != 0 {
-				local = append(local, struct{ Lon, Lat float64 }{pr.Lon, pr.Lat})
+			if !kgSet[pr.KgCode] || pr.Lon == 0 {
+				continue
 			}
+			if pr.AreaSqm > 0 && pr.AreaSqm <= 30000 {
+				local = append(local, struct{ Lon, Lat float64 }{pr.Lon, pr.Lat})
+			} else if pr.AreaSqm <= 300000 {
+				big = append(big, struct{ Lon, Lat float64 }{pr.Lon, pr.Lat})
+			}
+		}
+		if len(local) == 0 {
+			local = big
 		}
 		if len(local) == 0 {
 			continue
@@ -4031,8 +4111,13 @@ func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniName s
 		if len(local) < n {
 			n = len(local)
 		}
+		usedPos := map[string]bool{}
 		for i := 0; i < n && placed < 5; i++ {
 			idx := int((hash + uint64(i)*104729 + uint64(placed)*7919) % uint64(len(local)))
+			for tries := 0; tries < len(local) && usedPos[fmt.Sprintf("%.5f,%.5f", local[idx].Lon, local[idx].Lat)]; tries++ {
+				idx = (idx + 1) % len(local) // never two chests on one parcel
+			}
+			usedPos[fmt.Sprintf("%.5f,%.5f", local[idx].Lon, local[idx].Lat)] = true
 			si := int((hash + uint64(placed)*31) % uint64(len(redListSpecies)))
 			sp2 := redListSpecies[si]
 			err := s.Q.CreateTreasure(ctx, dbgen.CreateTreasureParams{
@@ -4456,4 +4541,58 @@ func (s *Server) autoCompleteChallenges(ctx context.Context, sessionID, playerID
 		done = append(done, map[string]any{"id": c.id, "title": c.title, "coins": c.coins, "xp": c.xp})
 	}
 	return done
+}
+
+
+// settlementCenter resolves the main settlement of a municipality via the
+// cadastre OSM address search (place nodes: city/town/village/hamlet). Returns
+// ok=false when nothing plausible lies within 8 km of the given centroid, so a
+// wrong geocode can never move a session to another valley. Budget 2.5 s.
+func settlementCenter(name string, lon, lat float64) (float64, float64, bool) {
+	if name == "" {
+		return 0, 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", cadastreAPI+"/search/address_osm?limit=8&q="+url.QueryEscape(name), nil)
+	resp, err := upstreamClient.Do(req)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	var d struct {
+		Data []struct {
+			Lon       float64 `json:"lon"`
+			Lat       float64 `json:"lat"`
+			PlaceType string  `json:"place_type"`
+			OsmType   string  `json:"osm_type"`
+			Class     string  `json:"class"`
+			Address   struct {
+				City    string `json:"city"`
+				Town    string `json:"town"`
+				Village string `json:"village"`
+			} `json:"address"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d) != nil {
+		return 0, 0, false
+	}
+	rank := map[string]int{"city": 4, "town": 4, "village": 3, "hamlet": 2, "administrative": 1}
+	best, bestR := -1, 0
+	for i, it := range d.Data {
+		r := rank[it.PlaceType]
+		if r == 0 || it.Lon == 0 {
+			continue
+		}
+		if distM(lon, lat, it.Lon, it.Lat) > 8000 {
+			continue
+		}
+		if r > bestR {
+			best, bestR = i, r
+		}
+	}
+	if best < 0 {
+		return 0, 0, false
+	}
+	return d.Data[best].Lon, d.Data[best].Lat, true
 }

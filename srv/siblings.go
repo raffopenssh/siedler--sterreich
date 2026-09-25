@@ -18,6 +18,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -216,3 +217,92 @@ func (s *Server) handleHofstellen(w http.ResponseWriter, r *http.Request) {
 	s.bboxProxyOpt(w, r, "hof:", farmAPI+"/api/hofstellen?", "points",
 		nil, []string{"year", "source", "license"}, 24*time.Hour, true)
 }
+
+// GET /api/buildings?west&south&east&north  (LID-3)
+// Measured building heights from the srtm-lidar R-tree, keyed by the cadastre
+// footprint_id (≥50 % overlap match upstream). Replaces the ~20 m centroid-grid
+// matching against the 1 MB lidar-slim: exact in terraces/courtyards and
+// available per viewport tile for every indexed KG.
+func (s *Server) handleBuildings(w http.ResponseWriter, r *http.Request) {
+	s.bboxProxyOpt(w, r, "bldg:", lidarAPI+"/query/buildings?limit=3000&", "buildings",
+		map[string]bool{"building_id": true, "kg_code": true, "ground_m": true, "footprint_area_sqm": true, "ns": true},
+		[]string{"footprint_ids_ready"}, 6*time.Hour, true)
+}
+
+// prewarmKGs asks both upstreams to warm a list of KGs (fire-and-forget).
+func prewarmKGs(kgs []string) {
+	if len(kgs) == 0 {
+		return
+	}
+	if len(kgs) > 50 {
+		kgs = kgs[:50]
+	}
+	list := strings.Join(kgs, ",")
+	for _, base := range []string{cadastreAPI, lidarAPI} {
+		go func(base string) {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(c, "POST", base+"/prewarm?kgs="+list, nil)
+			if r, err := upstreamClient.Do(req); err == nil {
+				io.Copy(io.Discard, io.LimitReader(r.Body, 64<<10))
+				r.Body.Close()
+			}
+		}(base)
+	}
+}
+
+// kgsAlongPath samples a LineString every ~stepM metres and resolves the KG
+// under each sample via cadastre POST /spatial/points (one call). Used to
+// prewarm the reach chain of a Wassertropfen-Reise (glitch #11).
+func kgsAlongPath(coords [][]float64, stepM float64) []string {
+	if len(coords) < 2 {
+		return nil
+	}
+	type pt struct {
+		Lon float64 `json:"lon"`
+		Lat float64 `json:"lat"`
+	}
+	var pts []pt
+	acc := stepM
+	for i := 1; i < len(coords) && len(pts) < 200; i++ {
+		a, b := coords[i-1], coords[i]
+		if len(a) < 2 || len(b) < 2 {
+			continue
+		}
+		dx := (b[0] - a[0]) * 111320 * math.Cos(a[1]*math.Pi/180)
+		dy := (b[1] - a[1]) * 110574
+		d := math.Hypot(dx, dy)
+		acc += d
+		if acc >= stepM {
+			pts = append(pts, pt{math.Round(b[0]*1e4) / 1e4, math.Round(b[1]*1e4) / 1e4})
+			acc = 0
+		}
+	}
+	if len(pts) == 0 {
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{"points": pts, "layer": "parcels", "attrs_only": true, "fields": "kg_code"})
+	c, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(c, "POST", cadastreAPI+"/spatial/points", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := upstreamClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	// Be liberal in what we accept: any "kg_code":"NNNNN" in the response.
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range kgCodeRe.FindAllStringSubmatch(string(raw), -1) {
+		k := m[1]
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+var kgCodeRe = regexp.MustCompile(`"kg(?:_code)?"\s*:\s*"(\d{5})"`)

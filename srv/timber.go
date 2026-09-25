@@ -320,6 +320,7 @@ type timberEstimate struct {
 	Elev        float64                     `json:"elev_m,omitempty"`
 	Slope       float64                     `json:"slope_deg,omitempty"`
 	V3          string                      `json:"v3,omitempty"` // "" | ok | cold | error | off
+	History     *timberHistory              `json:"history,omitempty"` // HOLZ-3 Hansen loss history of this plot
 	TookMs      int64                       `json:"took_ms"`
 }
 
@@ -428,6 +429,91 @@ func (s *Server) v3Trees(kg string, geom json.RawMessage, budget time.Duration) 
 
 func clampF(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v)) }
 
+// timberHistory: what the Hansen GFC 30 m record says happened on this plot
+// since 2001 (holz POST /api/plot-context?fast=1, HOLZ-3). A stand that was
+// clear-cut in 2019 cannot carry a mature stock in 2026, whatever the
+// cadastre says — young_frac scales the heuristic Vfm down.
+type timberHistory struct {
+	ForestShare2000 float64 `json:"forest_share_2000_pct"`
+	LossTotalHa     float64 `json:"loss_total_ha"`
+	LossRecentHa    float64 `json:"loss_recent_ha"` // last 10 years
+	LastLossYear    int     `json:"last_loss_year,omitempty"`
+	LastLossHa      float64 `json:"last_loss_ha,omitempty"`
+	YoungFrac       float64 `json:"young_frac"`        // share of canopy regrowing (<25 y)
+	StockFactor     float64 `json:"stock_factor"`      // applied to heuristic Vfm (1 = untouched)
+	NetFluxTCO2eHa  float64 `json:"net_flux_tco2e_ha"` // cumulative 2001-2024, negative = sink
+	Source          string  `json:"source"`
+}
+
+var holzCold sync.Map // "plot" → time.Time (429/timeout backoff)
+
+// plotHistory calls the fast plot-context with a hard budget; nil on any miss.
+func plotHistory(geom json.RawMessage, canopyHa float64, budget time.Duration) *timberHistory {
+	if t, ok := holzCold.Load("plot"); ok && time.Since(t.(time.Time)) < 2*time.Minute {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", holzAPI+"/api/plot-context?fast=1", bytes.NewReader(geom))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := upstreamClient.Do(req)
+	if err != nil {
+		holzCold.Store("plot", time.Now())
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 429 {
+		holzCold.Store("plot", time.Now())
+		return nil
+	}
+	if resp.StatusCode != 200 {
+		return nil
+	}
+	var out struct {
+		Plot struct {
+			ForestShare float64            `json:"forest_share_2000_pct"`
+			LossByYear  map[string]float64 `json:"loss_ha_by_year"`
+			LossTotal   float64            `json:"loss_total"`
+			NetFlux     float64            `json:"net_flux_tco2e_ha"`
+		} `json:"plot"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out) != nil {
+		return nil
+	}
+	h := &timberHistory{ForestShare2000: out.Plot.ForestShare, LossTotalHa: out.Plot.LossTotal, NetFluxTCO2eHa: out.Plot.NetFlux, Source: "hansen_gfc_2024", StockFactor: 1}
+	year := time.Now().Year()
+	var lostStock float64 // ha-equivalents of mature stock missing
+	for ys, ha := range out.Plot.LossByYear {
+		if ha <= 0 {
+			continue
+		}
+		var y int
+		fmt.Sscanf(ys, "%d", &y)
+		if y == 0 {
+			continue
+		}
+		age := year - y
+		if age <= 10 {
+			h.LossRecentHa += ha
+		}
+		if y > h.LastLossYear {
+			h.LastLossYear, h.LastLossHa = y, ha
+		}
+		if age < 25 {
+			h.YoungFrac += ha
+		}
+		// stock regrows roughly with (age/50)^1.6: 10 y → 8 %, 25 y → 33 %
+		lostStock += ha * (1 - math.Pow(clampF(float64(age)/50, 0, 1), 1.6))
+	}
+	if canopyHa > 0 {
+		h.YoungFrac = math.Round(clampF(h.YoungFrac/canopyHa, 0, 1)*100) / 100
+		h.StockFactor = math.Round(clampF(1-lostStock/canopyHa, 0.08, 1)*100) / 100
+	}
+	h.LossRecentHa = math.Round(h.LossRecentHa*100) / 100
+	h.LastLossHa = math.Round(h.LastLossHa*100) / 100
+	return h
+}
+
 // estimateTimber builds the harvest-value estimate for one parcel.
 // landuse = dominant NS code as stored on the claim / sent by the client.
 func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm float64, landuse string, tryV3 bool) timberEstimate {
@@ -511,8 +597,19 @@ func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm flo
 	//    (h 15 → 175, 22 → 375, 27 → 560 Vfm/ha).
 	var vfm float64
 	canopyHa := e.AreaHa * treeFrac
+	// HOLZ-3: the Hansen loss record of the plot, fetched alongside v3 (same budget).
+	histCh := make(chan *timberHistory, 1)
+	geom, gerr := json.RawMessage(nil), error(nil)
+	if tryV3 && e.AreaHa < 200 {
+		geom, gerr = s.parcelGeometry(ctx, pid)
+	}
+	if gerr == nil && geom != nil {
+		go func() { histCh <- plotHistory(geom, canopyHa, 2500*time.Millisecond) }()
+	} else {
+		histCh <- nil
+	}
 	if tryV3 && isV2Product(pv) && e.AreaHa < 60 {
-		if geom, err := s.parcelGeometry(ctx, pid); err == nil {
+		if gerr == nil && geom != nil {
 			sum, st := s.v3Trees(kg, geom, 2500*time.Millisecond)
 			e.V3 = st
 			if sum != nil && sum.NTrees > 0 && sum.Volume > 0 {
@@ -553,8 +650,13 @@ func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm flo
 	} else if tryV3 {
 		e.V3 = "off"
 	}
+	e.History = <-histCh
 	if vfm == 0 {
 		vfm = 0.9 * math.Pow(clampF(hMean, 3, 40), 1.95) * canopyHa
+		// Lidar heights already see a young stand; the NS-56 default does not.
+		if e.History != nil && e.Source == "landuse" {
+			vfm *= e.History.StockFactor
+		}
 	}
 	e.HMean, e.HMax = math.Round(hMean*10)/10, math.Round(hMax*10)/10
 	e.Vfm = math.Round(vfm)
@@ -693,7 +795,11 @@ func (s *Server) handleHarvestForest(w http.ResponseWriter, r *http.Request) {
 	if claim.Landuse != nil {
 		lu = *claim.Landuse
 	}
-	est := s.estimateTimber(r.Context(), claim.KgCode, req.ParcelID, claim.AreaSqm, lu, false)
+	// Pay what the popup promised: reuse the cached (v3/history-backed) estimate.
+	var est timberEstimate
+	if cached, err := s.Q.GetCachedData(r.Context(), "timber:"+req.ParcelID); err != nil || json.Unmarshal([]byte(cached), &est) != nil || est.Coins == 0 {
+		est = s.estimateTimber(r.Context(), claim.KgCode, req.ParcelID, claim.AreaSqm, lu, false)
+	}
 	if !est.IsForest {
 		jsonErr(w, "Das ist kein Wald", 400)
 		return

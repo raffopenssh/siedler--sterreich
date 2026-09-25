@@ -38,7 +38,24 @@ and runtime-fetched data carry their own licences:
 * Cadastre, LiDAR, land-use and municipality data fetched at runtime:
   BEV – Bundesamt für Eich- und Vermessungswesen (CC BY 4.0, bearbeitet),
   Statistik Austria (CC BY 4.0), EEA Natura 2000, RIS (CC BY 4.0),
-  ESA WorldCover 2021 (CC BY 4.0), Hansen GFC (CC BY 4.0),
+  ESA WorldCover 2021 (CC BY 4.0), Hansen GFC-2024 v1.12 and Harris et al.
+  forest carbon flux via Global Forest Watch (CC BY 4.0),
   OpenStreetMap contributors (ODbL, display only).
+* Agricultural layers fetched at runtime via farm-subsidies-austria:
+  AMA / BML INVEKOS Schläge (field blocks) and Hofstellen (farmsteads, hashed
+  ids only) from INSPIRE / data.gv.at, and municipal subsidy aggregates from
+  the AMA Transparenzdatenbank — CC BY 4.0, aggregated, no personal data.
+* Forestry data fetched at runtime via holzeinschlag-at: Statistik Austria
+  Holzeinschlag (CC BY 4.0), LK Holzmarktberichte via
+  preise.agrarforschung.at (model values).
+* Water data fetched at runtime via groundwater-at: BML eHYD groundwater
+  levels, gauges and stations, Wasserschatz Österreich 2021, WISE / EEA water
+  quality and WFD status, Copernicus EDO drought index (CC BY 4.0);
+  water flow paths from MERIT Hydro / MERIT-Basins via mghydro.com
+  (CC BY-NC-SA 4.0 — display only, non-commercial).
+* Terrain layers fetched at runtime via srtm-lidar-at: hillshade tiles,
+  tree apices and building heights derived from the BEV ALS model
+  (CC BY 4.0, bearbeitet); srtm-lidar-at attribution list at
+  https://srtm-lidar-at.exe.xyz:8000/api/v1/attribution
   Full attribution list: docs/grants/data-licensing-check.md and the
   in-app Impressum.

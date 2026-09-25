@@ -266,7 +266,9 @@ func subsidyCoins(farm map[string]any, areaSqm float64, organic bool) int64 {
 	if organic {
 		c *= 1.3
 	}
-	return int64(math.Min(250, math.Round(c)))
+	// Glitch #15: a 1 200 m² Weide computed to 2🪙/h, which reads as a joke.
+	// Real payments have a per-application floor too (AMA Mindestbetrag).
+	return int64(math.Min(250, math.Max(5, math.Round(c))))
 }
 
 // ---- the dossier ----

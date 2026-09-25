@@ -1645,6 +1645,8 @@ async function loadViewportGeometry(b, opts) {
     addedP++;
     if (props.kg_code) {
       G.kgsLoaded.add(props.kg_code);
+      if (props.kg_name) G.kgNames[props.kg_code] = { name: props.kg_name, gemeinde: props.gemeinde_name || '' };
+      else ensureKGName(props.kg_code);
       loadWaterForKG(props.kg_code);
       // Non-enhanced KGs get a landuse backdrop; enhanced KGs have lidar dom + OSM.
       if (!G.enhancedKGs.has(props.kg_code)) needLanduse = true;
@@ -1658,6 +1660,7 @@ async function loadViewportGeometry(b, opts) {
   loadWaterProtection(b);   // GW-5 Wasserschutzgebiete
   loadTrees(b);             // LID-2 measured tree apices
   loadHofstellen(b);        // FARM-4 farmsteads
+  loadBuildings(b);         // LID-3 measured building heights by footprint_id
   for (const it of (data.footprints||[])) {
     const id = it.footprint_id;
     if (!id || G.fpIds.has(id) || !it.geometry) continue;
@@ -2032,6 +2035,18 @@ function tallTreesInParcel(f) {
     if (pipRings(t.lon, t.lat, rings)) { count++; if (t.height_m > maxH) maxH = t.height_m; }
   }
   return {count, maxH};
+}
+
+/** LID-3: measured building for a footprint feature — exact by footprint_id
+ *  (G.bldgByFp, per-tile /api/buildings), else the ~20 m centroid grid from
+ *  the lidar-slim. `exact` tells the popup which one it got. */
+function lidarForFootprint(f, ring) {
+  const fid = f.properties && f.properties.footprint_id;
+  if (fid && G.bldgByFp[fid]) return G.bldgByFp[fid];
+  if (!ring || !ring.length) return null;
+  let cx = 0, cy = 0;
+  for (const c of ring) { cx += c[0]; cy += c[1]; }
+  return findLidarBuilding(cx / ring.length, cy / ring.length);
 }
 
 /** Find lidar building info near a footprint centroid (~50m grid + neighbors). */
@@ -3391,6 +3406,32 @@ function showTreePopup(tree) {
 /** Giant trees actually drawn in the last frame: [{t, x, y, hint}]. Drives
  * hit testing, the fog hint and animation-tick gating. */
 let _drawnTrees = [];
+/** Per-frame label collision map (giant trees; tallest are drawn last and
+ *  therefore win because the pool is pre-marked tallest-first in drawTopLandmarks). */
+const _labelSlots = [];
+const _treeLabelQueue = [];
+function flushTreeLabels(ctx) {
+  if (!_treeLabelQueue.length) return;
+  ctx.save();
+  ctx.font = MAP_FONT.label; ctx.textAlign = 'center';
+  for (const q of _treeLabelQueue) {
+    ctx.fillStyle = 'rgba(20,16,10,0.72)';
+    ctx.fillRect(q.bx, q.by, q.tw, 15);
+    ctx.fillStyle = q.isHint ? 'rgba(255,215,0,0.9)' : 'rgba(120,200,90,0.9)';
+    ctx.fillRect(q.bx, q.by, q.tw, 1);
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillText(q.label, q.x + 1, q.ly + 1);
+    ctx.fillStyle = q.isHint ? 'rgba(255,215,0,' + q.lp.toFixed(2) + ')' : 'rgba(210,255,190,' + q.lp.toFixed(2) + ')';
+    ctx.fillText(q.label, q.x, q.ly);
+  }
+  ctx.restore();
+  _treeLabelQueue.length = 0;
+}
+function labelSlotFree(x, y, w, h) {
+  for (const b of _labelSlots) if (x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y) return false;
+  _labelSlots.push({ x, y, w, h });
+  return true;
+}
 function anyTallTreeOnScreen() { return _drawnTrees.length > 0; }
 
 /** The single "hint" tree shown after unlock but before reveal — the tallest loaded tree. */
@@ -3625,18 +3666,19 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH, tier) {
   const label = isHint ? glyph + ' ???'
     : (zoom >= 17 ? glyph + ' ' + giantTreeName(t) + ' · ' + t.height_m + 'm'
                   : glyph + ' ' + t.height_m + 'm');
-  if (tier > 0 && (isHint || zoom >= 15.5)) {
+  if (tier > 0 && (isHint || zoom >= 15.5) && t._lbl !== false) {
     const bob = Math.sin(now/450 + phase) * 3;
     const lp = 0.7 + Math.sin(now/300 + phase) * 0.3;
     const ly = y - dh + 3*s - 8 + bob;
     ctx.font = MAP_FONT.label;
     ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillText(label, x+1, ly+1);
-    ctx.fillStyle = isHint
-      ? 'rgba(255,215,0,' + lp.toFixed(2) + ')'
-      : 'rgba(200,255,176,' + lp.toFixed(2) + ')';
-    ctx.fillText(label, x, ly);
+    // Pill behind the text (same treatment as treasure tags): readable on dark canopy (glitch #7)
+    const tw = Math.ceil(ctx.measureText(label).width) + 8;
+    const bx = Math.round(x - tw / 2), by = Math.round(ly - 12);
+    if (t._lbl !== true && !labelSlotFree(bx, by, tw, 15)) { ctx.textAlign = 'left'; return true; }   // glitch #6: dense stands (pre-pass decided for revealed giants)
+    // Queued: labels are flushed above every sprite (a taller neighbour drawn
+    // later must not cover a shorter tree's tag) — see flushTreeLabels().
+    _treeLabelQueue.push({ label, x, ly, bx, by, tw, isHint, lp });
     ctx.textAlign = 'left';
   }
   return true;
@@ -3784,6 +3826,7 @@ function drawTopLandmarks(ctx) {
   // then discovery mode (see tallSeen). Everything below is viewport-culled
   // via the grid index and bounded by giantDrawBudget().
   _drawnTrees = [];
+  _labelSlots.length = 0; _treeLabelQueue.length = 0;
   if (G.tallUnlocked) {
     const maxH = tallestTreeHeight();
     if (!G.tallRevealed) {
@@ -3807,6 +3850,21 @@ function drawTopLandmarks(ctx) {
       }
       const budget = giantAnimBudget();
       const now = Date.now();
+      // Label pre-pass in rank order (tallest first) so the champion keeps
+      // its tag and shorter neighbours yield; drawGiantTree honours t._lbl.
+      if (zoom >= 15.5) {
+        ctx.font = MAP_FONT.label;
+        for (let i = 0; i < pool.length; i++) {
+          const t = pool[i];
+          if (i >= budget * 3) { t._lbl = false; continue; }       // tier 0 draws no label anyway
+          const [lx, ly] = toScreen(t.lon, t.lat);
+          const lbl = (zoom >= 17 ? giantTreeName(t) + ' · ' : '') + t.height_m + 'm  ';
+          const tw = Math.ceil(ctx.measureText(lbl).width) + 14;
+          const zs = Math.min(1.6, Math.max(0.7, (zoom - 14) / 3)), sc = zs * (1.0 + t.height_m / 22);
+          t._lbl = labelSlotFree(Math.round(lx - tw / 2), Math.round(ly - 64 * sc - 20), tw, 18);
+        }
+        _labelSlots.length = 0;   // drawGiantTree re-reserves as it draws
+      } else for (const t of pool) t._lbl = true;
       // Back-to-front by tier so animated champions sit on top of fillers.
       for (let i = pool.length - 1; i >= 0; i--) {
         const t = pool[i];
@@ -3842,6 +3900,7 @@ function drawTopLandmarks(ctx) {
   if (G.devTree && !(G.tallUnlocked && G.tallRevealed)) {
     drawGiantTree(ctx, G.devTree, zoom, sway, 1, false);
   }
+  flushTreeLabels(ctx);   // giant-tree tags above every sprite
   if (G.devTree && G.geo.watching && G.geo.lon) {
     drawGeoDistanceAtTree(ctx, G.devTree);
   } else if (G.geo.watching && G.geo.lon && G.tallUnlocked && zoom >= 15) {
@@ -4042,11 +4101,8 @@ function drawBuildingFootprints(ctx) {
     let roofOff = Math.max(2, Math.min(8, Math.sqrt(area) * 0.12));
     let lidarB = null;
     if (f._lidarGen !== G.lidarGen) {
-      // lazy-match lidar building by centroid, cache on feature
-      let cx = 0, cy = 0;
-      for (const c of coords) { cx += c[0]; cy += c[1]; }
-      cx /= coords.length; cy /= coords.length;
-      f._lidar = findLidarBuilding(cx, cy);
+      // LID-3: exact match by footprint_id; centroid grid only as fallback. Cached per feature.
+      f._lidar = lidarForFootprint(f, coords);
       f._lidarGen = G.lidarGen;
     }
     lidarB = f._lidar;
@@ -5783,7 +5839,18 @@ function forestPopupRows(fv, claim) {
   const eur = e.net_eur * (claim ? fs.factor : 1);
   rows.push(['💶 ' + tr('Holzerlös'), '<b style="color:var(--gold)">≈ ' + fmtEur(eur) + '</b> <span style="color:var(--text-dim)">' + tr('netto') + ' · ' + Math.round(e.efm) + ' Efm · ' +
     tr('Fichte') + ' ' + Math.round(pr.spruce_eur_efm || 0) + ' €/Efm' + (pr.date ? ' (' + (pr.live ? pr.state + ' ' + pr.date : tr('Richtwert')) + ')' : '') + '</span>']);
-  rows.push(['🌍 CO₂', '~' + Math.round(e.co2_t).toLocaleString('de-AT') + ' t ' + tr('im Holz gespeichert')]);
+  rows.push(['🌍 CO₂', '~' + Math.round(e.co2_t).toLocaleString('de-AT') + ' t ' + tr('im Holz gespeichert') +
+    (e.history && e.history.net_flux_tco2e_ha ? ' <span style="color:var(--text-dim)">· ' + tr('Bilanz seit 2001') + ' ' + (e.history.net_flux_tco2e_ha < 0 ? '🟢 ' : '🔴 +') + Math.abs(e.history.net_flux_tco2e_ha).toLocaleString('de-AT', { maximumFractionDigits: 1 }) + ' t/ha</span>' : '')]);
+  // HOLZ-3: what the satellite record says happened here (Hansen GFC, 30 m)
+  const h = e.history;
+  if (h && (h.last_loss_year || h.loss_total_ha > 0.05)) {
+    let txt = h.last_loss_year ? '🪓 ' + tr('Kahlschlag') + ' ' + h.last_loss_year + (h.last_loss_ha ? ' · ' + h.last_loss_ha.toLocaleString('de-AT') + ' ha' : '') : '';
+    if (h.loss_total_ha > 0.05) txt += (txt ? ' · ' : '') + tr('seit 2001') + ' ' + h.loss_total_ha.toLocaleString('de-AT', { maximumFractionDigits: 1 }) + ' ha';
+    if (h.young_frac >= 0.1) txt += ' <span style="color:var(--text-dim)">· ' + Math.round(h.young_frac * 100) + '% ' + tr('Jungbestand') + (h.stock_factor < 0.98 && e.source === 'landuse' ? ' → ' + tr('Vorrat') + ' ×' + h.stock_factor.toLocaleString('de-AT') : '') + '</span>';
+    rows.push(['🛰️ ' + tr('Waldgeschichte'), txt]);
+  } else if (h && h.forest_share_2000_pct >= 30) {
+    rows.push(['🛰️ ' + tr('Waldgeschichte'), tr('kein Einschlag seit 2001') + ' <span style="color:var(--text-dim)">· Hansen GFC</span>']);
+  }
   return rows;
 }
 
@@ -7924,7 +7991,7 @@ async function checkViewportMunicipality() {
       const muniName = items[0].name || items[0].gemeinde_name;
       if (muniName && G.homeMuni && muniName !== G.homeMuni && muniName !== G._lastMuniToast) {
         G._lastMuniToast = muniName;
-        showMuniCrossingToast(muniName);
+        if (!G.flow) showMuniCrossingToast(muniName);   // glitch #13: the droplet crosses a Gemeinde every few seconds
       } else if (muniName === G.homeMuni) {
         G._lastMuniToast = null;
         hideMuniCrossingToast();
@@ -8111,7 +8178,8 @@ function showParcelPopup(f, tappedFp) {
   document.getElementById('pp-id').textContent = pid;
   const kgEl = document.getElementById('pp-kg');
   if (p.kg_code) {
-    kgEl.innerHTML = `<span class="pp-ez-link" onclick="openKGSummary('${p.kg_code}')">${esc(p.kg_name || p.kg_code)} ▸</span>`;
+    const kn = kgName(p.kg_code);   // glitch #10: viewport rows carry no kg_name
+    kgEl.innerHTML = `<span class="pp-ez-link" onclick="openKGSummary('${p.kg_code}')">${esc(kn || p.kg_code)}${kn && kn !== p.kg_code ? ' <span style="color:var(--text-dim)">' + esc(p.kg_code) + '</span>' : ''} ▸</span>`;
   } else {
     kgEl.textContent = p.kg_name || '-';
   }
@@ -8325,14 +8393,13 @@ function renderBuildingRows(fp) {
   }
   if (p.ns_code && NS_NAMES[p.ns_code]) rows.push(['🏷️ Typ', NS_NAMES[p.ns_code]]);
 
-  // LiDAR height/stories/roof — match by centroid like the renderer does
-  let cx = 0, cy = 0, ring = fp.geometry && fp.geometry.type === 'Polygon' ? fp.geometry.coordinates[0] : null;
-  if (ring) {
-    for (const c of ring) { cx += c[0]; cy += c[1]; }
-    cx /= ring.length; cy /= ring.length;
-    const lb = findLidarBuilding(cx, cy);
+  // LiDAR height/stories/roof — same lookup as the renderer (footprint_id first)
+  {
+    const ring = biggestRing(fp.geometry);
+    const lb = ring ? lidarForFootprint(fp, ring) : null;
     if (lb && lb.max_height_m) {
-      let h = '≈ ' + Math.round(lb.max_height_m) + ' m';
+      let h = (lb.exact ? '' : '≈ ') + Math.round(lb.max_height_m) + ' m';
+      if (lb.mean_height_m) h += ' <span style="color:var(--text-dim)">(Ø ' + Math.round(lb.mean_height_m) + ' m)</span>';
       if (lb.stories_est > 0) h += ' · ' + lb.stories_est + ' Etage' + (lb.stories_est > 1 ? 'n' : '');
       rows.push(['📐 Höhe (LiDAR)', h]);
       if (lb.roof_type_hint) rows.push(['🏠 Dach', lb.roof_type_hint === 'flat' ? 'Flachdach' : 'Steildach']);
@@ -8371,7 +8438,7 @@ function renderBuildingRows(fp) {
 async function openKGSummary(kg) {
   const pop = document.getElementById('kg-popup');
   const body = document.getElementById('kg-body');
-  document.getElementById('kg-title').textContent = '🏘️ KG ' + kg;
+  document.getElementById('kg-title').textContent = '🏘️ ' + (kgName(kg) || 'KG ' + kg);
   body.innerHTML = '<div class="kg-loading">Lädt…</div>';
   pop.classList.add('open');
   let d = G.kgSummaries[kg];
@@ -9426,7 +9493,7 @@ window.DEV = {
   sidebar(on) {
     const el = document.getElementById('sidebar');
     if (el) el.style.display = on ? '' : 'none';
-    resizeGame(); render();
+    resizeGame(); render(); if (typeof renderMini === 'function') renderMini();
   },
   // ---- Game clock (Date.now shim): freeze for deterministic frames, warp to
   // fast-forward the 60-min field cycle / forest regrowth. Display-only — the
@@ -10207,7 +10274,7 @@ function updateWaterChip() {
     sbVal.className = known ? st.cls : '';
   }
   // Herald: first time a drought (level ≥ 2) shows up under the camera.
-  if (dr.level >= 2 && known && !G.flow) Herald.hint('drought');
+  if (dr.level >= 2 && known && !G.flow && Date.now() - (G._flowEndedAt || 0) > 20000) Herald.hint('drought');
   // N2K chip in drawN2KOverlay sits below the badge row — refresh so it doesn't overlap.
   if (G.n2kVisible && Object.keys(G.n2kSites).length) render();
 }
@@ -10551,7 +10618,9 @@ function drawGwStations(ctx) {
     let [x, y] = toScreen(s.lon, s.lat);
     if (x < -20 || y < -20 || x > W + 20 || y > H + 20) continue;
     const k = Math.round(x / 4) + ',' + Math.round(y / 4);           // co-located points fan out
-    const n = seen[k] = (seen[k] || 0) + 1; x += (n - 1) * 12 * u;
+    const n = seen[k] = (seen[k] || 0) + 1;
+    // glitch #14: at z15–16 a 12 px·u fan lands on the neighbouring parcel — stack upward instead
+    if (G.cam.zoom >= 17) x += (n - 1) * 12 * u; else y -= (n - 1) * 7 * u;
     drawStationSprite(ctx, x, y, s.category, u, t + n);
     _drawnStations.push({ s, x, y, r: 10 * u });
     if (G.cam.zoom >= 17 && n === 1) {
@@ -10699,7 +10768,7 @@ window.startFlow = async function(lon, lat) {
   flyTo(lon, lat, 15);
   flowAnimLoop();
 };
-window.clearFlow = function() { G.flow = null; document.getElementById('flow-chip').style.display = 'none'; render(); };
+window.clearFlow = function() { G.flow = null; G._flowEndedAt = Date.now(); document.getElementById('flow-chip').style.display = 'none'; render(); };
 function flowAnimLoop() {
   const F = G.flow; if (!F) return;
   const now = performance.now();
@@ -10713,7 +10782,7 @@ function flowAnimLoop() {
     if (now - (F._lastLoad || 0) > 2500) { F._lastLoad = now; loadMoreParcels(); }
     const txt = document.getElementById('flow-chip-text');
     if (txt) txt.textContent = '💧 ' + (ph >= 1 ? G.flow.title : fmtNum(ph * F.total / 1000, 0) + ' / ' + fmtNum(F.total / 1000, 0) + ' km · ' + (riverAt(F, ph * F.total) || '')) ;
-    if (ph >= 1 && !F._arrived) { F._arrived = true; F.follow = false; renderMini(); toast('🌊 ' + tr('Angekommen') + ': ' + G.flow.title, 'ok'); }
+    if (ph >= 1 && !F._arrived) { F._arrived = true; F.follow = false; G._flowEndedAt = Date.now(); renderMini(); toast('🌊 ' + tr('Angekommen') + ': ' + G.flow.title, 'ok'); }
   }
   render();
   requestAnimationFrame(() => { if (G.flow) setTimeout(flowAnimLoop, 40); });
@@ -10827,6 +10896,58 @@ Object.assign(window.DEV, {
 // 25 m DTM hillshade tiles, lidar-measured tree apices, INVEKOS farmsteads.
 
 G.apexTrees = []; G.apexIds = new Set(); G.apexTiles = new Set(); G.apexAttempts = {};
+
+// ---- KG names (glitch #10: never show a bare KG code) ----
+// Viewport parcel rows carry kg_code only. Names come from: viewport rows that
+// have kg_name, the KG summary / dossier when opened, and a lazy cadastre
+// /lookup?type=kg per new KG (proxied, 1 h cache, ~1 KB).
+G.kgNames = {};           // kg_code → {name, gemeinde}
+G._kgNameReq = new Set();
+function kgName(kg) {
+  if (!kg) return '';
+  const k = String(kg);
+  const e = G.kgNames[k];
+  if (e && e.name) return e.name;
+  const d = G.dossiers && G.dossiers[k];
+  if (d && typeof d === 'object' && d.kg_name) return d.kg_name;
+  const ks = G.kgSummaries && G.kgSummaries[k];
+  if (ks && ks.kg_name) return ks.kg_name;
+  ensureKGName(k);
+  return '';
+}
+function ensureKGName(kg) {
+  const k = String(kg);
+  if (G.kgNames[k] || G._kgNameReq.has(k)) return;
+  G._kgNameReq.add(k);
+  GET(CAD + '/lookup?type=kg&limit=3&q=' + encodeURIComponent(k)).then(r => {
+    const hit = (r && r.data || []).find(x => unpadKGjs(x.kg_code || x.code) === unpadKGjs(k));
+    if (!hit) return;
+    G.kgNames[k] = { name: hit.name || hit.kg_name || '', gemeinde: hit.gemeinde_name || '' };
+    if (G.sel && G.sel.properties && String(G.sel.properties.kg_code) === k) showParcelPopup(G.sel, G.selFp);
+  }).catch(() => { G._kgNameReq.delete(k); });
+}
+function unpadKGjs(c) { return String(c || '').replace(/^0+/, ''); }
+
+// ---- LID-3 measured buildings by footprint_id ----
+G.bldgByFp = {}; G.bldgIds = new Set(); G.bldgTiles = new Set(); G.bldgAttempts = {};
+function loadBuildings(b) {
+  loadPointLayer(b, {
+    url: '/api/buildings', key: 'buildings', tiles: G.bldgTiles, ids: G.bldgIds, attempts: G.bldgAttempts,
+    idOf: it => it.footprint_id || null,
+    onPoint: it => {
+      if (!(it.max_height_m > 0)) return;
+      // same shape findLidarBuilding() returns, plus `exact`
+      G.bldgByFp[it.footprint_id] = {
+        lon: it.lon, lat: it.lat, max_height_m: it.max_height_m, mean_height_m: it.mean_height_m,
+        // upstream stories_est is ridge-height/3 (a farmhouse → "6 storeys"); the mean
+        // roof height over the footprint is the honest storey count
+        stories_est: it.mean_height_m > 0 ? Math.max(1, Math.round(it.mean_height_m / 2.9)) : (it.stories_est || 1),
+        roof_type_hint: it.roof_type === 'flat' ? 'flat' : it.roof_type ? 'pitched' : null, exact: true,
+      };
+    },
+    done: () => { G.lidarGen++; invalidateBase(); render(); if (G.selFp) showParcelPopup(G.sel, G.selFp); },
+  });
+}
 G.apexByParcel = {};      // parcel_id → [{lon,lat,h,crown,broad}] (≤5 tallest measured trees)
 G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts = {};
 G.reliefOn = localStorage.getItem('reliefOn') !== '0';
@@ -11135,6 +11256,24 @@ Object.assign(window.DEV, {
     return { trees: G.apexTrees.length, parcels: Object.keys(G.apexByParcel).length, giants: hs.filter(h => h >= 25).length, tallest: hs[0] || null, broad: G.apexTrees.filter(t => t.broad).length, tiles: G.apexTiles.size };
   },
   /** Farmsteads in view + which parcels they sit on. */
+  /** LID-3 buildings: stats, or the measured record for one footprint_id. */
+  bldg(fid) {
+    if (fid) return G.bldgByFp[fid] || null;
+    let exact = 0, grid = 0, none = 0;
+    for (const f of G.buildingFootprints) { const r = lidarForFootprint(f, biggestRing(f.geometry)); if (!r) none++; else if (r.exact) exact++; else grid++; }
+    return { measured_exact: exact, measured_grid: grid, unmeasured: none, footprints: G.buildingFootprints.length, records: Object.keys(G.bldgByFp).length, tiles: G.bldgTiles.size };
+  },
+  /** HOLZ-3: timber estimate incl. Hansen history for a parcel (forces a fresh fetch with force=true). */
+  async timber(pid, force) {
+    pid = pid || (G.sel && G.sel.properties.parcel_id); if (!pid) return null;
+    if (force) delete G.forestValues[pid];
+    const f = G.parcelPolys.find(x => x.properties.parcel_id === pid); if (!f) return null;
+    const p = f.properties;
+    const d = await GET('/api/forest-value?parcel_id=' + encodeURIComponent(pid) + '&kg=' + p.kg_code + '&area=' + (p.area_sqm || 0) + '&lu=' + (extractLuCode(p) || '') + '&session_id=' + G.session.id);
+    G.forestValues[pid] = d; return d && d.estimate ? { source: d.estimate.source, vfm: d.estimate.vfm, coins: d.estimate.coins, history: d.estimate.history || null, took_ms: d.estimate.took_ms } : d;
+  },
+  /** glitch #10: KG name resolution state. */
+  kgName(kg) { kg = kg || (G.sel && G.sel.properties.kg_code); return { kg, name: kgName(kg) || null, known: Object.keys(G.kgNames).length, pending: [...G._kgNameReq].filter(k => !G.kgNames[k]) }; },
   hof() { hofOnParcel(''); const b = viewBounds(); return G.hofstellen.filter(h => h.lon >= b.w && h.lon <= b.e && h.lat >= b.s && h.lat <= b.n).map(h => ({ id: h.id, lon: h.lon, lat: h.lat, size: h.size_class, organic: h.organic, parcel: h._pid || null })); },
   /** River snapping status of the running Wasserweg. */
   flowInfo() { const F = G.flow; if (!F) return null; return { pts: F.pts.length, src: (F.src || F.pts).length, refinedSegs: F.refinedCount || 0, chains: riverChains().length, total_km: +(F.total / 1000).toFixed(1), dur_s: F.dur / 1000, title: F.title }; },

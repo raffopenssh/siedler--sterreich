@@ -107,6 +107,25 @@ func (s *Server) handleWaterFlowpath(w http.ResponseWriter, r *http.Request) {
 	}
 	q3 := func(v float64) string { return strconv.FormatFloat(math.Round(v*1e3)/1e3, 'f', 3, 64) }
 	b, st := s.llmGet("gwflow:"+q3(lon)+","+q3(lat), gwAPI+"/llm/flowpath?lon="+q3(lon)+"&lat="+q3(lat), 7*24*time.Hour)
+	if st == 200 {
+		// Glitch #11: the droplet outran the tile loader, so the last kilometres
+		// were bare green. Warm the KGs under the reach chain (~every 3 km) on
+		// both upstreams while the client is still zooming in. Once per path.
+		key := "gwflow-warm:" + q3(lon) + "," + q3(lat)
+		if _, err := s.Q.GetCachedData(r.Context(), key); err != nil {
+			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: "1", ExpiresAt: time.Now().Add(6 * time.Hour)})
+			go func(body []byte) {
+				var fp struct {
+					Geometry struct {
+						Coordinates [][]float64 `json:"coordinates"`
+					} `json:"geometry"`
+				}
+				if json.Unmarshal(body, &fp) == nil {
+					prewarmKGs(kgsAlongPath(fp.Geometry.Coordinates, 3000))
+				}
+			}(b)
+		}
+	}
 	relay(w, b, st)
 }
 

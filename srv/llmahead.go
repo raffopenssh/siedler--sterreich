@@ -94,6 +94,9 @@ var aheadUsed = map[string]string{
 	"GW-7":   "server: GET /api/water/gwi; game.js loadPickerGwi() joins /spatial/kgs (kg→gemeinde) → gwiTint() wash in drawMuniPoly() + legend",
 	"GW-8":   "server: +80 XP Pegelwart on POST /api/claim-parcel; game.js stationOnParcel() sends gw_station, popup row '📏 Messstelle · +80⚡ Pegelwart'",
 	"HOLZ-1": "server: forestBlock() in dossier.go; game.js renderDossier('forest') — Wald tab with 24-year loss pxChart + Naturwald XP rule",
+	"LID-3":  "server: GET /api/buildings → game.js loadBuildings() per tile: measured height/stories/roof matched by footprint_id (lidarForFootprint), centroid grid only as fallback",
+	"HOLZ-3": "server: plotHistory() in timber.go → estimate.history (Hansen loss years, young_frac, stock_factor, CO₂ flux) scales the Holzernte and feeds the 'Kahlschlag' popup row",
+	"CAD-5":  "server: watchAssembly() in server.go — per-KG assembly tag persisted; a changed tag purges viewport/landuse/geometry/timber caches",
 	"FARM-1": "server: farmBlock() + subsidyCoins(); game.js Höfe tab (archetype segBar, top measures), popup Förderung row/button, harvest toast breakdown",
 }
 

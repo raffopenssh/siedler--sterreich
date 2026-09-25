@@ -505,7 +505,8 @@ input[type=text]:focus { border-color:var(--gold); }
   position:absolute; top:96px; left:50%; transform:translateX(-50%); z-index:55;
   display:none; background:var(--panel); border:3px solid var(--gold);
   padding:8px 16px; font:20px var(--font-game); color:var(--text-bright);
-  box-shadow:3px 3px 0 #000; white-space:nowrap;
+  box-shadow:3px 3px 0 #000; white-space:normal; text-align:center;
+  max-width:min(92vw, 720px); line-height:1.25;
   animation:toastIn .3s ease;
 }
 .muni-toast.show { display:block; }
