@@ -19,6 +19,7 @@ const I18N_EXACT = {
   ' Kataster & ALS, ': ' cadastre & ALS, ',
   ' (bearbeitet) · ': ' (modified) · ',
   '© OpenStreetMap-Mitwirkende': '© OpenStreetMap contributors',
+  'weitere Quellen': 'more sources',
   'Datenquellen & Lizenzen': 'Data sources & licences',
   '📜 Datenquellen': '📜 Data sources',
   'Kataster & ALS-Höhenmodell: ': 'Cadastre & ALS elevation model: ',
