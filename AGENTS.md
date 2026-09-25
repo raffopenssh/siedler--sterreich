@@ -545,6 +545,38 @@ Consumed today (`srv/siblings.go` unless noted):
 - **CAD-1** `GET /api/viewport-landuse` (see Viewport fast path).
 - **CAD-2** `dominant_ns` / `landuse_areas` (game.js, no server code).
 - **HOLZ-2** `timberStatePrices()` in `timber.go`: `/data/prices/state/{1-9}.json` (3 KB) replaces the 736 KB catalogue; catalogue path kept as fallback.
+- **LID-4** `drawRelief()` (game.js, section "REALISM LAYERS"): srtm
+  `/tiles/hillshade/{z}/{x}/{y}.png` (25 m DTM, WebMercator, CORS, 1 y cache)
+  fetched **directly by the browser**, z = clamp(round(zoom+1), 10, 15), each
+  tile corner-mapped through `toScreen()` (our plate-carrée ×1.35 vs Mercator
+  differs by < 1 px inside a tile). Tiles are re-centred once on load (flat ≈
+  grey 180 → 128, clamped 88..188) and composited `overlay` **deliberately
+  faint** (α 0.34 → 0.10 with zoom, blurred by 25 m cell size at z ≥ 16.5 via a
+  viewport scratch canvas so tile seams don't show). Anything stronger reads as
+  "too dark, too many patterns" — colour + sprites must stay the focus. While
+  tiles cover the view (`_reliefActive`) the per-parcel lidar slope/aspect tint
+  in `drawParcelPoly` is skipped. `DEV.relief(bool)` toggles (localStorage
+  `reliefOn`), `DEV.relief()` reports tile stats.
+- **LID-2** `GET /api/trees` (bboxProxyOpt, 6 h) → `loadTrees(b)` per viewport
+  tile: the ≤5 tallest measured apices per parcel (`h_m`, `crown_d_m`) into
+  `G.apexTrees` / `G.apexByParcel`. `drawForestSprites` draws them at their real
+  position via `drawApexTree()` (size ∝ height, crown/height > 0.62 → broadleaf
+  variant, height tag for the parcel's tallest at zoom ≥ 17.5) and shrinks the
+  procedural filler accordingly. Apices ≥ 32 m also join `G.topTrees['apex']`
+  so giant-tree gameplay works in every indexed KG, not only where the 1 MB
+  lidar-slim is loaded; `tallIndex()` dedupes slim vs apex crowns within ~12 m.
+  `DEV.apex()` / `DEV.apex(pid)`.
+- **FARM-4** `GET /api/hofstellen` (24 h) → `loadHofstellen(b)`; `drawHofstellen()`
+  puts a pixel tractor + hay bales SE of the real farmstead point (zoom ≥ 15,
+  label ≥ 17, drawn after footprints); `hofOnParcel(pid)` (lazy point-in-parcel
+  index). `DEV.hof()`.
+- **Forest sprite density**: `prand(seed,i)` (integer mix) replaced the old
+  `(hash+i*k)%10000` lattice sampling that left most points outside the polygon;
+  placement now rejection-samples until `treeCount` trees land inside, and at
+  zoom ≥ 15.5 the cap grows with on-screen area (1 tree / 1400 px², ≤ 260).
+- **Visual restraint rule**: field textures α 0.5/0.35, Wasserschutz = blue
+  wash + thin dashed edge (no hatch), relief faint. Colour + sprites carry the
+  map; patterns are hints. Field cycle is 60 min (`FIELD_CYCLE_S`/`fieldCycle`).
 - **FARM-2** `GET /api/schlaege` → `loadSchlaege(b)` per viewport tile (24 h cache). AMA INVEKOS
   field polygons (`crop_group`, `snar_name`, `area_ha`, `organic`; CC BY 4.0).
   `parcelSchlag(p)` = Schlag under the parcel centroid (cached per `G.schlagGen`);
@@ -586,7 +618,7 @@ Frontend (game.js section "WATER & GEMEINDE-CHRONIK", all lazy/background):
   the "Weg des Wassers" button.
 - **Field economy** (`fieldEconomy(pid)` 60 s cache → `renderFieldEconomyRows`):
   owned NS-48 parcels get row `#pp-eco` ("Ernte 🌾 42🪙 + 🏛 18🪙 = 60🪙",
-  ☀️ malus line) or "🏛 Förderung 2🪙 alle 40 min" for meadows; harvest button
+  ☀️ malus line) or "🏛 Förderung 2🪙 alle 60 min" for meadows; harvest button
   uses `economy.total`; meadows get "🏛 Förderung abholen" / disabled "in N min"
   (gate = `harvested_at` + `FIELD_CYCLE_S`). `doHarvest()` sends `organic` from
   `parcelSchlag()`; `harvestToast(res)` breaks the payout down.
@@ -608,7 +640,17 @@ Frontend (game.js section "WATER & GEMEINDE-CHRONIK", all lazy/background):
   same `G.n2kVisible` / `#btn-n2k`. `waterProtectionAt(lon,lat)` → popup badge
   and the Naturschutz button label "+150⚡ 💧"; `doConvert()` sends lon/lat.
 - **Wassertropfen-Reise** (GW-6): `startFlow(lon,lat)` → `G.flow` {pts, cum,
-  dur, follow}; `flowAnimLoop()` (setTimeout 40 ms, only while `G.flow`) moves
+  dur, follow}; the MERIT path (~500 m vertices) is **snapped onto the OSM
+  watercourses we draw** by `refineFlow(F)`: `riverChains()` merges
+  `G.osmLines` water ways (river/stream/canal/drain) end-to-start into chains,
+  `snapToRiver()` projects each MERIT vertex (≤ 250 m, rivers preferred), and
+  every segment whose ends hit the same chain is replaced by the chain's
+  vertices (adjacent vertices move onto the river — no spurs). Runs at start,
+  every 1.5 s of the trip and whenever a KG's water lines arrive, keeping the
+  droplet at its current fraction. Pace: 20 s + 1.5 s/km, ≤ 150 s, camera
+  zoom 15. `DEV.flowInfo()` reports refined segments / chains. OSM `cat=water`
+  lines load for **every** KG in `loadWaterForKG` (roads/rail enhanced-only).
+  `flowAnimLoop()` (setTimeout 40 ms, only while `G.flow`) moves
   the camera along the droplet (time-based lerp; manual pan sets
   `follow=false`; `loadMoreParcels()` every 2.5 s), `#flow-chip` shows
   "23 / 65 km · Kainach" then "Kainach → Mur → Schwarzes Meer · 65 km";
