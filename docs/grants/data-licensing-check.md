@@ -1,4 +1,4 @@
-# Data licensing check — Siedler Österreich & upstream services (updated 2026-09-04)
+# Data licensing check — Siedler Österreich & upstream services (updated 2026-09-25)
 
 Question: is reuse of BEV cadastre / LiDAR / auxiliary data via our upstream
 services legally sound, and do the services themselves disclose licensing?
@@ -11,6 +11,9 @@ licensing and we only use endpoints with open, commercial-use-compatible terms.*
 | Service | Where licensing is disclosed | Derivative licence |
 |---|---|---|
 | cadastre-process-api.exe.xyz | `GET /api/v1/license` (table of all sources + obligations), `meta.license` on every JSON envelope / GeoJSON export, `Link: <…>; rel="license"` + `X-Data-Attribution` headers on every `/api/` response, "License & Attribution" section in `/api/v1/docs/llm.txt` | CC BY 4.0 (code MIT) |
+| holzeinschlag-at.exe.xyz | `/lizenz` (HTML) — code MIT; Hansen GFC + GFW carbon flux CC BY 4.0, Statistik Austria CC BY 4.0, LK/preise.agrarforschung.at model prices | model values, sources CC BY 4.0 |
+| farm-subsidies-austria.exe.xyz | `/license` (HTML) — code MIT; AMA INVEKOS Schläge/Hofstellen CC BY 4.0 "bearbeitet", Transparenzdatenbank per VO (EU) 2021/2115 | CC BY 4.0 |
+| groundwater-at.exe.xyz | `/license` (text) — code MIT; derived GWI etc. CC BY 4.0; **MERIT-Hydro flow paths CC BY-NC-SA 4.0**; ENTSO-E non-commercial (not consumed by us) | CC BY 4.0 (+ NC-SA exception) |
 | srtm-lidar-at.exe.xyz | `GET /api/v1/attribution` (JSON / `?format=text`), `attribution` key in every KG JSON, `gpkg_metadata` table in every GPKG, Zenodo deposit notes; "Licence & Attribution" section in `/api/v1/docs/llm.txt` | CC BY 4.0; OSM-derived layers ODbL |
 
 ## Sources actually consumed by Siedler Österreich
@@ -30,6 +33,27 @@ licensing and we only use endpoints with open, commercial-use-compatible terms.*
 **Not used** (non-commercial terms, flagged as legacy upstream): `/search/gadm`
 (GADM v4.1) and WDPA. The municipality picker uses `/search/municipalities`
 (Statistik Austria) — the "GADM" mention in older game.js comments is stale.
+
+## Re-check 2026-09-25 (all sibling services + bundled assets)
+
+| Item | Licence | Status |
+|---|---|---|
+| Go runtime deps linked into `./siedler` (go-humanize MIT; google/uuid, bigfft, golang.org/x/{sync,sys,text}, modernc.org/{sqlite,libc,mathutil,memory} BSD-3; SQLite itself public domain) | permissive | ✅ compatible with MIT |
+| sqlc (`tool` directive, build-time only, not linked) | MIT | ✅ |
+| Fonts Press Start 2P / VT323 (`srv/static/fonts/`) | SIL OFL 1.1 | ✅ OFL text + copyright notices now shipped as `fonts/OFL.txt` (OFL §2 requires it next to the files) |
+| `redlist.csv`, `redlist_curated.json` (European Red List, EEA datahub) | EEA re-use policy (attribution); IUCN Red List ToU permit non-commercial re-use | ✅ attribution in Impressum + map panel; non-commercial scope is enough for this game |
+| `austria.json` | CC BY-SA 4.0 | ✅ share-alike attaches only to this file (noted in LICENSE) |
+| `game-bg.jpg`, `og-image.jpg` | own screenshots of the game | ✅ |
+| Sprites / pixel art | 100 % procedural canvas drawing, no third-party image assets in repo | ✅ |
+| HOLZ-2/3 timber prices & forest history | CC BY 4.0 + LK model values | ✅ price source/date shown in popup |
+| FARM-2/4 Schläge, Hofstellen | CC BY 4.0 (AMA, bearbeitet) | ✅ attribution in map panel/Impressum |
+| GW-1…8 (eHYD, WISE, Wasserschatz, EDO, GWI) | CC BY 4.0 / EEA / Copernicus | ✅ |
+| GW-6 Wassertropfen-Reise (MERIT-Hydro flow path via gw `/flowpath`) | **CC BY-NC-SA 4.0** | ⚠️ fine for this non-profit game; a commercial fork must disable `startFlow()` / `/api/water/flowpath` |
+| srtm hillshade tiles, apices, building heights | CC BY 4.0 (BEV ALS, bearbeitet) | ✅ |
+
+Non-licence caveat: "Siedler" / "Die Siedler" is a Ubisoft trade mark. We use
+no Blue Byte assets (all art procedural) and only cite the aesthetic as
+inspiration; trade-mark questions are outside this check.
 
 ## Why this is sound
 

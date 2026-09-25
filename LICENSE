@@ -34,7 +34,8 @@ and runtime-fetched data carry their own licences:
   IUCN / European Environment Agency. Attribution required; see
   https://www.eea.europa.eu/legal/copyright
 * srv/static/fonts/ — "Press Start 2P" (CodeMan38) and "VT323"
-  (Peter Hull), SIL Open Font License 1.1.
+  (Peter Hull), SIL Open Font License 1.1 — full text and copyright
+  notices in srv/static/fonts/OFL.txt.
 * Cadastre, LiDAR, land-use and municipality data fetched at runtime:
   BEV – Bundesamt für Eich- und Vermessungswesen (CC BY 4.0, bearbeitet),
   Statistik Austria (CC BY 4.0), EEA Natura 2000, RIS (CC BY 4.0),
