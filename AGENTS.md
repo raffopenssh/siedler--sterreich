@@ -577,6 +577,34 @@ Consumed today (`srv/siblings.go` unless noted):
 - **Visual restraint rule**: field textures α 0.5/0.35, Wasserschutz = blue
   wash + thin dashed edge (no hatch), relief faint. Colour + sprites carry the
   map; patterns are hints. Field cycle is 60 min (`FIELD_CYCLE_S`/`fieldCycle`).
+- **LID-3** `GET /api/buildings` (bboxProxyOpt, 6 h) → `loadBuildings(b)` per viewport
+  tile into `G.bldgByFp[footprint_id]` = `{max_height_m, mean_height_m, stories_est,
+  roof_type_hint, exact:true}`. `lidarForFootprint(f, ring)` is the single lookup
+  for renderer (`drawBuildingFootprints`) and building popup: footprint_id first,
+  then the ~20 m centroid grid from the lidar-slim (`findLidarBuilding`). Storeys
+  come from `mean_height_m/2.9` (upstream `stories_est` is ridge/3). `DEV.bldg()`.
+- **HOLZ-3** `plotHistory()` in `timber.go`: `POST holz /api/plot-context?fast=1`
+  with the parcel polygon, 2.5 s budget in parallel with v3 (`holzCold` backoff on
+  429/timeout). `estimate.history` = `{forest_share_2000_pct, loss_total_ha,
+  loss_recent_ha, last_loss_year, last_loss_ha, young_frac, stock_factor,
+  net_flux_tco2e_ha}`; `stock_factor` scales the NS-56 heuristic Vfm (lidar heights
+  already see a young stand). Popup row "🛰️ Waldgeschichte" + CO₂ balance suffix
+  (`forestPopupRows`). `handleHarvestForest` pays the cached popup estimate
+  (`timber:<pid>`) so v3/history-backed numbers match. `DEV.timber(pid, force)`.
+- **CAD-5** `watchAssembly()` in `server.go`: every `/api/viewport` fetch records
+  upstream's per-KG `assembly {version, reprocessed_at}` (`assembly:<kg>` cache row,
+  1 y). A changed tag purges `viewport:*`, `vplanduse:*`, `bldg:*` and the KG's
+  `geom:parcels:*`, export/spatial and `timber:*` rows — no manual purge after
+  upstream geometry fixes anymore.
+- **KG names** (glitch #10): `kgName(kg)` / `ensureKGName(kg)` — viewport rows carry
+  no `kg_name`; a lazy `CAD /lookup?type=kg` fills `G.kgNames`. Never print a bare KG
+  code in UI; use `kgName(kg) || 'KG ' + kg`. `DEV.kgName(kg)`.
+- **Giant-tree labels**: `labelSlotFree()` pre-pass in `drawTopLandmarks` (tallest
+  wins), tags queued in `_treeLabelQueue` and drawn by `flushTreeLabels()` above all
+  sprites, pill background like treasure tags.
+- **Session centre**: `settlementCenter()` (server, create) snaps the Gemeinde
+  centroid to the OSM place node ≤ 8 km. **Flowpath prewarm**: `kgsAlongPath()` +
+  `prewarmKGs()` in `siblings.go` (once per path, `gwflow-warm:` marker).
 - **FARM-2** `GET /api/schlaege` → `loadSchlaege(b)` per viewport tile (24 h cache). AMA INVEKOS
   field polygons (`crop_group`, `snar_name`, `area_ha`, `organic`; CC BY 4.0).
   `parcelSchlag(p)` = Schlag under the parcel centroid (cached per `G.schlagGen`);
@@ -585,6 +613,12 @@ Consumed today (`srv/siblings.go` unless noted):
   falling back to the hash. Cycle *phase* stays hash-based. Popup row `#pp-crop`
   ("Anbau: 🌽 Körnermais · 6,3 ha · 🌿 Bio"). `doHarvest()` sends `crop_group`;
   server `fieldPhaseAtCrop()` uses it for meadow-vs-crop (`cropMeadow` mirrors `CROP_MEADOW`).
+
+Deliberately **not** consumed (optimisations that conflict with our model or add
+no realism): CAD-3 `tolerance_m` (breaks per-parcel dedup), CAD-4 `include=`
+enrichment, LID-1 slim fields on `/query/parcels`. LID-5 (queue) is 401 upstream,
+HOLZ-4 (stands) 404. We only use **fast paths**: anything that can take > 3 s
+per call is out, whatever it would add.
 
 ## Gemeinde-Chronik dossiers & water mechanics (gw / holz / farm siblings)
 
