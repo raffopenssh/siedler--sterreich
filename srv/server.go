@@ -164,10 +164,13 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/agent/look", s.handleAgentLook)
 	mux.HandleFunc("GET /api/agent/municipality", s.handleAgentMunicipality)
 	mux.HandleFunc("POST /api/agent/claim", s.handleAgentClaim)
-	mux.HandleFunc("GET /llm/ahead", s.handleLLMAhead)
-	mux.HandleFunc("GET /llm/ahead/{$}", s.handleLLMAhead)
-	mux.HandleFunc("GET /llm/ahead/check/{service}", s.handleLLMAheadCheck)
-	mux.HandleFunc("GET /llm/ahead/status", s.handleLLMAheadStatus)
+	// Sibling-service roadmap: internal, token-gated (see aheadauth.go).
+	mux.HandleFunc("GET /llm/ahead", s.requireAhead(s.handleLLMAhead))
+	mux.HandleFunc("GET /llm/ahead/{$}", s.requireAhead(s.handleLLMAhead))
+	mux.HandleFunc("GET /llm/ahead/check/{service}", s.requireAhead(s.handleLLMAheadCheck))
+	mux.HandleFunc("GET /llm/ahead/status", s.requireAhead(s.handleLLMAheadStatus))
+	// LID-4 hillshade tiles, proxied so the browser never talks to the srtm host.
+	mux.HandleFunc("GET /api/tiles/hillshade/{z}/{x}/{y}", s.handleHillshadeTile)
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 	mux.HandleFunc("GET /static/og-image.png", s.handleOGImage)
 
@@ -325,7 +328,8 @@ func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip gzip for SSE and non-gzip clients
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") ||
-			strings.HasSuffix(r.URL.Path, "/events") {
+			strings.HasSuffix(r.URL.Path, "/events") ||
+			strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".jpg") {
 			next.ServeHTTP(w, r)
 			return
 		}

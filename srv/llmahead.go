@@ -592,8 +592,6 @@ func allowedAheadBase(raw string) (string, bool) {
 // GET /llm/ahead/check/{service}   run harness (?item=, ?base=, ?force=1, ?format=md)
 // GET /llm/ahead/status     all services, cached matrix
 func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "public, max-age=300")
 	svcF := r.URL.Query().Get("service")
 	itemF := r.URL.Query().Get("item")
 	unusedOnly := r.URL.Query().Get("unused") == "1" || r.URL.Query().Get("used") == "0"
@@ -736,8 +734,6 @@ func firstServiceFor(it aheadItem) string {
 }
 
 func (s *Server) handleLLMAheadCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "no-store")
 	svc := aheadServiceByName(r.PathValue("service"))
 	if svc == nil {
 		http.Error(w, `{"error":"unknown service; use cadastre|srtm|holz|farm"}`, 404)
@@ -774,8 +770,6 @@ func (s *Server) handleLLMAheadCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLLMAheadStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "no-store")
 	force := r.URL.Query().Get("force") == "1"
 	type row struct {
 		Service string            `json:"service"`

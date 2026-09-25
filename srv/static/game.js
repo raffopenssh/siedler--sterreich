@@ -10953,7 +10953,7 @@ G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts =
 G.reliefOn = localStorage.getItem('reliefOn') !== '0';
 
 // ---- LID-4 hillshade tiles (WebMercator PNG, transparent = no data) ----
-const RELIEF_BASE = 'https://srtm-lidar-at.exe.xyz:8000/tiles/hillshade/';
+const RELIEF_BASE = '/api/tiles/hillshade/';   // server proxy (srv/tiles.go)
 const _relief = new Map();          // "z/x/y" → {img|null(empty), canvas, at}
 const RELIEF_MAX_TILES = 400;
 function reliefZoom() { return Math.min(15, Math.max(10, Math.round(G.cam.zoom + 1))); }

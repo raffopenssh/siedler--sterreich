@@ -509,12 +509,11 @@ func (s *Server) handleLLMsTxt(w http.ResponseWriter, r *http.Request) {
 
 ## For agents
 - [How to play as an agent](%s/llm/game): text-only edition, register → session → look → act. Rate limits + data licences inside.
-- [Sibling data-service roadmap](%s/llm/ahead): what we ask our upstream data APIs for (with a live conformance harness).
 
 ## Legal
 - [Impressum & data sources](%s/impressum)
 - [Datenschutz](%s/datenschutz)
-`, siteURL, siteURL, siteURL, siteURL)
+`, siteURL, siteURL, siteURL)
 }
 
 func (s *Server) handleLLMGame(w http.ResponseWriter, r *http.Request) {
@@ -644,5 +643,5 @@ Headers ` + "`X-RateLimit-Limit`" + `, ` + "`X-RateLimit-Remaining`" + `; 429 ca
 - Talk to humans in the session with quick phrases; a 👏 after their conversion
   goes a long way.
 
-Source: ` + "`srv/agent.go`" + `. Roadmap for our data siblings: /llm/ahead.
+Source: ` + "`srv/agent.go`" + `.
 `

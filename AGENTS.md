@@ -534,7 +534,15 @@ LOD/animation machinery, counts into `NATURE.onScreen`) draws
 
 `GET /llm/ahead` is the to-do list we hand the sibling data services
 (cadastre, srtm, holz, farm, gw) plus a live conformance harness
-(`/llm/ahead/check/{service}`). Nearly everything is green upstream; the
+(`/llm/ahead/check/{service}`). **Token-gated** (`srv/aheadauth.go`): send
+`X-Ahead-Token: $(cat ahead.key)` (or `?token=`), anything else is a plain
+404. Token = env `SIEDLER_AHEAD_TOKEN` or `./ahead.key` (auto-generated,
+gitignored). The public `/llms.txt` and `/llm/game` must never link to it —
+agents should not learn which upstream services we build on. Same rule for
+the browser: **no direct calls to sibling hosts from game.js** — everything
+goes through our proxies (hillshade tiles: `GET /api/tiles/hillshade/{z}/{x}/{y}.png`,
+`srv/tiles.go`, 30 d api_cache as base64, 204 = no data).
+Nearly everything is green upstream; the
 checkbox in the markdown means **used by the game**, driven by the
 `aheadUsed` map (ID → where in our code). `?unused=1` (or `?used=0`, also
 on `?format=json`) lists only items we don't consume yet — that is the view
@@ -547,7 +555,8 @@ Consumed today (`srv/siblings.go` unless noted):
 - **HOLZ-2** `timberStatePrices()` in `timber.go`: `/data/prices/state/{1-9}.json` (3 KB) replaces the 736 KB catalogue; catalogue path kept as fallback.
 - **LID-4** `drawRelief()` (game.js, section "REALISM LAYERS"): srtm
   `/tiles/hillshade/{z}/{x}/{y}.png` (25 m DTM, WebMercator, CORS, 1 y cache)
-  fetched **directly by the browser**, z = clamp(round(zoom+1), 10, 15), each
+  fetched via our proxy `/api/tiles/hillshade/…` (never directly — hides the
+  upstream host), z = clamp(round(zoom+1), 10, 15), each
   tile corner-mapped through `toScreen()` (our plate-carrée ×1.35 vs Mercator
   differs by < 1 px inside a tile). Tiles are re-centred once on load (flat ≈
   grey 180 → 128, clamped 88..188) and composited `overlay` **deliberately
