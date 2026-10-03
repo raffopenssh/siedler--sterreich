@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"srv.exe.dev/db/dbgen"
@@ -357,4 +359,215 @@ func (s *Server) ReseedTreasures(key string) error {
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id = ? AND found_by IS NULL", id).Scan(&m)
 	fmt.Printf("session %s: removed %d, now %d unfound treasures\n", id, n, m)
 	return nil
+}
+
+// ---- Roaming treasures ----
+//
+// The seeded set lives in the ~1.4 km core of the home Gemeinde. A player who
+// wanders 5 km down the valley would find nothing — so when the client reports
+// "no unfound treasure within reach of where I am", we hide a small cache
+// (one chest + one or two species that fit the land here) on real parcels
+// around that point. Rate-limited per session (one cache per 2 min, ≤ 12 per
+// hour) so the map never floods; placement needs the centre cell in cache
+// (202 pending otherwise — the client simply asks again later).
+
+type roamState struct {
+	last  time.Time
+	hour  time.Time
+	count int
+}
+
+var roamMu sync.Mutex
+var roamBySession = map[string]*roamState{}
+
+func (s *Server) handleRoamTreasures(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PlayerID string  `json:"player_id"`
+		Lon      float64 `json:"lon"`
+		Lat      float64 `json:"lat"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Lon == 0 || req.Lat == 0 {
+		jsonErr(w, "lon, lat required", 400)
+		return
+	}
+	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
+		jsonErr(w, "unauthorized", 401)
+		return
+	}
+	sessionID := r.PathValue("id")
+	const nearM = 1500.0
+	unfound, err := s.Q.GetSessionTreasures(r.Context(), sessionID)
+	if err != nil {
+		jsonErr(w, "error", 500)
+		return
+	}
+	for _, t := range unfound {
+		if distM(req.Lon, req.Lat, t.Lon, t.Lat) < nearM {
+			jsonResp(w, map[string]any{"placed": 0, "reason": "nearby"})
+			return
+		}
+	}
+	roamMu.Lock()
+	st := roamBySession[sessionID]
+	if st == nil {
+		st = &roamState{hour: time.Now()}
+		roamBySession[sessionID] = st
+	}
+	if time.Since(st.hour) > time.Hour {
+		st.hour, st.count = time.Now(), 0
+	}
+	if time.Since(st.last) < 2*time.Minute || st.count >= 12 {
+		roamMu.Unlock()
+		jsonResp(w, map[string]any{"placed": 0, "reason": "rate", "retry_after_s": 120})
+		return
+	}
+	st.last = time.Now()
+	roamMu.Unlock()
+
+	// wanderers move on after 45 min
+	s.DB.ExecContext(r.Context(), "DELETE FROM treasures WHERE session_id = ? AND found_by IS NULL AND treasure_type = 'roaming' AND created_at < datetime('now', '-45 minutes')", sessionID)
+
+	parcels := s.fetchTreasureParcels(req.Lon, req.Lat, 900)
+	if parcels == nil {
+		w.Header().Set("Retry-After", "6")
+		w.WriteHeader(202)
+		w.Write([]byte(`{"status":"pending","retry_after_s":6}`))
+		return
+	}
+	n := s.placeRoamingCache(r.Context(), sessionID, req.Lon, req.Lat, parcels)
+	if n > 0 {
+		roamMu.Lock()
+		st.count += n
+		roamMu.Unlock()
+		s.broadcast(sessionID, map[string]any{"type": "treasures_updated", "roam": true, "lon": req.Lon, "lat": req.Lat, "n": n})
+	}
+	jsonResp(w, map[string]any{"placed": n})
+}
+
+// roamingSpecies are the Durchzügler — wildlife that genuinely wanders through
+// Austria rather than living on one parcel: the moose that strays in from
+// Bohemia, golden jackals pushing up the Danube, lynx and wolf, migrating
+// cranes and white storks, otter and beaver along the water, wildcat in the
+// Thermenlinie woods, bearded vulture over the Hohe Tauern. Months (1–12,
+// empty = all year) gate the migrants so a crane only shows up in autumn and
+// late winter. Habitat = BEV Nutzungssymbole, best first.
+var roamingSpecies = []struct {
+	Name, German, Group string
+	Value               int64
+	Months              []int
+	Habitat             []string
+}{
+	{"Alces alces", "Elch", "mammal", 450, nil, []string{"56", "61", "48", "57"}},
+	{"Canis aureus", "Goldschakal", "mammal", 320, nil, []string{"48", "57", "56", "61"}},
+	{"Lynx lynx", "Luchs", "mammal", 350, nil, []string{"56", "54", "55"}},
+	{"Canis lupus", "Wolf", "mammal", 400, nil, []string{"56", "54", "55", "57"}},
+	{"Felis silvestris", "Wildkatze", "mammal", 300, nil, []string{"56", "57"}},
+	{"Lutra lutra", "Fischotter", "mammal", 280, nil, []string{"59", "60", "61", "64"}},
+	{"Castor fiber", "Biber", "mammal", 220, nil, []string{"59", "60", "61", "64"}},
+	{"Grus grus", "Kranich", "bird", 300, []int{2, 3, 10, 11}, []string{"48", "61", "57"}},
+	{"Ciconia ciconia", "Weißstorch", "bird", 260, []int{3, 4, 5, 6, 7, 8}, []string{"48", "61", "57"}},
+	{"Gypaetus barbatus", "Bartgeier", "bird", 480, nil, []string{"87", "54", "55", "62"}},
+}
+
+func roamingInSeason(months []int, now time.Time) bool {
+	if len(months) == 0 {
+		return true
+	}
+	m := int(now.Month())
+	for _, x := range months {
+		if x == m {
+			return true
+		}
+	}
+	return false
+}
+
+// placeRoamingCache hides 2–3 encounters 250–800 m from (lon,lat) on habitat
+// parcels, blue-noise spaced, deterministic per (session, cell): one small
+// chest (the wanderer's "cache") plus up to two roaming animals that fit the
+// land here. Roaming animals move on: unfound ones older than 45 min are
+// removed first (the player sees them vanish — "weitergezogen").
+func (s *Server) placeRoamingCache(ctx context.Context, sessionID string, lon, lat float64, parcels []tParcel) int {
+	c := cellOf(lon, lat)
+	seed := int64(0)
+	for _, ch := range sessionID {
+		seed = seed*31 + int64(ch)
+	}
+	rng := rand.New(rand.NewSource(seed ^ int64(c.I)<<20 ^ int64(c.J)))
+	var placed []treasureSpot
+	usable := func(p tParcel, codes []string) bool {
+		if p.Bldg > 0 || treasureNoGo[p.Dom] {
+			return false
+		}
+		d := distM(lon, lat, p.Lon, p.Lat)
+		if d < 250 || d > 800 {
+			return false
+		}
+		if codes == nil {
+			return true
+		}
+		for _, cd := range codes {
+			if p.Codes[cd] {
+				return true
+			}
+		}
+		return false
+	}
+	pick := func(codes []string) *treasureSpot {
+		var cands []tParcel
+		for _, p := range parcels {
+			if usable(p, codes) {
+				cands = append(cands, p)
+			}
+		}
+		if len(cands) == 0 && codes != nil {
+			return nil
+		}
+		if len(cands) == 0 {
+			return nil
+		}
+		var best *treasureSpot
+		bestScore := -1.0
+		for k := 0; k < 16 && k < len(cands)*2; k++ {
+			p := cands[rng.Intn(len(cands))]
+			nearest := 1e9
+			for _, q := range placed {
+				if d := distM(p.Lon, p.Lat, q.Lon, q.Lat); d < nearest {
+					nearest = d
+				}
+			}
+			sc := math.Min(nearest, 400) / 400
+			if sc > bestScore {
+				bestScore = sc
+				best = &treasureSpot{p.Lon, p.Lat, p.ID}
+			}
+		}
+		if best != nil {
+			placed = append(placed, *best)
+		}
+		return best
+	}
+	n := 0
+	if sp := pick(nil); sp != nil {
+		val := int64(60 + rng.Intn(4)*20)
+		s.Q.CreateTreasure(ctx, dbgen.CreateTreasureParams{SessionID: sessionID, Lon: sp.Lon, Lat: sp.Lat, TreasureType: "coins", Value: val})
+		n++
+	}
+	// up to two wanderers whose habitat exists right here and who are in season
+	now := time.Now()
+	for _, i := range rng.Perm(len(roamingSpecies)) {
+		if n >= 3 {
+			break
+		}
+		sp := roamingSpecies[i]
+		if !roamingInSeason(sp.Months, now) {
+			continue
+		}
+		if spot := pick(sp.Habitat); spot != nil {
+			s.Q.CreateTreasure(ctx, dbgen.CreateTreasureParams{SessionID: sessionID, Lon: spot.Lon, Lat: spot.Lat, TreasureType: "roaming", Value: sp.Value,
+				SpeciesName: sp.Name, SpeciesGerman: sp.German, SpeciesCategory: "WANDER"})
+			n++
+		}
+	}
+	return n
 }

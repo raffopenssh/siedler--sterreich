@@ -1391,6 +1391,11 @@ async function refreshLobby() {
 // ================= MAIN GAME =================
 let gc, gctx, mc, mctx;
 let _animFrame = null; // for smooth camera animation
+/** The user's hand always wins: any pan/zoom gesture cancels programmatic camera flights. */
+function stopCameraAnims() {
+  if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
+  if (typeof flyAnim !== 'undefined' && flyAnim) { cancelAnimationFrame(flyAnim); flyAnim = null; }
+}
 
 /** Smoothly animate camera to target lon/lat/zoom over durationMs */
 function animateCamera(targetLon, targetLat, targetZoom, durationMs) {
@@ -1620,8 +1625,9 @@ async function loadMoreParcels() {
   // Polygon geometry ALWAYS loads, at every zoom: fetchKGPolygons tiles the
   // viewport into grid cells (nearest first) — never gate this on span, because
   // viewBounds() is in device pixels and trips early on retina/wide screens.
-  fetchKGPolygons().then(() => buildEZIndex()).catch(e => console.error(e));
+  fetchKGPolygons().then(() => { buildEZIndex(); refreshSimilarForView(); }).catch(e => console.error(e));
   loadToponyms().catch(e => console.error(e));
+  if (G.sel && document.getElementById('parcel-popup')?.classList.contains('open')) updateSimilarRadiusLabel();
   detectAdjacentMunicipalities();
   checkViewportMunicipality();
 }
@@ -2705,7 +2711,13 @@ function handleEvent(d) {
       if (d.player_id !== G.player?.id) toast('💎 ' + d.player + ' ' + tr('findet einen Schatz'), '');
       break;
     }
-    case 'treasures_updated': loadTreasures().then(()=>{ render(); toast('🛡️ Seltene Arten in Natura-2000-Gebieten entdeckt!','ok'); }); break;
+    case 'treasures_updated':
+      loadTreasures().then(() => {
+        render(); treasureHintSince = 0;
+        if (d.roam) toast('🐾 ' + tr('Spuren in der Gegend — ein Durchzügler ist hier unterwegs') + (d.n > 1 ? ' (' + d.n + ')' : ''), 'ok');
+        else toast('🛡️ Seltene Arten in Natura-2000-Gebieten entdeckt!', 'ok');
+      });
+      break;
     case 'offer_made':
       if (d.seller_id === G.player.id) toast('📨 '+d.buyer+' bietet '+d.offer_price+'🪙 für deine Parzelle!','ok');
       loadOffers().then(()=>{ if(G.sel) showParcelPopup(G.sel); });
@@ -2777,16 +2789,30 @@ function hillshade(lp) {
 // animated overlay (giants, treasures, GPS, highlights) is drawn on top every
 // frame. Before this, the 10 fps tree tick redrew thousands of parcel
 // polygons on every frame — the main reason slow phones stuttered.
-let _base = null, _baseSig = '', _baseAt = 0;
+// ---- Base-layer cache ----
+// The static map (terrain, landuse, parcels, roads, sprites, buildings) is the
+// expensive part: ~90 ms at z15.5 with 3 000 polygons. It is rendered into an
+// offscreen canvas 1.5× the viewport around an *anchor* camera; while the
+// camera stays inside that margin at the same zoom, each frame just blits the
+// cached canvas at an offset (pan) or scaled (zoom) — ~1 ms. Rebuilds run
+// time-sliced in the background (≤ BASE_SLICE_MS per frame, generator
+// `baseLayerSteps`) and are swapped in when complete, so neither a pan nor
+// the Wassertropfen-Reise ever stutters. `invalidateBase()` marks data dirty.
+const BASE_PAD = 1.5, BASE_SLICE_MS = 6;
+let _base = null, _baseA = null, _baseAt = 0, _baseSig = '';   // displayed canvas + its anchor + data signature
+let _bb = null, _spare = null;                                 // build in progress, recycled canvas
+let _camMovedAt = 0, _camLast = '';
 function baseSignature(W, H) {
   let conv = 0; for (const c of G.claimed) { if (c.converted_to) conv++; if (c.well_at) conv += 1000; }
-  return [G.cam.lon.toFixed(7), G.cam.lat.toFixed(7), G.cam.zoom.toFixed(4), W, H,
+  return [W, H,
     G.parcelPolys.length, G.parcels.length, G.buildingFootprints.length, G.landusePolys.length,
     G.claimed.length, conv, G.lidarGen, G.n2kVisible ? 1 : 0, Object.keys(G.n2kSites).length, G.wpZones.length,
     Object.keys(G.osmLines).length, Object.keys(G.waterAreas || {}).length,
     G.atBorder ? 1 : 0, G.baseGen || 0].join('|');
 }
-function drawBaseLayers(ctx, W, H, claimMap) {
+/** Synchronous full base render (first frame / resize only). */
+function drawBaseLayers(ctx, W, H, claimMap) { for (const _ of baseLayerSteps(ctx, W, H, claimMap)) { /* run to completion */ } }
+function* baseLayerSteps(ctx, W, H, claimMap) {
   // Real relief (LID-4) replaces the per-parcel slope tint while tiles cover the view.
   _reliefActive = G.reliefOn && _reliefLastDrew;
   // ---- Background terrain ----
@@ -2797,8 +2823,10 @@ function drawBaseLayers(ctx, W, H, claimMap) {
   // ---- Foreign territory (outside Austria — no cadastre data exists there) ----
   drawForeignShading(ctx, W, H);
 
+  yield;
   // ---- Draw real landuse polygons (forests, water, roads, etc.) ----
   if (G.landusePolys.length > 0) drawLandusePolygons(ctx);
+  yield;
 
   // ---- Natura 2000 protected-area overlay (enhanced mode) ----
   if (G.n2kVisible) drawN2KOverlay(ctx);
@@ -2810,13 +2838,17 @@ function drawBaseLayers(ctx, W, H, claimMap) {
 
   // ---- OSM water lines (enhanced mode) ----
   drawOSMLines(ctx, 'water');
+  yield;
 
   // ---- Draw parcel polygons (from export/geojson KG data) ----
   if (G.parcelPolys.length > 0) {
+    let i = 0;
     for (const f of G.parcelPolys) {
       drawParcelPoly(ctx, f, claimMap);
+      if ((++i & 255) === 0) yield;
     }
   }
+  yield;
 
   // ---- Draw point parcels (if no polygon available) ----
   const polyIds = new Set(G.parcelPolys.map(f=>f.properties.parcel_id));
@@ -2828,29 +2860,45 @@ function drawBaseLayers(ctx, W, H, claimMap) {
 
   // ---- Real relief: 25 m DTM hillshade tiles under sprites/buildings (LID-4) ----
   _reliefLastDrew = drawRelief(ctx);
+  yield;
 
   // ---- OSM roads + rail on top of parcels (enhanced mode) ----
   drawOSMLines(ctx, 'road');
   drawOSMLines(ctx, 'rail');
+  yield;
 
   // ---- Landuse sprites (crops, flowers, reeds, vines) ----
   drawLanduseSprites(ctx, claimMap);
+  yield;
 
   // ---- Trees on forest parcels ----
   drawForestSprites(ctx, claimMap);
+  yield;
 
   // ---- Brunnen on owned fields (GW-1) ----
   drawWells(ctx, claimMap);
 
   // ---- Draw real building footprints ----
   if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
+  yield;
 
   // ---- Hofstellen: tractor + bales beside the real farmstead (FARM-4) ----
   drawHofstellen(ctx);
 }
 
+// render() is coalesced: every caller (input, SSE, anim loops, loaders) just
+// marks the frame dirty and exactly one draw happens on the next animation
+// frame. Before this the flow loop, treasure loop, nature loop and the base
+// pump each drew their own frame — 2–3 full renders per vsync. renderNow()
+// draws synchronously (screenshots, DEV).
+let _renderRaf = 0;
 function render() {
+  if (_renderRaf || !gctx) return;
+  _renderRaf = requestAnimationFrame(() => { _renderRaf = 0; renderNow(); });
+}
+function renderNow() {
   if (!gctx) return;
+  if (_renderRaf) { cancelAnimationFrame(_renderRaf); _renderRaf = 0; }
   const ctx = gctx;
   const W = gc.width, H = gc.height;
 
@@ -2858,18 +2906,8 @@ function render() {
   const claimMap = {};
   for (const c of G.claimed) claimMap[c.parcel_id] = c;
 
-  // ---- Static base layer (cached) ----
-  const sig = baseSignature(W, H);
-  const now = performance.now();
-  const maxAge = 1000;
-  if (!_base || _baseSig !== sig || now - _baseAt > maxAge) {
-    if (!_base || _base.width !== W || _base.height !== H) {
-      _base = document.createElement('canvas'); _base.width = W; _base.height = H;
-    }
-    drawBaseLayers(_base.getContext('2d'), W, H, claimMap);
-    _baseSig = sig; _baseAt = now;
-  }
-  ctx.drawImage(_base, 0, 0);
+  // ---- Static base layer (anchored, oversized, time-sliced rebuilds) ----
+  drawCachedBase(ctx, W, H, claimMap);
 
   // ---- Living nature reserves (waving grass, herbs, fauna) ----
   drawNatureReserves(ctx, claimMap);
@@ -2915,8 +2953,85 @@ function render() {
   drawQuestPing(ctx);
   drawScaleBar(ctx, W, H);
 }
-/** Force the cached base layer to redraw on the next frame. */
+/** Force the cached base layer to redraw (background rebuild; swapped in when complete). */
 function invalidateBase() { G.baseGen = (G.baseGen || 0) + 1; }
+
+/** Where the anchor's canvas lands on screen for the current camera: {x, y, k} (k = scale). */
+function baseBlitRect(a, W, H) {
+  const k = Math.pow(2, G.cam.zoom - a.zoom);
+  const s = mapScale();
+  const ax = (a.lon - G.cam.lon) * s + W / 2, ay = (G.cam.lat - a.lat) * s * 1.35 + H / 2;
+  return { x: ax - a.bw * k / 2, y: ay - a.bh * k / 2, w: a.bw * k, h: a.bh * k, k };
+}
+function startBaseBuild(claimMap, W, H, sig, aheadLon, aheadLat) {
+  const bw = Math.ceil(W * BASE_PAD), bh = Math.ceil(H * BASE_PAD);
+  let canvas = _spare && _spare.width === bw && _spare.height === bh ? _spare : document.createElement('canvas');
+  _spare = null;
+  canvas.width = bw; canvas.height = bh;   // also clears
+  const anchor = { lon: aheadLon != null ? aheadLon : G.cam.lon, lat: aheadLat != null ? aheadLat : G.cam.lat, zoom: G.cam.zoom, W, H, bw, bh };
+  _bb = { canvas, anchor, sig, gen: baseLayerSteps(canvas.getContext('2d'), bw, bh, claimMap) };
+}
+/** Run the in-progress build for ≤ budget ms with the viewport/camera swapped to the anchor. */
+function pumpBaseBuild(budgetMs) {
+  if (!_bb) return false;
+  const realGc = gc, cam = { lon: G.cam.lon, lat: G.cam.lat, zoom: G.cam.zoom };
+  const a = _bb.anchor;
+  gc = { width: a.bw, height: a.bh, getBoundingClientRect: () => realGc.getBoundingClientRect(), classList: realGc.classList, style: realGc.style };
+  G.cam.lon = a.lon; G.cam.lat = a.lat; G.cam.zoom = a.zoom;
+  const t0 = performance.now(); let done = false;
+  try { do { if (_bb.gen.next().done) { done = true; break; } } while (performance.now() - t0 < budgetMs); }
+  catch (e) { console.error('base build failed', e); done = true; }
+  finally { gc = realGc; G.cam.lon = cam.lon; G.cam.lat = cam.lat; G.cam.zoom = cam.zoom; }
+  if (done) { _spare = _base; _base = _bb.canvas; _baseA = _bb.anchor; _baseSig = _bb.sig; _baseAt = performance.now(); _bb = null; }
+  return done;
+}
+function drawCachedBase(ctx, W, H, claimMap) {
+  const now = performance.now();
+  const sig = baseSignature(W, H);
+  const camKey = G.cam.lon.toFixed(7) + '|' + G.cam.lat.toFixed(7) + '|' + G.cam.zoom.toFixed(4);
+  if (camKey !== _camLast) { _camLast = camKey; _camMovedAt = now; }
+  const moving = now - _camMovedAt < 160;
+
+  // First frame / resize: synchronous build, nothing else to show.
+  if (!_base || _baseA.W !== W || _baseA.H !== H) {
+    _bb = null; startBaseBuild(claimMap, W, H, sig);
+    pumpBaseBuild(1e9);
+  }
+  const r = baseBlitRect(_baseA, W, H);
+  const dataDirty = _baseSig !== sig;
+  const zoomOff = Math.abs(r.k - 1) > 1e-6;
+  // how far the camera has drifted from the anchor, as a fraction of the margin
+  const mx = (_baseA.bw - W) / 2, my = (_baseA.bh - H) / 2;
+  const drift = Math.max(Math.abs(r.x + mx) / Math.max(1, mx), Math.abs(r.y + my) / Math.max(1, my));
+  const outside = drift > 1;
+  const idleRefresh = !moving && now - _baseAt > 1000;      // relief tiles / sprite caches landing
+  // Start a rebuild early (≥ 35 % into the margin) so it is ready before we run out of canvas;
+  // anchor it *ahead* of the motion when we know the velocity (flow: the droplet).
+  const wantBuild = dataDirty || zoomOff || drift > 0.35 || idleRefresh;
+  const buildMatches = _bb && Math.abs(_bb.anchor.zoom - G.cam.zoom) < 1e-6 && _bb.sig === sig &&
+    Math.abs(_bb.anchor.lon - G.cam.lon) * mapScale() < mx * 0.9 && Math.abs(_bb.anchor.lat - G.cam.lat) * mapScale() * 1.35 < my * 0.9;
+  if (wantBuild && !buildMatches) {
+    let al = null, at = null;
+    if (G.flow && G.flow.follow && !G.flow._arrived) {           // look ahead ~2.5 s along the river
+      const p = pointAlong(G.flow, Math.min(G.flow.total, G.flow.dist + G.flow.speed * 2500));
+      al = (G.cam.lon + p[0]) / 2; at = (G.cam.lat + p[1]) / 2;
+    }
+    startBaseBuild(claimMap, W, H, sig, al, at);
+  }
+  // Pump: a small slice while things look fine, a big one when the view is already
+  // uncovered or at the wrong zoom (a visible hitch beats a blank/blurred map).
+  if (_bb) pumpBaseBuild(outside || zoomOff ? 40 : (moving ? BASE_SLICE_MS : 12));
+
+  const rr = baseBlitRect(_baseA, W, H);
+  if (rr.x > 0 || rr.y > 0 || rr.x + rr.w < W || rr.y + rr.h < H) {
+    // uncovered strip: terrain colour + grass so it reads as "land", not a hole
+    ctx.fillStyle = '#3a6828'; ctx.fillRect(0, 0, W, H); drawGrassTexture(ctx, W, H);
+  }
+  ctx.imageSmoothingEnabled = Math.abs(rr.k - 1) > 1e-6;
+  ctx.drawImage(_base, Math.round(rr.x), Math.round(rr.y), Math.round(rr.w), Math.round(rr.h));
+  ctx.imageSmoothingEnabled = true;
+  if (_bb) render();   // keep pumping on the next frame while a build is in progress
+}
 
 let grassPatternCanvas = null;
 function createGrassPattern() {
@@ -3271,6 +3386,10 @@ function drawN2KOverlay(ctx, labelsOnly) {
     let label = variants[2], tw = 0;
     for (const v of variants) { tw = ctx.measureText(v).width; if (tw + 24 <= maxW) { label = v; break; } }
     tw = ctx.measureText(label).width;
+    // Still too wide (tiny phones): trim with an ellipsis. Never rely on the
+    // fillText maxWidth argument — WebKit anchors centred text at the left
+    // edge when it is given (the banner ran off the screen on Safari).
+    while (tw + 24 > maxW && label.length > 14) { label = label.replace(/…?$/, '').slice(0, -1) + '…'; tw = ctx.measureText(label).width; }
     const pw = Math.min(tw + 24, maxW), ph = 24;
     const hudEl = document.getElementById('hud-badges');
     const hudShown = [...(hudEl?.children || [])].some(el => el.style.display !== 'none');
@@ -3283,9 +3402,10 @@ function drawN2KOverlay(ctx, labelsOnly) {
     ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.roundRect(px - pw/2, py - ph/2, pw, ph, 6); ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#c8ffd8';
-    ctx.fillText(label, px, py + 1, pw - 16);
+    ctx.fillText(label, px, py + 1);
     ctx.restore();
-  }
+    G._n2kBannerBottom = py + ph / 2;
+  } else G._n2kBannerBottom = 0;
 }
 
 // ---- Giant-tree index: cached flat list (tallest first) + 0.01° grid for
@@ -3839,6 +3959,71 @@ function giantAnimBudget() {
 // nearest one. Tapping the mist flies the camera there.
 let fogHintSince = 0;
 let fogHintPos = null; // {x, y, lon, lat} for tap handling
+// ---- Treasure compass: when no unfound treasure has been on screen for a
+// few seconds, a small pixel compass card appears at the HUD-safe screen edge
+// pointing to the nearest one (chest or creature icon, rarity colour, distance).
+// Tap = fly there. If nothing is within ~2.5 km the client asks the server to
+// hide a roaming cache near the camera (POST …/treasures/roam) — "treasures
+// should be somewhere" — and the compass then points at that.
+let treasureHintSince = 0, treasureHintPos = null, _roamAskedAt = 0, _roamKey = '';
+function unfoundTreasures() { return (G.treasures || []).filter(t => !t.found_by); }
+function treasureDistM(t) { const mLon = 111320 * Math.cos(G.cam.lat * Math.PI / 180); return Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540); }
+async function maybeRoamTreasures(nearestM) {
+  if (!G.session || !G.player || G.flow) return;
+  if (nearestM != null && nearestM < 2500) return;
+  const c = cellOf(G.cam.lon, G.cam.lat);
+  const now = Date.now();
+  if (c.key === _roamKey && now - _roamAskedAt < 150000) return;   // once per cell / 2.5 min
+  if (now - _roamAskedAt < 20000) return;
+  _roamAskedAt = now; _roamKey = c.key;
+  try {
+    const r = await POST('/api/session/' + G.session.id + '/treasures/roam', { player_id: G.player.id, lon: G.cam.lon, lat: G.cam.lat });
+    if (r && r.pending) { _roamAskedAt = now - 150000 + 8000; return; }  // cell still assembling → retry in ~8 s
+  } catch (e) { /* optional */ }
+}
+function drawTreasureHint(ctx) {
+  const list = unfoundTreasures();
+  const now = Date.now();
+  if (_treasuresOnScreen > 0 || G.flow) { treasureHintSince = 0; treasureHintPos = null; return; }
+  if (!treasureHintSince) { treasureHintSince = now; treasureHintPos = null; return; }
+  const age = now - treasureHintSince;
+  // nearest unfound treasure to the camera
+  let best = null, bd = Infinity;
+  for (const t of list) { const d = treasureDistM(t); if (d < bd) { bd = d; best = t; } }
+  if (age > 4000) maybeRoamTreasures(best ? bd : null);
+  if (!best || age < 6000) { treasureHintPos = null; return; }
+  const fade = Math.min(1, (age - 6000) / 900);
+  const [tx, ty] = toScreen(best.lon, best.lat);
+  const ep = edgePoint(tx, ty);
+  treasureHintPos = { x: ep.x, y: ep.y, lon: best.lon, lat: best.lat, t: best };
+  const rar = treasureRarity(best);
+  const isCreature = isSpeciesTreasure(best);
+  const distTxt = bd >= 950 ? (bd / 1000).toFixed(bd < 9500 ? 1 : 0).replace('.0', '') + ' km' : Math.round(bd / 50) * 50 + ' m';
+  const bob = Math.sin(now / 420) * 2;
+  ctx.save();
+  ctx.globalAlpha = fade * 0.95;
+  // card
+  const label = (isCreature ? (best.treasure_type === 'roaming' ? '🐾 ' : '🦎 ') + (best.species_german || '') : '💎 ' + rar.name) ;
+  ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tw = Math.max(ctx.measureText(label).width, ctx.measureText(distTxt).width) + 16;
+  const cw = Math.max(74, tw), ch = 34;
+  // pull the card inward along the pointing direction so the chevron sits on the edge
+  const cx = ep.x - Math.cos(ep.ang) * (cw / 2 + 10), cy = ep.y - Math.sin(ep.ang) * (ch / 2 + 10) + bob;
+  Object.assign(treasureHintPos, { cx, cy, cw, ch });
+  ctx.fillStyle = 'rgba(20,16,10,0.86)';
+  ctx.beginPath(); ctx.roundRect(cx - cw / 2, cy - ch / 2, cw, ch, 4); ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = rar.rim; ctx.stroke();
+  ctx.fillStyle = '#fff4d0'; ctx.fillText(label, cx, cy - 7);
+  ctx.fillStyle = rar.rim; ctx.fillText(distTxt, cx, cy + 8);
+  // chevron on the edge, pulsing outward
+  const pulse = 1 + Math.sin(now / 300) * 0.15;
+  ctx.save(); ctx.translate(ep.x, ep.y + bob); ctx.rotate(ep.ang);
+  ctx.beginPath(); ctx.moveTo(10 * pulse, 0); ctx.lineTo(-5, -8); ctx.lineTo(-2, 0); ctx.lineTo(-5, 8); ctx.closePath();
+  ctx.fillStyle = rar.rim; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#1a140c'; ctx.stroke();
+  ctx.restore();
+  ctx.restore();
+}
+
 function drawTallTreeFogHint(ctx) {
   let trees = G.tallRevealed ? allTallTrees() : hintTallTrees(12);
   if (!trees.length) return;
@@ -3863,15 +4048,13 @@ function drawTallTreeFogHint(ctx) {
     if (d < bd) { bd = d; best = { t, x, y }; }
   }
   if (!best) return;
-  // Clamp direction vector to the screen edge (with margin)
-  const dx = best.x - W/2, dy = best.y - H/2;
-  const k = Math.min(1,
-    (W/2 - 70) / Math.max(Math.abs(dx), 1e-9),
-    (H/2 - 90) / Math.max(Math.abs(dy), 1e-9));
+  // Clamp direction vector to the HUD-safe frame
+  const ep = edgePoint(best.x, best.y);
+  const k = ep.k;
   // k<1: target is off screen → mist sits at the edge with a chevron.
   // k=1: an undiscovered giant hides right here → mist gathers on the spot.
   const onSpot = k >= 1;
-  const ex = W/2 + dx*k, ey = H/2 + dy*k;
+  const ex = onSpot ? best.x : ep.x, ey = onSpot ? best.y : ep.y;
   fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat };
   // Distance in meters (approx equirectangular)
   const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
@@ -4002,6 +4185,7 @@ function drawTopLandmarks(ctx) {
     }
     drawTallTreeFogHint(ctx);
   }
+  drawTreasureHint(ctx);
 
   // Dev-mode tree (5-tap badge easter egg): always visible once unlocked,
   // even before treasures/reveal. With GPS active, show distance + bearing
@@ -6644,14 +6828,18 @@ const TREASURE_RARITY = {
   xp:    {rim:'#5ee6ff', glow:'94,230,255', name:'Erfahrung'},
   rare_seed:   {rim:'#9be86a', glow:'155,232,106', name:'Seltener Samen'},
   ancient_map: {rim:'#e0c080', glow:'224,192,128', name:'Alte Karte'},
+  WANDER:  {rim:'#ff9ccf', glow:'255,156,207', name:'Durchzügler'},   // roaming wildlife
+  roaming: {rim:'#ff9ccf', glow:'255,156,207', name:'Durchzügler'},
 };
+const ROAMING_TYPES = new Set(['species', 'n2k_species', 'roaming']);
+function isSpeciesTreasure(t) { return ROAMING_TYPES.has(t.treasure_type) && !!t.species_name; }
 let _coarsePointer = null;
 function isCoarsePointer() {
   if (_coarsePointer == null) { try { _coarsePointer = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches); } catch (e) { _coarsePointer = false; } }
   return _coarsePointer;
 }
 function treasureRarity(t) {
-  if (t.treasure_type === 'species' || t.treasure_type === 'n2k_species') return TREASURE_RARITY[t.species_category] || TREASURE_RARITY.LC;
+  if (ROAMING_TYPES.has(t.treasure_type)) return TREASURE_RARITY[t.species_category] || TREASURE_RARITY.LC;
   return TREASURE_RARITY[t.treasure_type] || TREASURE_RARITY.coins;
 }
 // Treasure sprites grow with zoom so they stay findable/tappable at street level.
@@ -6723,7 +6911,7 @@ function drawTreasure(ctx, t) {
   const ph = treasurePhase(t);
   const bob = Math.sin(time / 650 + ph) * 2.5 * s;
   const rar = treasureRarity(t);
-  const isSpecies = (t.treasure_type === 'species' || t.treasure_type === 'n2k_species') && t.species_name;
+  const isSpecies = isSpeciesTreasure(t);
   const R = 15 * s;                 // medallion radius
   const cy = y - 6 * s + bob;       // medallion centre (sprite floats above its shadow)
 
@@ -6805,7 +6993,7 @@ function drawTreasure(ctx, t) {
   // Name tag at street level (MAP_FONT.label, like giant-tree labels)
   if (G.cam.zoom >= 16.5) {
     const label = isSpecies ? t.species_german : (rar.name + (t.value ? ' +' + t.value : ''));
-    const sub = isSpecies && t.species_category ? t.species_category + ' · ' + rar.name : '';
+    const sub = isSpecies && t.species_category ? (t.treasure_type === 'roaming' ? '🐾 ' + rar.name + ' · ' + tr('zieht weiter') : t.species_category + ' · ' + rar.name) : '';
     ctx.font = MAP_FONT.label;
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     const ty = Math.round(y + 8 * s);
@@ -6920,6 +7108,16 @@ function drawCollectFX(ctx) {
 
 // Map species names to sprite drawing groups
 const SPECIES_SPRITE_MAP = {
+  // roaming wildlife (Durchzügler — srv/treasures.go roamingSpecies)
+  'Alces alces':                'moose',
+  'Canis aureus':               'jackal',
+  'Canis lupus':                'wolf',
+  'Felis silvestris':           'wildcat',
+  'Lutra lutra':                'otter',
+  'Castor fiber':               'beaver',
+  'Grus grus':                  'crane',
+  'Ciconia ciconia':            'stork_white',
+  'Gypaetus barbatus':          'vulture',
   'Lynx lynx':                  'lynx',
   'Barbastella barbastellus':   'bat',
   'Cricetus cricetus':          'hamster',
@@ -6944,12 +7142,252 @@ const SPECIES_SPRITE_MAP = {
 
 // Species sprite only (frame, glow, label are drawn by drawTreasure). `y` is the
 // already-bobbed ground anchor; the creature occupies roughly y-17s … y+6s.
+// ---- Roaming wildlife sprites (Durchzügler) ----
+// Same contract as drawSpeciesTreasure branches: `x` centre, `by` bobbed ground
+// anchor, `s` scale; the creature occupies roughly by-18s … by+8s. Each one is a
+// small side-view pixel figure with a readable silhouette (antlers, bushy tail,
+// red crown…) and one quiet idle motion so the map feels alive without noise.
+const RS_px = (ctx, x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), Math.max(1, Math.round(w)), Math.max(1, Math.round(h))); };
+const RS_ell = (ctx, x, y, rx, ry, c, rot) => { ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot || 0, 0, Math.PI * 2); ctx.fill(); };
+const RS_tri = (ctx, pts, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]); ctx.closePath(); ctx.fill(); };
+const RS_line = (ctx, x1, y1, x2, y2, c, w) => { ctx.strokeStyle = c; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+
+function drawRoamingSprite(ctx, sprite, x, by, s, time) {
+  const t = time / 1000;
+  switch (sprite) {
+    case 'moose': {
+      // Elch: tall dark-brown bull, shoulder hump, dewlap, palmate antlers, pale legs
+      const body = '#3b2a1c', dark = '#241810', pale = '#8c7a62', antler = '#d9c7a0';
+      const breathe = Math.sin(t * 1.6) * 0.4 * s;
+      // legs (back pair darker, front pair lighter) — long, slightly splayed
+      RS_line(ctx, x - 4.5*s, by - 4*s, x - 5.5*s, by + 7*s, dark, 1.8*s);
+      RS_line(ctx, x + 3.5*s, by - 4*s, x + 2.5*s, by + 7*s, dark, 1.8*s);
+      RS_line(ctx, x - 2.5*s, by - 4*s, x - 3*s, by + 7.5*s, pale, 1.8*s);
+      RS_line(ctx, x + 5.5*s, by - 4*s, x + 5*s, by + 7.5*s, pale, 1.8*s);
+      // hooves
+      RS_px(ctx, x - 6.5*s, by + 6.5*s, 2.2*s, 1.2*s, '#111'); RS_px(ctx, x + 4*s, by + 6.5*s, 2.2*s, 1.2*s, '#111');
+      RS_px(ctx, x - 4*s, by + 7*s, 2.2*s, 1.2*s, '#111'); RS_px(ctx, x + 1.5*s, by + 7*s, 2.2*s, 1.2*s, '#111');
+      // body + shoulder hump
+      RS_ell(ctx, x, by - 6*s + breathe, 8.5*s, 5*s, body);
+      RS_ell(ctx, x - 3*s, by - 9.5*s + breathe, 4.5*s, 3.2*s, body);
+      // neck + head (long roman nose pointing right)
+      RS_ell(ctx, x + 6*s, by - 10*s + breathe, 3.2*s, 3.8*s, body, -0.5);
+      RS_ell(ctx, x + 9*s, by - 9*s + breathe, 3.6*s, 2.4*s, body, 0.25);
+      RS_ell(ctx, x + 12*s, by - 8*s + breathe, 1.6*s, 1.6*s, '#1b1410'); // nose
+      // dewlap (bell)
+      RS_ell(ctx, x + 6.5*s, by - 6*s + breathe, 1.1*s, 2.2*s, dark);
+      // ear
+      RS_ell(ctx, x + 5.5*s, by - 13.5*s + breathe, 1.1*s, 2*s, body, 0.4);
+      // palmate antlers: two shovels with tines
+      for (const dir of [-1, 1]) {
+        const ax = x + 6.5*s + dir * 2.6*s, ay = by - 14*s + breathe;
+        RS_line(ctx, x + 6.5*s, by - 13*s + breathe, ax, ay - 1.5*s, antler, 1.4*s);
+        RS_ell(ctx, ax + dir * 2.4*s, ay - 2.6*s, 3.4*s, 1.9*s, antler, dir * 0.5);
+        for (let i = 0; i < 4; i++) {
+          const tx = ax + dir * (0.4 + i * 1.5) * s, ty = ay - 3.4*s - i * 0.5*s;
+          RS_line(ctx, tx, ty, tx + dir * 0.3*s, ty - 1.8*s, antler, 0.9*s);
+        }
+      }
+      // eye highlight
+      RS_px(ctx, x + 8.5*s, by - 10.5*s + breathe, 1*s, 1*s, '#111');
+      RS_px(ctx, x + 8.8*s, by - 10.8*s + breathe, 0.5*s, 0.5*s, '#fff');
+      break;
+    }
+    case 'jackal': {
+      // Goldschakal: slender sandy-gold canid, big pointed ears, black-tipped tail, trotting pose
+      const fur = '#c9a24e', shade = '#9d7a33', cream = '#efe0b8';
+      const step = Math.sin(t * 3) * 1.2 * s;
+      RS_line(ctx, x - 3.5*s, by - 2*s, x - 5*s + step, by + 5*s, shade, 1.5*s);
+      RS_line(ctx, x + 3*s, by - 2*s, x + 4.5*s - step, by + 5*s, shade, 1.5*s);
+      RS_line(ctx, x - 2*s, by - 2*s, x - 1.5*s - step, by + 5.5*s, fur, 1.5*s);
+      RS_line(ctx, x + 4.5*s, by - 2*s, x + 5.5*s + step, by + 5.5*s, fur, 1.5*s);
+      RS_ell(ctx, x + 0.5*s, by - 4.5*s, 6.5*s, 3.2*s, fur, -0.1);
+      RS_ell(ctx, x + 1*s, by - 3*s, 4.5*s, 1.6*s, cream);           // pale belly
+      // tail: down, bushy, black tip
+      RS_line(ctx, x - 6*s, by - 5*s, x - 9*s, by + 0.5*s, fur, 2.2*s);
+      RS_ell(ctx, x - 9.2*s, by + 1*s, 1.3*s, 1.6*s, '#1a1410');
+      // neck + head with narrow muzzle
+      RS_ell(ctx, x + 6*s, by - 7*s, 2.8*s, 2.6*s, fur);
+      RS_tri(ctx, [x + 7.5*s, by - 8*s, x + 11.5*s, by - 6.3*s, x + 7.5*s, by - 5.6*s], fur);
+      RS_px(ctx, x + 11*s, by - 6.8*s, 1*s, 1*s, '#111');
+      // tall ears (inner cream)
+      RS_tri(ctx, [x + 4*s, by - 8.5*s, x + 4.6*s, by - 13.5*s, x + 6.6*s, by - 9*s], fur);
+      RS_tri(ctx, [x + 6.8*s, by - 8.5*s, x + 7.6*s, by - 13*s, x + 9*s, by - 9*s], fur);
+      RS_tri(ctx, [x + 4.8*s, by - 9.2*s, x + 5*s, by - 12*s, x + 6.2*s, by - 9.5*s], cream);
+      RS_px(ctx, x + 7.6*s, by - 8*s, 1*s, 1*s, '#241a0c'); RS_px(ctx, x + 7.9*s, by - 8.3*s, 0.5*s, 0.5*s, '#fff');
+      break;
+    }
+    case 'wolf': {
+      // Wolf: heavy grey, straight bushy tail, broad head, amber eye; head lifted mid-howl
+      const fur = '#6e6f6b', dark = '#3f403d', light = '#b7b8b2';
+      const howl = Math.max(0, Math.sin(t * 0.9)) * 1.5 * s;
+      RS_line(ctx, x - 4*s, by - 2*s, x - 5.5*s, by + 5.5*s, dark, 1.8*s);
+      RS_line(ctx, x + 3*s, by - 2*s, x + 3.5*s, by + 5.5*s, dark, 1.8*s);
+      RS_line(ctx, x - 2*s, by - 2*s, x - 2.5*s, by + 6*s, fur, 1.8*s);
+      RS_line(ctx, x + 5*s, by - 2*s, x + 5.5*s, by + 6*s, fur, 1.8*s);
+      RS_ell(ctx, x, by - 5*s, 7.5*s, 3.8*s, fur);
+      RS_ell(ctx, x + 0.5*s, by - 3.5*s, 5*s, 2*s, light);
+      RS_ell(ctx, x - 2*s, by - 6.5*s, 4*s, 2*s, dark);               // saddle
+      RS_line(ctx, x - 7*s, by - 5*s, x - 11.5*s, by - 3*s, fur, 2.6*s); // tail straight back
+      RS_px(ctx, x - 12*s, by - 3.5*s, 1.6*s, 1.4*s, dark);
+      // head tilted up when howling
+      RS_ell(ctx, x + 6.5*s, by - 8*s - howl, 3.2*s, 3*s, fur);
+      RS_tri(ctx, [x + 8*s, by - 9.5*s - howl * 1.4, x + 12.5*s, by - 9*s - howl * 2.2, x + 8.5*s, by - 6*s - howl], fur);
+      RS_px(ctx, x + 12*s, by - 9.6*s - howl * 2.2, 1.1*s, 1.1*s, '#111');
+      RS_tri(ctx, [x + 4.5*s, by - 10*s - howl, x + 5*s, by - 13.5*s - howl, x + 7*s, by - 10.5*s - howl], fur);
+      RS_tri(ctx, [x + 7.2*s, by - 10*s - howl, x + 8.2*s, by - 13*s - howl, x + 9.2*s, by - 10.3*s - howl], fur);
+      RS_px(ctx, x + 8*s, by - 9.2*s - howl, 1.1*s, 1*s, '#e0a630');
+      break;
+    }
+    case 'wildcat': {
+      // Wildkatze: stocky tabby, dark dorsal stripe, bushy blunt tail with black rings
+      const fur = '#9a8a66', stripe = '#4a3f2c', cream = '#d8ccae';
+      const twitch = Math.sin(t * 2.2) * 0.6 * s;
+      RS_line(ctx, x - 3.5*s, by - 1.5*s, x - 4*s, by + 4.5*s, fur, 1.6*s);
+      RS_line(ctx, x + 2.5*s, by - 1.5*s, x + 3*s, by + 4.5*s, fur, 1.6*s);
+      RS_line(ctx, x - 1.5*s, by - 1.5*s, x - 1.5*s, by + 5*s, cream, 1.4*s);
+      RS_line(ctx, x + 4.5*s, by - 1.5*s, x + 4.5*s, by + 5*s, cream, 1.4*s);
+      RS_ell(ctx, x + 0.5*s, by - 4*s, 6.5*s, 3.4*s, fur);
+      for (let i = -1; i <= 2; i++) RS_px(ctx, x + i * 2.4*s - 0.5*s, by - 7*s, 1*s, 3.5*s, stripe); // flank stripes
+      RS_px(ctx, x - 5*s, by - 7.4*s, 11*s, 0.9*s, stripe);                                      // dorsal line
+      // tail: thick, horizontal, black rings, blunt black tip
+      RS_line(ctx, x - 6.5*s, by - 4*s, x - 12*s, by - 3*s + twitch, fur, 2.6*s);
+      RS_px(ctx, x - 9.2*s, by - 5*s + twitch * 0.5, 1.2*s, 2.6*s, stripe); RS_px(ctx, x - 10.8*s, by - 4.8*s + twitch * 0.8, 1.2*s, 2.6*s, stripe);
+      RS_ell(ctx, x - 12.3*s, by - 3*s + twitch, 1.5*s, 1.4*s, '#1a1410');
+      // round head, short muzzle, small rounded ears
+      RS_ell(ctx, x + 6.5*s, by - 6.5*s, 3.3*s, 3*s, fur);
+      RS_ell(ctx, x + 8*s, by - 5.6*s, 1.8*s, 1.3*s, cream);
+      RS_px(ctx, x + 9*s, by - 6.3*s, 1*s, 0.8*s, '#c47a7a');
+      RS_ell(ctx, x + 4.6*s, by - 9.2*s, 1.3*s, 1.6*s, fur); RS_ell(ctx, x + 8.2*s, by - 9.2*s, 1.3*s, 1.6*s, fur);
+      RS_px(ctx, x + 5.2*s, by - 8.5*s, 0.9*s, 0.5*s, stripe); RS_px(ctx, x + 7.2*s, by - 8.5*s, 0.9*s, 0.5*s, stripe); // forehead "M"
+      RS_px(ctx, x + 7.2*s, by - 7.2*s, 1*s, 0.9*s, '#7fb24a'); RS_px(ctx, x + 7.6*s, by - 7.2*s, 0.3*s, 0.9*s, '#111');
+      break;
+    }
+    case 'otter': {
+      // Fischotter: sleek brown, pale throat, whiskers, thick tapering tail; on a ripple
+      const fur = '#5a3f2a', dark = '#3a2819', throat = '#cbb393';
+      const wig = Math.sin(t * 2.5) * 1.3 * s;
+      // water ripple
+      ctx.strokeStyle = 'rgba(120,190,230,0.55)'; ctx.lineWidth = 0.8*s;
+      ctx.beginPath(); ctx.ellipse(x, by + 1.5*s, 11*s, 2.4*s, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(x, by + 1.5*s, 7*s, 1.4*s, 0, 0, Math.PI * 2); ctx.stroke();
+      // tail (behind body)
+      ctx.strokeStyle = fur; ctx.lineWidth = 2.4*s; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - 6*s, by - 1*s); ctx.quadraticCurveTo(x - 10*s, by - 2*s + wig, x - 13*s, by + wig); ctx.stroke();
+      // long low body
+      RS_ell(ctx, x - 1*s, by - 2.2*s, 7.5*s, 2.8*s, fur, -0.08);
+      RS_ell(ctx, x + 5*s, by - 3.6*s, 2.6*s, 2.3*s, fur);               // head
+      RS_ell(ctx, x + 6.5*s, by - 2.6*s, 1.8*s, 1.2*s, throat);          // muzzle/throat
+      RS_px(ctx, x + 7.8*s, by - 3.8*s, 1.1*s, 0.9*s, '#111');           // nose
+      RS_px(ctx, x + 5.6*s, by - 4.6*s, 0.9*s, 0.9*s, '#111'); RS_px(ctx, x + 5.9*s, by - 4.9*s, 0.4*s, 0.4*s, '#fff');
+      RS_ell(ctx, x + 3.6*s, by - 5.4*s, 0.8*s, 0.7*s, dark);            // tiny ear
+      RS_line(ctx, x + 7*s, by - 3*s, x + 10.5*s, by - 4*s, '#e8e0d0', 0.4*s); RS_line(ctx, x + 7*s, by - 2.6*s, x + 10.5*s, by - 2*s, '#e8e0d0', 0.4*s); // whiskers
+      // webbed feet
+      RS_px(ctx, x - 3*s, by, 2.2*s, 1*s, dark); RS_px(ctx, x + 2*s, by, 2.2*s, 1*s, dark);
+      break;
+    }
+    case 'beaver': {
+      // Biber: round brown bulk, flat scaly paddle tail, orange incisors, holding a twig
+      const fur = '#6b4a2c', dark = '#4a3119', tail = '#3b3028';
+      const nib = (Math.floor(t * 4) % 2) * 0.6 * s;
+      // paddle tail (flat, crosshatched)
+      RS_ell(ctx, x - 9*s, by + 1.5*s, 5*s, 2*s, tail, -0.15);
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 0.5*s;
+      for (let i = -3; i <= 3; i++) { ctx.beginPath(); ctx.moveTo(x - 9*s + i * 1.3*s, by - 0.3*s); ctx.lineTo(x - 9.5*s + i * 1.3*s, by + 3.3*s); ctx.stroke(); }
+      // body sitting up
+      RS_ell(ctx, x, by - 4*s, 6.5*s, 6*s, fur);
+      RS_ell(ctx, x + 1*s, by - 2.5*s, 4*s, 3.5*s, '#8a6540');          // lighter chest
+      RS_ell(ctx, x + 2*s, by - 10*s, 3.4*s, 3*s, fur);                  // head
+      RS_ell(ctx, x + 0.2*s, by - 12.5*s, 1*s, 1.1*s, dark); RS_ell(ctx, x + 3.8*s, by - 12.6*s, 1*s, 1.1*s, dark); // ears
+      RS_px(ctx, x + 4.6*s, by - 10.4*s, 1.3*s, 1.1*s, '#111');          // nose
+      RS_px(ctx, x + 4.2*s, by - 9*s - nib, 1.6*s, 1.4*s, '#e8a040');    // orange incisors
+      RS_px(ctx, x + 2.4*s, by - 11*s, 0.9*s, 0.9*s, '#111'); RS_px(ctx, x + 2.7*s, by - 11.3*s, 0.4*s, 0.4*s, '#fff');
+      // twig held in paws
+      RS_line(ctx, x + 1*s, by - 6*s, x + 8*s, by - 9*s, '#a67c52', 1.1*s);
+      RS_ell(ctx, x + 7.5*s, by - 9.5*s, 1.4*s, 0.9*s, '#5e9a3a', -0.5); RS_ell(ctx, x + 6*s, by - 8*s, 1.3*s, 0.8*s, '#5e9a3a', 0.4);
+      RS_px(ctx, x - 1*s, by - 6.5*s, 1.6*s, 1.4*s, dark); RS_px(ctx, x + 2.5*s, by - 7*s, 1.6*s, 1.4*s, dark);  // paws
+      // feet
+      RS_px(ctx, x - 3.5*s, by + 1*s, 3*s, 1.2*s, dark); RS_px(ctx, x + 1.5*s, by + 1*s, 3*s, 1.2*s, dark);
+      break;
+    }
+    case 'crane': {
+      // Kranich: tall grey, long neck, black-and-white head stripe, red crown, drooping bustle
+      const grey = '#8d9094', dark = '#2a2b2e', white = '#f0f0ee';
+      const step = Math.sin(t * 1.4);
+      RS_line(ctx, x - 1*s, by - 3*s, x - 2*s, by + 7*s, dark, 1.1*s);
+      RS_line(ctx, x + 1.5*s, by - 3*s, x + 2.5*s + step * 1.5*s, by + 7*s - Math.max(0, step) * 3*s, dark, 1.1*s);
+      // body + bustle (drooping tertials behind)
+      RS_ell(ctx, x, by - 6*s, 6.5*s, 3.6*s, grey, -0.15);
+      RS_tri(ctx, [x - 4*s, by - 7*s, x - 10*s, by - 3*s, x - 5*s, by - 3.5*s], dark);
+      RS_tri(ctx, [x - 5*s, by - 8*s, x - 9.5*s, by - 5*s, x - 4.5*s, by - 5*s], grey);
+      // S-neck
+      ctx.strokeStyle = grey; ctx.lineWidth = 2.2*s; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x + 4.5*s, by - 8*s); ctx.quadraticCurveTo(x + 8*s, by - 11*s, x + 6.5*s, by - 16*s); ctx.stroke();
+      // black front-of-neck stripe
+      ctx.strokeStyle = dark; ctx.lineWidth = 1*s;
+      ctx.beginPath(); ctx.moveTo(x + 5.5*s, by - 8.5*s); ctx.quadraticCurveTo(x + 9*s, by - 11*s, x + 7.3*s, by - 15.5*s); ctx.stroke();
+      // head
+      RS_ell(ctx, x + 6.5*s, by - 17*s, 2.3*s, 1.7*s, dark, 0.2);
+      RS_px(ctx, x + 4.5*s, by - 18.6*s, 5*s, 0.9*s, white);            // white cheek stripe
+      RS_ell(ctx, x + 6*s, by - 18.6*s, 1.3*s, 0.8*s, '#d4252a');         // red crown
+      RS_tri(ctx, [x + 8.5*s, by - 17.3*s, x + 13*s, by - 16.5*s, x + 8.5*s, by - 16*s], '#9a9a8a'); // bill
+      RS_px(ctx, x + 7.6*s, by - 17.6*s, 0.8*s, 0.8*s, '#f5c640');
+      break;
+    }
+    case 'stork_white': {
+      // Weißstorch: white, black flight feathers folded over the back, red bill + legs, clattering head tilt
+      const white = '#f4f2ec', black = '#1d1d22', red = '#d6322a';
+      const tilt = Math.max(0, Math.sin(t * 0.8)) * 2.5 * s;
+      RS_line(ctx, x - 1.5*s, by - 3*s, x - 2*s, by + 7.5*s, red, 1.2*s);
+      RS_line(ctx, x + 2*s, by - 3*s, x + 2.5*s, by + 7.5*s, red, 1.2*s);
+      RS_ell(ctx, x, by - 6*s, 6.5*s, 4*s, white, -0.1);
+      RS_tri(ctx, [x - 3*s, by - 9*s, x - 10*s, by - 4*s, x - 3*s, by - 4*s], black); // folded primaries
+      RS_ell(ctx, x - 1*s, by - 8*s, 5*s, 1.8*s, '#dcdad2', -0.2);
+      ctx.strokeStyle = white; ctx.lineWidth = 2.3*s; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x + 4.5*s, by - 8*s); ctx.quadraticCurveTo(x + 7.5*s, by - 10*s, x + 6.5*s, by - 15*s + tilt * 0.3); ctx.stroke();
+      RS_ell(ctx, x + 6.8*s, by - 16*s + tilt * 0.3, 2.3*s, 1.9*s, white);
+      RS_tri(ctx, [x + 8.6*s, by - 16.8*s - tilt, x + 15*s, by - 15.8*s - tilt * 2.2, x + 8.6*s, by - 15*s], red);
+      RS_px(ctx, x + 7.6*s, by - 16.6*s + tilt * 0.3, 0.9*s, 0.9*s, '#111');
+      RS_px(ctx, x + 7.9*s, by - 16.9*s + tilt * 0.3, 0.4*s, 0.4*s, '#fff');
+      break;
+    }
+    case 'vulture': {
+      // Bartgeier soaring: huge narrow wings, wedge tail, rusty belly, black mask + beard; slow circling bob
+      const wing = '#2e2a30', rust = '#c98a4a', pale = '#e6d2a6';
+      const bank = Math.sin(t * 0.7) * 0.12, lift = Math.sin(t * 1.1) * 1.5 * s;
+      const cy = by - 10*s + lift;
+      ctx.save(); ctx.translate(x, cy); ctx.rotate(bank);
+      // shadow on the ground (drawn in world coords, before rotation... keep it simple: skip)
+      // wings (long, narrow, fingered tips)
+      for (const d of [-1, 1]) {
+        RS_tri(ctx, [0, -1.5*s, d * 16*s, -6*s, d * 15*s, -3*s, 0, 2.2*s], wing);
+        for (let i = 0; i < 4; i++) RS_tri(ctx, [d * (13 + i) * s, -5.5*s + i * 0.9*s, d * (16.5 + i * 0.4) * s, -7.5*s + i * 1.1*s, d * (14.3 + i) * s, -4.3*s + i * 0.9*s], wing);
+      }
+      // wedge tail
+      RS_tri(ctx, [-1.6*s, 1*s, 0, 8.5*s, 1.6*s, 1*s], wing);
+      // body + rusty belly
+      RS_ell(ctx, 0, 0.5*s, 2.6*s, 4.2*s, rust);
+      RS_ell(ctx, 0, -3.2*s, 2*s, 2*s, pale);                            // pale head
+      RS_px(ctx, -1.8*s, -3.8*s, 3.6*s, 0.8*s, '#111');                   // black mask
+      RS_tri(ctx, [-0.6*s, -1.6*s, 0.6*s, -1.6*s, 0, 0.2*s], '#111');     // beard
+      RS_px(ctx, -0.5*s, -5.2*s, 1*s, 1.2*s, '#8a8a80');                  // bill (from above)
+      RS_px(ctx, -1.2*s, -3.4*s, 0.6*s, 0.6*s, '#f0b030'); RS_px(ctx, 0.6*s, -3.4*s, 0.6*s, 0.6*s, '#f0b030'); // red-ringed eyes
+      ctx.restore();
+      // ground shadow
+      RS_ell(ctx, x + 2*s, by + 3*s, 9*s, 1.6*s, 'rgba(0,0,0,0.18)');
+      break;
+    }
+  }
+}
+
+const ROAMING_SPRITES = new Set(['moose', 'jackal', 'wolf', 'wildcat', 'otter', 'beaver', 'crane', 'stork_white', 'vulture']);
 function drawSpeciesTreasure(ctx, x, y, t, s) {
   const sprite = SPECIES_SPRITE_MAP[t.species_name] || 'butterfly_white';
   const time = Date.now();
   s = s || treasureScale();
   ctx.save();
   const by = y;
+  if (ROAMING_SPRITES.has(sprite)) { drawRoamingSprite(ctx, sprite, x, by, s, time); ctx.restore(); return; }
 
   if (sprite === 'lynx') {
     // Pixel-art lynx face: tufted ears, spotted
@@ -7817,7 +8255,7 @@ function initMiniInput() {
     // Dragging the rectangle keeps the grab offset; dragging elsewhere centres on the pointer.
     const [plon, plat] = miniToGeo(mx, my);
     MINI.drag = { mx, my, moved: false, inRect, offLon: inRect ? G.cam.lon - plon : 0, offLat: inRect ? G.cam.lat - plat : 0 };
-    if (flyAnim) { cancelAnimationFrame(flyAnim); flyAnim = null; }
+    stopCameraAnims();
     mc.setPointerCapture(e.pointerId);
     mc.classList.add('dragging');
   });
@@ -7869,6 +8307,7 @@ function initMiniInput() {
 let loadTimer;
 function initGameInput() {
   gc.addEventListener('mousedown', e => {
+    stopCameraAnims();
     G.drag = { active:true, sx:e.clientX, sy:e.clientY, slon:G.cam.lon, slat:G.cam.lat, moved:false };
     G.geo.follow = false; // manual pan disables GPS follow-mode
     if (G.flow) G.flow.follow = false;
@@ -7894,6 +8333,7 @@ function initGameInput() {
   gc.addEventListener('mouseleave', () => { gc.classList.remove('dragging'); G.drag.active=false; });
   gc.addEventListener('wheel', e => {
     e.preventDefault();
+    stopCameraAnims();
     G.cam.zoom += e.deltaY > 0 ? -0.4 : 0.4;
     G.cam.zoom = Math.max(13, Math.min(20, G.cam.zoom));
     render(); renderMini();
@@ -7905,12 +8345,12 @@ function initGameInput() {
   // Touch
   let touchDist = 0;
   gc.addEventListener('touchstart', e => {
+    stopCameraAnims();
     if (e.touches.length===1) {
       e.preventDefault();
       G.drag = {active:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,slon:G.cam.lon,slat:G.cam.lat,moved:false,wasPinch:false};
       G.geo.follow = false; // manual pan disables GPS follow-mode
       if (G.flow) G.flow.follow = false;
-    if (G.flow) G.flow.follow = false;
     } else if (e.touches.length===2) {
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       touchDist = Math.sqrt(dx*dx+dy*dy);
@@ -8361,6 +8801,13 @@ function onGameClick(e) {
     }
   }
 
+  // Treasure compass card: tap flies to the treasure it points at
+  if (treasureHintPos && Math.abs(treasureHintPos.x - x) < 70 && Math.abs(treasureHintPos.y - y) < 50) {
+    flyTo(treasureHintPos.lon, treasureHintPos.lat, Math.max(G.cam.zoom, 16.5));
+    const t = treasureHintPos.t;
+    toast((isSpeciesTreasure(t) ? '🐾 ' + (t.species_german || '') : '💎 ' + treasureRarity(t).name) + ' · ' + tr('Der Kompass führt dich hin'), '');
+    return;
+  }
   // Miracle fog hint: tapping the mist flies to the nearest giant tree
   if (fogHintPos && Math.abs(fogHintPos.x - x) < 45 && Math.abs(fogHintPos.y - y) < 45) {
     flyTo(fogHintPos.lon, fogHintPos.lat, Math.max(G.cam.zoom, 15.5));
@@ -8442,6 +8889,10 @@ function onGameClick(e) {
 }
 
 function showParcelPopup(f, tappedFp) {
+  // Refresh (same parcel re-rendered by SSE / async fetches / timers) vs. a
+  // genuinely new selection. Only the latter may move the camera — otherwise
+  // a forest-value fetch landing after the player panned away "recentered" them.
+  const isRefresh = G.sel === f || (G.sel && f && G.sel.properties.parcel_id === f.properties.parcel_id);
   G.sel = f;
   G.selFp = tappedFp || null;
   const p = f.properties;
@@ -8457,7 +8908,7 @@ function showParcelPopup(f, tappedFp) {
   // Keep camera stable on parcel tap (no zoom jumps — important on mobile).
   // Only nudge the view if the parcel is off-screen (e.g. re-opened programmatically).
   const [pLon, pLat] = featureLonLat(f);
-  if (gc) {
+  if (gc && !isRefresh && !(G.drag && G.drag.active) && !MINI.drag) {
     const [sx, sy] = toScreen(pLon, pLat);
     const m = 40; // margin
     if (sx < m || sx > gc.width - m || sy < m || sy > gc.height - m) {
@@ -8532,6 +8983,11 @@ function showParcelPopup(f, tappedFp) {
   renderBuildingRows(tappedFp);
   renderEnhancedPopupRows(pid, price);
   renderSimilarPopupRows(pid);
+  // Sticky similar-mode: a tap on a parcel that is neither the reference nor a
+  // match makes it the new reference (camera stays put).
+  if (!isRefresh && G.similar && pid !== G.similar.refPid && !G.similar.data.results.some(r => r.parcel_id === pid)) {
+    setTimeout(() => { if (G.sel === f) findSimilarParcels({ keepCamera: true, silent: true }); }, 0);
+  }
 
   const act = document.getElementById('pp-actions');
   act.innerHTML = '';
@@ -8611,7 +9067,7 @@ function showParcelPopup(f, tappedFp) {
   // Similar parcels search (cadastre R-tree + srtm terrain matching)
   act.innerHTML += `<div class="similar-row">
     <button class="btn btn-secondary btn-small" id="pp-similar-btn" onclick="findSimilarParcels()">🔍 Ähnliche Parzellen</button>
-    <span class="similar-radius" id="pp-similar-radius" title="${tr('Vergleich mit den bereits geladenen Parzellen in der Nähe')}"><i>${tr('in der Nähe')}</i></span>
+    <span class="similar-radius" id="pp-similar-radius" title="${tr('Vergleich mit den bereits geladenen Parzellen in der Nähe')}"><i>${similarRadiusLabel()}</i></span>
   </div>`;
   // Lazy count: prefetch the current radius in background, show "(N)" when it lands
   prefetchSimilarCount(pid);
@@ -8980,7 +9436,7 @@ function similarQueryFor(f) {
 
 async function fetchSimilar(f, radius) {
   const { pid, params } = similarQueryFor(f);
-  const key = pid + ':' + radius;
+  const key = pid + ':' + radius + ':' + G.vpTiles.size;   // more cells loaded → fresh pool
   if (G.similarCache[key]) return G.similarCache[key];
   params.set('radius', radius);
   const d = await GET('/api/similar?' + params.toString());
@@ -8988,9 +9444,59 @@ async function fetchSimilar(f, radius) {
   return d;
 }
 
+/** Search radius that matches what the player is looking at: a bit more than
+ *  the half-diagonal of the viewport, 1–6 km (server cap), 500 m steps. */
+function similarAutoRadius() {
+  const b = viewBounds();
+  const mLon = 111320 * Math.cos(G.cam.lat * Math.PI / 180);
+  const half = Math.hypot((b.e - b.w) * mLon, (b.n - b.s) * 110540) / 2;
+  return Math.max(1000, Math.min(6000, Math.round(half * 1.15 / 500) * 500));
+}
+/** Radius the popup label describes: the active search's, else what a search would use now. */
+function similarRadiusNow() { return (G.similar && G.similar.radius) || Math.max(G.similarRadius, similarAutoRadius()); }
+function similarRadiusLabel() {
+  const km = similarRadiusNow() / 1000;
+  return (km >= 2 ? Math.round(km) : km.toFixed(1).replace('.0', '')) + ' km ' + tr('Umkreis');
+}
+function updateSimilarRadiusLabel() {
+  const span = document.getElementById('pp-similar-radius');
+  if (span) span.innerHTML = '<i>' + similarRadiusLabel() + '</i>';
+}
+
+/** Sticky similar-mode: after a pan/zoom (new cells, wider view) widen the
+ *  search and merge new matches in — the player never has to tap again. */
+let _simRefreshing = false;
+async function refreshSimilarForView() {
+  const sim = G.similar;
+  if (!sim || _simRefreshing || sim.refF == null) return;
+  const radius = Math.max(sim.radius || 0, similarAutoRadius());
+  if (radius === sim.radius && sim.cellGen === G.vpTiles.size) return;
+  _simRefreshing = true;
+  try {
+    const d = await fetchSimilar(sim.refF, radius);
+    if (G.similar !== sim || !d || d.error || !d.results) return;
+    const have = new Map(sim.data.results.map(r => [r.parcel_id, r]));
+    let added = 0;
+    for (const r of d.results) {
+      const o = have.get(r.parcel_id);
+      if (!o) { have.set(r.parcel_id, r); added++; }
+      else if (r.score > o.score) Object.assign(o, r);
+    }
+    sim.data.results = [...have.values()].sort((a, b) => b.score - a.score);
+    sim.data.candidates = Math.max(sim.data.candidates || 0, d.candidates || 0);
+    sim.radius = radius; sim.cellGen = G.vpTiles.size;
+    updateSimilarRadiusLabel();
+    const b = document.getElementById('pp-similar-btn');
+    if (b && !b.disabled && G.sel) b.textContent = similarBtnLabel(G.sel.properties.parcel_id);
+    if (added) { render(); if (G.sel) renderSimilarPopupRows(G.sel.properties.parcel_id); }
+  } catch (e) { /* optional layer */ }
+  finally { _simRefreshing = false; }
+}
+
 function similarBtnLabel(pid) {
-  const cached = G.similarCache[pid + ':' + G.similarRadius];
-  const n = cached ? ' (' + cached.results.length + ')' : '';
+  let n = '';
+  if (G.similar && G.similar.refPid === pid) n = ' (' + G.similar.data.results.length + ')';
+  else { const cached = G.similarCache[pid + ':' + similarRadiusNow() + ':' + G.vpTiles.size]; if (cached) n = ' (' + cached.results.length + ')'; }
   return tr('🔍 Ähnliche in der Nähe') + n;
 }
 
@@ -8999,9 +9505,10 @@ function similarBtnLabel(pid) {
 function prefetchSimilarCount(pid) {
   const btn = document.getElementById('pp-similar-btn');
   if (btn) btn.textContent = similarBtnLabel(pid);
-  const key = pid + ':' + G.similarRadius;
+  updateSimilarRadiusLabel();
+  const key = pid + ':' + similarRadiusNow() + ':' + G.vpTiles.size;
   if (G.similarCache[key] || !G.sel || G.sel.properties.parcel_id !== pid) return;
-  fetchSimilar(G.sel, G.similarRadius).then(() => {
+  fetchSimilar(G.sel, similarRadiusNow()).then(() => {
     if (G.sel && G.sel.properties.parcel_id === pid) {
       const b = document.getElementById('pp-similar-btn');
       if (b && !b.disabled) b.textContent = similarBtnLabel(pid);
@@ -9018,11 +9525,12 @@ window.setSimilarRadius = function setSimilarRadius(r) {
   if (G.similar && G.sel && G.similar.refPid === G.sel.properties.parcel_id) findSimilarParcels();
 };
 
-window.findSimilarParcels = async function findSimilarParcels() {
+window.findSimilarParcels = async function findSimilarParcels(opts) {
+  opts = opts || {};
   if (!G.sel) return;
   const f = G.sel;
   const { pid, pLon, pLat } = similarQueryFor(f);
-  const radius = G.similarRadius;
+  const radius = Math.max(G.similarRadius, similarAutoRadius());
   const km = radius / 1000 + ' km';
   const btn = document.getElementById('pp-similar-btn');
   if (btn) { btn.disabled = true; btn.textContent = tr('⏳ Suche ähnliche Parzellen in der Nähe…'); }
@@ -9031,19 +9539,25 @@ window.findSimilarParcels = async function findSimilarParcels() {
     const d = await fetchSimilar(f, radius);
     if (!d || d.error || !d.results) throw new Error(d && d.error || 'no results');
     if (d.results.length === 0) {
-      toast(tr('🔍 Keine ähnlichen Parzellen in der Nähe gefunden'), 'err');
+      if (!opts.silent) toast(tr('🔍 Keine ähnlichen Parzellen in der Nähe gefunden'), 'err');
       return;
     }
-    G.similar = { refPid: pid, refLon: pLon, refLat: pLat, data: d };
+    G.similar = { refPid: pid, refLon: pLon, refLat: pLat, refF: f, data: { ...d, results: d.results.slice() }, radius, cellGen: G.vpTiles.size };
     const chip = document.getElementById('btn-similar-clear');
     if (chip) chip.style.display = '';
-    // Zoom out to fit all results + reference
-    let minLon = pLon, maxLon = pLon, minLat = pLat, maxLat = pLat;
-    for (const r of d.results) {
-      minLon = Math.min(minLon, r.lon); maxLon = Math.max(maxLon, r.lon);
-      minLat = Math.min(minLat, r.lat); maxLat = Math.max(maxLat, r.lat);
+    renderSimilarPopupRows(pid);
+    updateSimilarRadiusLabel();
+    // First activation: zoom out to fit all results + reference. Re-basing on
+    // another parcel keeps the camera where the player put it.
+    if (!opts.keepCamera) {
+      let minLon = pLon, maxLon = pLon, minLat = pLat, maxLat = pLat;
+      for (const r of d.results) {
+        minLon = Math.min(minLon, r.lon); maxLon = Math.max(maxLon, r.lon);
+        minLat = Math.min(minLat, r.lat); maxLat = Math.max(maxLat, r.lat);
+      }
+      fitBBox(minLon, minLat, maxLon, maxLat, 16);
     }
-    fitBBox(minLon, minLat, maxLon, maxLat, 16);
+    if (opts.silent) { render(); return; }
     let msg = '🔍 ' + d.results.length + ' ' + tr('ähnliche Parzellen in der Nähe') + ' (' + (d.candidates || '?') + ' ' + tr('verglichen') + (d.cells ? ', ' + d.cells + ' ' + tr('Zellen') : '') + ')';
     if (d.lidar_terms) msg += ' · mit LiDAR-Geländeabgleich ✨';
     toast(msg, 'ok');
@@ -9090,7 +9604,7 @@ function renderSimilarPopupRows(pid) {
   for (const k of order) {
     if (r.parts && r.parts[k] != null) html += '<span>' + labels[k] + '</span><b>' + bar(r.parts[k]) + '</b>';
   }
-  html += '<span></span><b style="font:14px VT323;color:var(--text-dim)"><a href="#" onclick="flyToSimilarRef();return false" style="color:var(--gold)">→ zur Referenzparzelle</a></b>';
+  html += '<span></span><b style="font:14px VT323;color:var(--text-dim)"><a href="#" onclick="flyToSimilarRef();return false" style="color:var(--gold)">→ zur Referenzparzelle</a> &nbsp;·&nbsp; <a href="#" onclick="findSimilarParcels({keepCamera:true});return false" style="color:#7ff5eb">⟲ ' + tr('Als Referenz') + '</a></b>';
   box.innerHTML = html;
   box.style.display = '';
 }
@@ -9106,6 +9620,65 @@ window.flyToSimilarRef = function flyToSimilarRef() {
   }, 700);
 };
 
+/** Screen-edge insets (canvas px) that keep canvas hints clear of the DOM HUD:
+ *  search bar + badge row + N2K banner at the top, chip stack / attribution at
+ *  the bottom, zoom column right, minimap. Cached ~400 ms; cheap getBoundingClientRect. */
+let _hudInsets = null, _hudInsetsAt = 0;
+function hudSafeInsets() {
+  const now = performance.now();
+  if (_hudInsets && now - _hudInsetsAt < 400) return _hudInsets;
+  _hudInsetsAt = now;
+  const mr = gc.getBoundingClientRect();
+  const W = gc.width, H = gc.height;
+  const ins = { top: 70, bottom: 40, left: 20, right: 20 };
+  const vis = el => el && el.offsetParent !== null && el.getBoundingClientRect().height > 0;
+  const rect = id => { const el = document.getElementById(id); return vis(el) ? el.getBoundingClientRect() : null; };
+  for (const id of ['game-search', 'hud-badges', 'muni-toast', 'abroad-badge']) {
+    const r = rect(id); if (r) ins.top = Math.max(ins.top, r.bottom - mr.top + 12);
+  }
+  if (G._n2kBannerBottom) ins.top = Math.max(ins.top, G._n2kBannerBottom + 12);
+  // phones: the chip stack (flow / similar / loading) sits under the badge row,
+  // which wraps to two lines on narrow screens — follow its real bottom edge.
+  const stack = document.getElementById('bottom-stack');
+  if (stack && window.innerWidth <= 768) {
+    let y = 92;
+    for (const id of ['game-search', 'hud-badges', 'abroad-badge']) { const r = rect(id); if (r) y = Math.max(y, r.bottom - mr.top + 6); }
+    if (G._n2kBannerBottom) y = Math.max(y, G._n2kBannerBottom + 6);
+    const cur = parseFloat(stack.style.top) || 0;
+    if (Math.abs(cur - y) > 1) stack.style.top = y + 'px';
+    const sr = rect('bottom-stack'); if (sr) ins.top = Math.max(ins.top, sr.bottom - mr.top + 12);
+  } else if (stack && stack.style.top) stack.style.top = '';
+  for (const id of ['bottom-stack', 'map-attrib']) {
+    const r = rect(id); if (r && r.top - mr.top > H * 0.5) ins.bottom = Math.max(ins.bottom, mr.bottom - r.top + 12);
+  }
+  const zc = rect('zoom-controls'); if (zc && zc.left - mr.left > W * 0.5) ins.right = Math.max(ins.right, mr.right - zc.left + 12);
+  // open popups: desktop = side panels, phone = bottom sheet
+  for (const id of ['parcel-popup', 'ez-popup', 'kg-popup', 'tree-popup', 'dossier-popup', 'station-popup']) {
+    const el = document.getElementById(id);
+    if (!el || !el.classList.contains('open')) continue;
+    const r = el.getBoundingClientRect(); if (r.height <= 0) continue;
+    const cx = (r.left + r.right) / 2 - mr.left, top = r.top - mr.top;
+    if (r.width > W * 0.6 || top > H * 0.45) ins.bottom = Math.max(ins.bottom, mr.bottom - r.top + 12);
+    else if (cx < W / 2) ins.left = Math.max(ins.left, r.right - mr.left + 12);
+    else ins.right = Math.max(ins.right, mr.right - r.left + 12);
+  }
+  const mm = rect('minimap'); // corner widget: widen the right inset so edge hints never sit under it
+  if (mm && mm.left - mr.left > W * 0.5) ins.right = Math.max(ins.right, Math.min(mr.right - mm.left + 12, W * 0.3));
+  // never eat more than a third of the screen in any direction
+  ins.top = Math.min(ins.top, H * 0.35); ins.bottom = Math.min(ins.bottom, H * 0.35);
+  ins.left = Math.min(ins.left, W * 0.42); ins.right = Math.min(ins.right, W * 0.42);
+  ins.bottom = Math.min(ins.bottom, H * 0.5);
+  return (_hudInsets = ins);
+}
+/** Clamp a screen vector from the centre to the HUD-safe rectangle. Returns {x,y,k,ang}. */
+function edgePoint(tx, ty) {
+  const ins = hudSafeInsets(), W = gc.width, H = gc.height;
+  const cx = (ins.left + W - ins.right) / 2, cy = (ins.top + H - ins.bottom) / 2;
+  const dx = tx - cx, dy = ty - cy;
+  const k = Math.min(1, ((W - ins.right - ins.left) / 2 - 22) / Math.max(Math.abs(dx), 1e-9), ((H - ins.bottom - ins.top) / 2 - 22) / Math.max(Math.abs(dy), 1e-9));
+  return { x: cx + dx * k, y: cy + dy * k, k, ang: Math.atan2(dy, dx) };
+}
+
 /** Pulsing pixel-art diamond markers for similar-parcel results + gold reference marker. */
 function drawSimilarParcels(ctx) {
   if (!G.similar) return;
@@ -9116,18 +9689,32 @@ function drawSimilarParcels(ctx) {
   // Off-screen results → edge arrows (dedup per border cell so 40 results at
   // 50 km don't stack). Zoom min is 13 (~8 km viewport), so large radii rely on these.
   const edgeCells = {};
-  for (const r of d.results) {
+  // Clutter budget: only the best N on-screen matches get a diamond (N grows
+  // with zoom), and no two diamonds closer than ~28 px. Hidden ones still
+  // count in the popup; hit-testing uses exactly what is drawn.
+  const z = G.cam.zoom;
+  const budget = z < 14 ? 6 : z < 15 ? 10 : z < 16 ? 18 : z < 17 ? 30 : 60;
+  const sorted = d.results.slice().sort((a, b) => b.score - a.score);
+  const drawn = []; G._simDrawn = drawn;
+  let shown = 0;
+  for (const r of sorted) {
     const [x, y] = toScreen(r.lon, r.lat);
-    if (x < -30 || x > gc.width + 30 || y < -30 || y > gc.height + 30) {
-      // clamp position to screen border (with margin)
-      const m = 22;
-      const cx = gc.width / 2, cy = gc.height / 2;
-      let dx = x - cx, dy = y - cy;
-      const k = Math.min((cx - m) / Math.abs(dx || 1e-9), (cy - m) / Math.abs(dy || 1e-9));
-      const ex = cx + dx * k, ey = cy + dy * k;
-      const cell = Math.round(ex / 60) + ':' + Math.round(ey / 60);
-      if (edgeCells[cell]) { edgeCells[cell].n++; if (r.distance_m < edgeCells[cell].dist) edgeCells[cell].dist = r.distance_m; continue; }
-      edgeCells[cell] = { ex, ey, ang: Math.atan2(dy, dx), n: 1, dist: r.distance_m, score: r.score };
+    const onScreen = !(x < -30 || x > gc.width + 30 || y < -30 || y > gc.height + 30);
+    if (onScreen) {
+      if (shown >= budget) continue;
+      let crowded = false;
+      for (const q of drawn) if (Math.abs(q.x - x) < 28 && Math.abs(q.y - y) < 28) { crowded = true; break; }
+      if (crowded) continue;
+      drawn.push({ x, y, r }); shown++;
+    }
+    if (!onScreen) {
+      // clamp to the HUD-safe frame; merge by direction (16 sectors) so a
+      // cluster 3 km north is one arrow "3× 2 km", not a picket fence
+      const ep = edgePoint(x, y);
+      const sector = Math.round(ep.ang / (Math.PI / 8));
+      const cell = 's' + sector;
+      if (edgeCells[cell]) { const c = edgeCells[cell]; c.n++; if (r.distance_m < c.dist) { c.dist = r.distance_m; c.ex = ep.x; c.ey = ep.y; c.ang = ep.ang; } continue; }
+      edgeCells[cell] = { ex: ep.x, ey: ep.y, ang: ep.ang, n: 1, dist: r.distance_m, score: r.score };
       continue;
     }
     const sc = Math.max(0, Math.min(1, (r.score - 0.5) / 0.5)); // 0.5..1 → 0..1
@@ -9158,10 +9745,24 @@ function drawSimilarParcels(ctx) {
     ctx.globalAlpha = 1;
   }
 
-  // Edge arrows for off-screen results (tap = fly toward them)
+  // Edge arrows for off-screen results (tap = fly toward them) — at most 6,
+  // nearest clusters first, labels pulled inward so they never leave the frame.
   G._simEdgeArrows = [];
-  for (const cell in edgeCells) {
-    const a = edgeCells[cell];
+  const tp = typeof treasureHintPos !== 'undefined' && treasureHintPos;
+  const clear = a => {
+    if (!tp) return true;
+    const lx = a.ex - Math.cos(a.ang) * 30, ly = a.ey - Math.sin(a.ang) * 30;   // label centre
+    const inCard = (x, y) => tp.cx != null && Math.abs(x - tp.cx) < tp.cw / 2 + 44 && Math.abs(y - tp.cy) < tp.ch / 2 + 22;
+    return !inCard(a.ex, a.ey) && !inCard(lx, ly);
+  };
+  // nearest first; arrows closer than ~70 px on the frame fold into one ("5× 2.1 km")
+  const arrows = [];
+  for (const a of Object.values(edgeCells).filter(clear).sort((x, y) => x.dist - y.dist)) {
+    const near = arrows.find(b => Math.abs(b.ex - a.ex) + Math.abs(b.ey - a.ey) < 70);
+    if (near) { near.n += a.n; continue; }
+    if (arrows.length < 6) arrows.push(a);
+  }
+  for (const a of arrows) {
     ctx.save();
     ctx.translate(a.ex, a.ey);
     ctx.rotate(a.ang);
@@ -9175,59 +9776,37 @@ function drawSimilarParcels(ctx) {
     ctx.strokeStyle = '#083b40';
     ctx.stroke();
     ctx.restore();
-    // count + distance label, offset toward screen center
-    const lx = a.ex - Math.cos(a.ang) * 26, ly = a.ey - Math.sin(a.ang) * 26;
+    // count + distance label on a dark pill, offset toward screen center
+    const lx = a.ex - Math.cos(a.ang) * 30, ly = a.ey - Math.sin(a.ang) * 30;
     ctx.font = MAP_FONT.pixel;
-    ctx.textAlign = 'center';
-    const lbl = (a.n > 1 ? a.n + '× ' : '') + (a.dist >= 1000 ? Math.round(a.dist/1000) + 'km' : Math.round(a.dist) + 'm');
-    ctx.fillStyle = '#062d30';
-    ctx.fillText(lbl, lx + 1, ly + 4);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const lbl = (a.n > 1 ? a.n + '× ' : '') + (a.dist >= 950 ? (a.dist / 1000).toFixed(a.dist < 9500 ? 1 : 0).replace('.0', '') + ' km' : Math.round(a.dist / 50) * 50 + ' m');
+    const tw = ctx.measureText(lbl).width;
+    ctx.fillStyle = 'rgba(6,45,48,0.85)';
+    ctx.beginPath(); ctx.roundRect(lx - tw / 2 - 5, ly - 8, tw + 10, 16, 3); ctx.fill();
     ctx.fillStyle = '#7ff5eb';
-    ctx.fillText(lbl, lx, ly + 3);
+    ctx.fillText(lbl, lx, ly + 1);
+    ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
     G._simEdgeArrows.push(a);
   }
 
-  // Reference parcel: gold marker
-  const [rx, ry] = toScreen(G.similar.refLon, G.similar.refLat);
-  if (rx > -30 && rx < gc.width + 30 && ry > -30 && ry < gc.height + 30) {
-    const sz = 11 * pulse;
-    ctx.beginPath();
-    ctx.moveTo(rx, ry - sz); ctx.lineTo(rx + sz, ry); ctx.lineTo(rx, ry + sz); ctx.lineTo(rx - sz, ry); ctx.closePath();
-    ctx.fillStyle = '#8a6a1a';
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = '#4d3a0c';
-    ctx.stroke();
-    const isz = sz * 0.55;
-    ctx.beginPath();
-    ctx.moveTo(rx, ry - isz); ctx.lineTo(rx + isz, ry); ctx.lineTo(rx, ry + isz); ctx.lineTo(rx - isz, ry); ctx.closePath();
-    ctx.fillStyle = '#ffd34d';
-    ctx.fill();
-    if (showLabel) {
-      ctx.font = MAP_FONT.pixel;
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#3a2c08';
-      ctx.fillText('REF', rx + 1, ry - sz - 5);
-      ctx.fillStyle = '#ffe9a8';
-      ctx.fillText('REF', rx, ry - sz - 6);
-    }
-  }
 }
 
 /** Tap on a similar-parcel marker: fly there and open its parcel popup. */
 function hitSimilarMarker(x, y) {
   if (!G.similar) return null;
   let best = null, bestD = Infinity;
-  for (const r of G.similar.data.results) {
-    const [sx, sy] = toScreen(r.lon, r.lat);
-    const dd = Math.abs(sx - x) + Math.abs(sy - y);
-    if (dd < 22 && dd < bestD) { bestD = dd; best = r; }
+  for (const q of (G._simDrawn || [])) {
+    const dd = Math.abs(q.x - x) + Math.abs(q.y - y);
+    if (dd < 22 && dd < bestD) { bestD = dd; best = q.r; }
   }
   return best;
 }
 
 function openSimilarResult(r) {
+  const f0 = G.parcelPolys.find(pf => pf.properties.parcel_id === r.parcel_id);
+  if (f0 && G.cam.zoom >= 15.5) { showParcelPopup(f0); return; }   // visible & legible: no camera jump
   flyTo(r.lon, r.lat, Math.max(G.cam.zoom, 17));
   const tryOpen = (attempt) => {
     const f = G.parcelPolys.find(pf => pf.properties.parcel_id === r.parcel_id) ||
@@ -9484,7 +10063,9 @@ window.doRespondOffer = async function(offerId, accept) {
 async function claimTreasure(t) {
   const res = await POST('/api/claim-treasure', {player_id:G.player.id, treasure_id:t.id});
   if (res.error) { toast(res.error,'err'); return; }
-  if ((res.type === 'species' || res.type === 'n2k_species') && res.species_german) {
+  if (res.type === 'roaming' && res.species_german) {
+    toast(`🐾 ${tr('Wildtier-Begegnung')}: ${res.species_german} (${res.species_name})\n${tr('Ein Durchzügler — du hast ihn gesichtet, bevor er weiterzog')} — +${res.value}🪙 +${Math.floor(res.value/2)}⚡`, 'ok');
+  } else if ((res.type === 'species' || res.type === 'n2k_species') && res.species_german) {
     const catLabels = {'EN':'Stark gefährdet','VU':'Gefährdet','NT':'Potenziell gefährdet','LC':'Nicht gefährdet'};
     const catEmoji = {'EN':'🔴','VU':'🟠','NT':'🔵','LC':'🟢'};
     const n2k = res.type === 'n2k_species' ? '🛡️ Natura-2000-Bonus! ' : '';
@@ -9596,6 +10177,30 @@ document.getElementById('ez-popup-close').onclick = () => {
 })();
 
 // Reset popup positions when closing
+/** Fold every floating panel away with a short animation (journey start,
+ *  cinematic moments). Mobile: also parks the bottom sheet. Returns a promise
+ *  that resolves when the panels are gone (~220 ms). */
+function collapsePopups(opts) {
+  opts = opts || {};
+  const ids = ['parcel-popup', 'ez-popup', 'kg-popup', 'tree-popup', 'dossier-popup', 'station-popup'];
+  const closing = [];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el || !el.classList.contains('open') || el.classList.contains('closing')) continue;
+    el.classList.add('closing'); closing.push(el);
+  }
+  const sb = document.getElementById('sidebar');
+  if (sb && sb.classList.contains('expanded') && window.innerWidth <= 768) sb.classList.remove('expanded');
+  if (typeof Herald !== 'undefined' && Herald.el && Herald.el.classList.contains('show')) Herald.dismiss(true);
+  const res = document.getElementById('game-search-results'); if (res) res.innerHTML = '';
+  if (!opts.keepSelection) { G.sel = null; G.selFp = null; G.ezHighlight = null; }
+  return new Promise(resolve => setTimeout(() => {
+    for (const el of closing) { el.classList.remove('open', 'closing'); try { resetPopupPosition(el.id); } catch (e) {} }
+    render(); resolve();
+  }, closing.length ? 220 : 0));
+}
+window.collapsePopups = collapsePopups;
+
 function resetPopupPosition(id) {
   const el = document.getElementById(id);
   if (el) {
@@ -9613,7 +10218,7 @@ function resetPopupPosition(id) {
   requestAnimationFrame(treasureAnimLoop);
   if (!document.getElementById('screen-game').classList.contains('active')) return;
   const natureLive = NATURE.onScreen > 0 && natureAnimLevel() > 0;
-  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length || natureLive)) return;
+  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length || natureLive || (treasureHintSince > 0 && unfoundTreasures().length))) return;
   const now = performance.now();
   const step = natureAnimLevel() === 1 ? 66 : isCoarsePointer() ? 50 : 40;
   if (now - (treasureAnimLoop._last || 0) < step) return;
@@ -9698,7 +10303,7 @@ window.DEV = {
     return new Promise(res => {
       const t0 = Date.now();
       (function chk() {
-        if (_vpBusy === 0 && Date.now() - t0 > 250) return res(true);
+        if (_vpBusy === 0 && Date.now() - t0 > 250) { renderNow(); return res(true); }   // deterministic frame for screenshots
         if (Date.now() - t0 > timeout) return res(false);
         setTimeout(chk, 100);
       })();
@@ -11100,29 +11705,46 @@ window.startFlow = async function(lon, lat) {
   // (zoom 14.5) — manual pan releases it; ✕ on the chip ends the trip.
   // Unhurried: 20 s + 1.5 s/km, capped 150 s (65 km Kainach→Mur ≈ 2 min) — the
   // river meanders are the point, and tiles stream in comfortably at this pace.
-  const dur = Math.min(150000, 20000 + (d.total_km || 0) * 1500);
-  G.flow = { d, pts, cum, total: cum[cum.length - 1], t0: performance.now() + 900, dur, origin: [lon, lat], gauges, gaugePts: null, follow: true, names: [] };
+  // Slower still since the Reise is the show: 25 s + 2.4 s/km, capped 4 min;
+  // the loop halves the speed while cadastre cells are streaming in.
+  const dur = Math.min(240000, 25000 + (d.total_km || 0) * 2400);
+  G.flow = { d, pts, cum, total: cum[cum.length - 1], t0: performance.now() + 900, dur, dist: 0, speed: 0, origin: [lon, lat], gauges, gaugePts: null, follow: true, names: [] };
   const names = []; for (const r of (d.reaches || [])) if (r.river && names[names.length - 1] !== r.river) names.push(r.river);
   if (d.exit && d.exit.river && names[names.length - 1] !== d.exit.river) names.push(d.exit.river);
   const sea = { black_sea: 'Schwarzes Meer', north_sea: 'Nordsee', adriatic: 'Adria', mediterranean: 'Mittelmeer' }[d.exit && d.exit.sea] || (d.exit && d.exit.sea) || '';
   G.flow.names = names; G.flow.sea = sea;
   G.flow.title = (names.length ? names.join(' → ') + (sea ? ' → ' + tr(sea) : '') : tr('Fließweg')) + ' · ' + fmtNum(d.total_km, d.total_km < 10 ? 1 : 0) + ' km' + (d.exit && d.exit.clipped_at_border ? ' ' + tr('bis zur Grenze') : '');
   txt.textContent = '💧 ' + G.flow.title;
-  document.getElementById('parcel-popup').classList.remove('open');
+  collapsePopups();     // the river is the show: fold every panel away (phone sheet too)
   refineFlow(G.flow);   // ride the OSM river where its lines are already loaded
   flyTo(lon, lat, 15);
   flowAnimLoop();
 };
 window.clearFlow = function() { G.flow = null; G._flowEndedAt = Date.now(); document.getElementById('flow-chip').style.display = 'none'; render(); };
+/** Droplet progress 0..1 along the (possibly refined) line — distance based. */
+function flowPhase(F) { return F.total ? Math.min(1, Math.max(0, F.dist / F.total)) : 0; }
 function flowAnimLoop() {
   const F = G.flow; if (!F) return;
   const now = performance.now();
+  const dt = Math.min(200, now - (F._lastFrame || now)); F._lastFrame = now;
   if (now - (F._lastRefine || 0) > 1500) { F._lastRefine = now; refineFlow(F); }
-  const ph = Math.min(1, Math.max(0, (now - F.t0) / F.dur));
+  // Distance-based motion: a target cruise speed (m/ms) from the journey
+  // duration, halved while cells are still loading, with a gentle start and a
+  // soft landing; the actual speed eases toward the target so nothing jerks.
+  if (!F._arrived && now >= F.t0) {
+    const cruise = F.total / F.dur;
+    const startEase = Math.min(1, (now - F.t0) / 2500);
+    const endEase = Math.min(1, Math.max(0.15, (F.total - F.dist) / Math.max(1, cruise * 3000)));
+    const loading = (typeof _vpBusy !== 'undefined' && _vpBusy > 0) || (G.cellState && Object.values(G.cellState).some(c => c.state === 'loading' || c.state === 'pending'));
+    const target = cruise * (loading ? 0.45 : 1) * (0.15 + 0.85 * startEase) * endEase;
+    F.speed += (target - F.speed) * Math.min(1, dt / 600);
+    F.dist = Math.min(F.total, F.dist + F.speed * dt);
+  }
+  const ph = flowPhase(F);
   if (F.follow && !flyAnim) {
-    const p = pointAlong(F, ph * F.total);
+    const p = pointAlong(F, F.dist);
     // time-based lerp so a slow frame (tiles streaming in) never lets the camera fall behind the drop
-    const k = Math.min(1, (now - (F._lastFrame || now - 40)) / 160); F._lastFrame = now;
+    const k = Math.min(1, dt / 220);
     G.cam.lon += (p[0] - G.cam.lon) * k; G.cam.lat += (p[1] - G.cam.lat) * k;
     if (now - (F._lastLoad || 0) > 2500) { F._lastLoad = now; loadMoreParcels(); flowPrefetchRivers(F, ph); }
     const txt = document.getElementById('flow-chip-text');
@@ -11130,7 +11752,7 @@ function flowAnimLoop() {
     if (ph >= 1 && !F._arrived) { F._arrived = true; F.follow = false; G._flowEndedAt = Date.now(); renderMini(); toast('🌊 ' + tr('Angekommen') + ': ' + G.flow.title, 'ok'); }
   }
   render();
-  requestAnimationFrame(() => { if (G.flow) setTimeout(flowAnimLoop, 40); });
+  requestAnimationFrame(() => { if (G.flow) flowAnimLoop(); });
 }
 /** The droplet needs the OSM river geometry of the cells it is about to cross
  *  (refineFlow snaps the MERIT path onto them). Fetch only /api/osm-lines
@@ -11186,7 +11808,7 @@ function drawFlowPath(ctx) {
     ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillText(lbl, x + 1, y + 5); ctx.fillStyle = '#cfe8ff'; ctx.fillText(lbl, x, y + 4);
   }
   // travelling droplet — one journey of F.dur ms, then loops
-  const ph = F._arrived ? (((performance.now() - F.t0) % F.dur) / F.dur) : Math.min(1, Math.max(0, (performance.now() - F.t0) / F.dur));
+  const ph = F._arrived ? (((performance.now() - F.t0) % F.dur) / F.dur) : flowPhase(F);
   const p = pointAlong(F, ph * F.total), [dx, dy] = toScreen(p[0], p[1]);
   const bob = Math.sin(performance.now() / 120) * 1.5;
   ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(dx - 4, dy + 2, 8, 2);
@@ -11670,12 +12292,27 @@ function refineFlow(F) {
     if (!F.refined[i]) { F.refined[i] = true; changed = true; }
   }
   if (!changed) return;
-  // rebuild the distance table; keep the droplet at the same fraction of its current reach
-  const ph = F.total ? Math.min(1, Math.max(0, (performance.now() - F.t0) / F.dur)) : 0;
+  // Rebuild the distance table. The droplet keeps its *position*: project the
+  // point it is at onto the new line and continue from there (keeping the old
+  // fraction made it jump back whenever a meandering reach was spliced in).
+  const here = pointAlong(F, F.dist);
   const cum = [0]; const kx = 111320 * Math.cos(F.origin[1] * Math.PI / 180), ky = 110540;
   for (let i = 1; i < out.length; i++) cum.push(cum[i - 1] + Math.hypot((out[i][0] - out[i - 1][0]) * kx, (out[i][1] - out[i - 1][1]) * ky));
+  const oldFrac = F.total ? F.dist / F.total : 0;
   F.pts = out; F.cum = cum; F.total = cum[cum.length - 1]; F.gaugePts = null;
-  F.t0 = performance.now() - ph * F.dur;
+  // nearest point on the new line (segments near the old fraction first, monotone forward)
+  let bestD = Infinity, bestDist = oldFrac * F.total;
+  for (let i = 1; i < out.length; i++) {
+    const ax = out[i - 1][0], ay = out[i - 1][1], bx = out[i][0], by = out[i][1];
+    const vx = (bx - ax) * kx, vy = (by - ay) * ky, wx = (here[0] - ax) * kx, wy = (here[1] - ay) * ky;
+    const L2 = vx * vx + vy * vy || 1; const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / L2));
+    const d = Math.hypot(wx - vx * t, wy - vy * t);
+    if (d < bestD) { bestD = d; bestDist = cum[i - 1] + Math.sqrt(L2) * t; }
+  }
+  F.dist = Math.max(0, bestDist);
+  // keep the chip's time estimate honest: cruise speed stays, so the longer
+  // (refined) line simply takes a little longer
+  F.t0 = Math.min(F.t0, performance.now());
   F.refinedCount = F.refined.filter(Boolean).length;
 }
 

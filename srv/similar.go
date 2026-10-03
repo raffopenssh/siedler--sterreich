@@ -68,11 +68,13 @@ func (s *Server) handleSimilarParcels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) similarJSON(ctx context.Context, rq similarReq) ([]byte, bool, error) {
 	t0 := time.Now()
-	cacheKey := "similar:v6:" + parcelHash(rq.pid) + ":" + strconv.Itoa(int(rq.radius)) + ":" + strconv.Itoa(rq.limit)
+	// The candidate pool is whatever cells we hold; the key includes the cell
+	// count so a search re-run after the player loaded more map sees them.
+	cands, cells := s.parcelsNear(rq.lon, rq.lat, rq.radius, 30)
+	cacheKey := "similar:v7:" + parcelHash(rq.pid) + ":" + strconv.Itoa(int(rq.radius)) + ":" + strconv.Itoa(rq.limit) + ":" + strconv.Itoa(cells)
 	if c, err := s.Q.GetCachedData(ctx, cacheKey); err == nil {
 		return []byte(c), true, nil
 	}
-	cands, cells := s.parcelsNear(rq.lon, rq.lat, rq.radius, 30)
 	var ref *bevParcel
 	for i := range cands {
 		if cands[i].ParcelID == rq.pid {

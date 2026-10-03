@@ -246,6 +246,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/session/{id}/players", s.handleGetSessionPlayers)
 	mux.HandleFunc("GET /api/session/{id}/parcels", s.handleGetSessionParcels)
 	mux.HandleFunc("GET /api/session/{id}/treasures", s.handleGetSessionTreasures)
+	mux.HandleFunc("POST /api/session/{id}/treasures/roam", s.handleRoamTreasures)
 	mux.HandleFunc("GET /api/session/{id}/challenges", s.handleGetChallenges)
 	mux.HandleFunc("GET /api/session/{id}/biodiversity", s.handleGetBiodiversity)
 	mux.HandleFunc("GET /api/session/{id}/chat", s.handleGetChat)
@@ -1721,6 +1722,10 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 
 	if ttype == "xp" {
 		s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{Xp: value, ID: req.PlayerID})
+	} else if ttype == "roaming" {
+		// a wildlife encounter: coins + half as XP (Kundschafter)
+		s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{Coins: value, ID: req.PlayerID})
+		s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{Xp: value / 2, ID: req.PlayerID})
 	} else {
 		// species and coins both award coins
 		s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{Coins: value, ID: req.PlayerID})
