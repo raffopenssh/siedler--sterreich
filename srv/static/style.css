@@ -369,7 +369,7 @@ input[type=text]:focus { border-color:var(--gold); }
    the gap between minimap and attribution column. */
 :root { --hud-gap:12px; --hud-side:216px; }
 #minimap {
-  position:absolute; bottom:var(--hud-gap); left:var(--hud-gap); width:180px; height:130px;
+  position:absolute; bottom:var(--hud-gap); left:var(--hud-gap); width:164px; height:118px;
   background:var(--panel); border:3px solid var(--gold);
   box-shadow:3px 3px 0 #000; z-index:50; overflow:hidden;
 }
@@ -523,7 +523,7 @@ input[type=text]:focus { border-color:var(--gold); }
 
 /* Municipality crossing toast */
 .muni-toast {
-  position:absolute; top:96px; left:50%; transform:translateX(-50%); z-index:55;
+  position:absolute; top:112px; left:50%; transform:translateX(-50%); z-index:55;
   display:none; background:var(--panel); border:3px solid var(--gold);
   padding:8px 16px; font:20px var(--font-game); color:var(--text-bright);
   box-shadow:3px 3px 0 #000; white-space:normal; text-align:center;
@@ -639,7 +639,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .game-search-inner { padding:2px 8px; }
   #game-search-input { font-size:16px; padding:8px 4px; }
   #game-search-results { max-height:40vh; }
-  .muni-toast { top:50px; font-size:16px; padding:6px 12px; }
+  .muni-toast { top:104px; font-size:16px; padding:6px 12px; }
 
   /* Zoom controls */
   .zoom-controls { top:8px; right:8px; }
@@ -835,7 +835,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 /* "You are outside Austria" banner — cadastre data simply doesn't exist there,
    so without this the shaded/hatched area reads as a loading bug. */
 .abroad-badge {
-  position:absolute; top:58px; left:50%; transform:translateX(-50%);
+  position:absolute; top:70px; left:50%; transform:translateX(-50%);
   background:rgba(60,16,16,0.9); border:2px solid #c04040;
   color:#ffd0d0; font:8px var(--font-pixel);
   padding:6px 12px; border-radius:3px; z-index:51;
@@ -941,7 +941,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .map-attrib-toggle { padding:7px 9px; }
   .map-attrib-body { font-size:16px; }
   .welcome-legal .legal-attrib { font-size:13px; }
-  .abroad-badge { top:52px; font-size:7px; padding:5px 8px; white-space:normal; max-width:80vw; text-align:center; }
+  .abroad-badge { top:62px; font-size:7px; padding:5px 8px; white-space:normal; max-width:80vw; text-align:center; }
   .pp-enhanced { font-size:16px; }
   /* Bottom sheet (z200) + parcel popup cover the bottom edge on mobile —
      park the clear-chip under the enhanced badge instead. */
@@ -1006,7 +1006,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 /* =================== HERALD (typewriter quest/hint dialogue) =================== */
 .herald {
   position:absolute; bottom:var(--hud-gap); left:50%; transform:translateX(-50%) translateY(16px);
-  width:min(600px, calc(100% - 2 * var(--hud-side))); z-index:58;
+  width:min(640px, calc(100% - 2 * var(--hud-side))); min-height:132px; box-sizing:border-box; z-index:58;
   display:flex; gap:12px; align-items:stretch;
   background:var(--panel); border:3px solid var(--gold); box-shadow:4px 4px 0 #000, inset 0 0 0 1px rgba(0,0,0,.5);
   background-image:linear-gradient(180deg, rgba(60,50,30,.25) 0%, transparent 100%);
@@ -1047,7 +1047,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 @keyframes heraldBlink { 50% { opacity:0; } }
 @keyframes heraldBob { 50% { transform:translateY(3px); } }
 @media (max-width:768px) {
-  .herald { bottom:62px; padding:8px 30px 6px 8px; gap:8px; width:calc(100% - 16px); }
+  .herald { bottom:62px; padding:8px 30px 6px 8px; gap:8px; width:calc(100% - 16px); min-height:0; }
   .herald-avatar { flex-basis:38px; height:38px; font-size:22px; }
   .herald-text { font-size:18px; min-height:2.4em; }
   .herald-tag { font-size:7px; }
@@ -1074,7 +1074,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 /* ================= WATER & CHRONIK (GW-1…8, HOLZ-1, FARM-1) ================= */
 /* HUD badge row: enhanced badge + "Grundwasser heute" chip share one centred slot */
 .hud-badges {
-  position:absolute; top:58px; left:50%; transform:translateX(-50%);
+  position:absolute; top:70px; left:50%; transform:translateX(-50%);   /* search ends at 58 px (+3 px shadow): 12 px gutter */
   display:flex; gap:6px; align-items:stretch; z-index:50; pointer-events:none;
   max-width:calc(100vw - 140px);
 }
@@ -1149,7 +1149,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .pp-eco.bad { color:#ff9a86; }
 @media (max-width:768px) {
   /* clear the right-hand map button column (48 px + margins) on phones */
-  .hud-badges { top:52px; gap:4px; left:calc((100% - 72px) / 2); transform:translateX(-50%); max-width:calc(100vw - 88px); flex-wrap:wrap; justify-content:center; }
+  .hud-badges { top:62px; gap:4px; left:calc((100% - 72px) / 2); transform:translateX(-50%); max-width:calc(100vw - 88px); flex-wrap:wrap; justify-content:center; }
   .hud-badges > * { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
   .enhanced-badge { top:auto; }
   .water-chip { font-size:7px; padding:5px 7px; }

@@ -8071,31 +8071,36 @@ function drawAustriaBorderLine(ctx) {
 }
 
 function drawScaleBar(ctx, W, H) {
-  const s = mapScale();
-  const mPerDeg = 111320 * Math.cos(G.cam.lat * Math.PI/180);
-  let barM = 100, barPx = (barM / mPerDeg) * s;
-  if (barPx < 40) { barM = 500; barPx = (barM/mPerDeg)*s; }
-  if (barPx < 40) { barM = 1000; barPx = (barM/mPerDeg)*s; }
-  if (barPx > 250) { barM = 20; barPx = (barM/mPerDeg)*s; }
-
-  // Bottom-right, just above the © attribution pill — the minimap (bottom-left)
-  // carries its own scale, so the main one must not sit next to it.
-  // Subtle: a thin ruler with end ticks and a quiet label, right-aligned with
-  // the © pill and sitting just above it (phones: above the bottom chip row).
-  let y = H - 25, right = W - 12;
+  // Quiet ruler, exactly as wide as the © pill it sits on top of (same right
+  // edge, 8 px above). The bar keeps the pill's width; the label states what
+  // that width measures, rounded to 2 significant digits ("≈" when rounded).
   const mr = gc.getBoundingClientRect();
   const at = document.getElementById('map-attrib');
-  if (at && at.offsetParent !== null) { const r = at.getBoundingClientRect(); y = Math.min(y, r.top - mr.top - 10); right = r.right - mr.left; }
+  const tg = at && at.querySelector('.map-attrib-toggle');
+  let y = H - 26, right = W - 12, barPx = 120;
+  if (tg && at.offsetParent !== null) {
+    const r = tg.getBoundingClientRect();
+    right = r.right - mr.left; barPx = r.width;
+    const body = at.classList.contains('open') && at.querySelector('.map-attrib-body');
+    const top = body ? body.getBoundingClientRect().top : r.top;
+    y = top - mr.top - 8;
+  }
+  const mPerPx = 111320 * Math.cos(G.cam.lat * Math.PI / 180) / mapScale();
+  const m = barPx * mPerPx;
+  const mag = Math.pow(10, Math.floor(Math.log10(m)) - 1);
+  const mR = Math.round(m / mag) * mag;
+  const approx = Math.abs(mR - m) / m > 0.01 ? '≈ ' : '';
+  const lbl = approx + (mR >= 1000 ? (Math.round(mR / 100) / 10).toString().replace('.', ',') + ' km' : Math.round(mR) + ' m');
   const x = Math.round(right - barPx) + 0.5; y = Math.round(y) + 0.5;
-  const lbl = barM >= 1000 ? (barM / 1000) + ' km' : barM + ' m';
   ctx.save();
-  ctx.font = MAP_FONT.small; ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
-  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineCap = 'butt';
-  ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + barPx, y); ctx.lineTo(x + barPx, y - 4); ctx.stroke();
+  ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.lineCap = 'butt';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + barPx - 1, y); ctx.lineTo(x + barPx - 1, y - 4); ctx.stroke();
   ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,245,220,0.85)';
-  ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + barPx, y); ctx.lineTo(x + barPx, y - 4); ctx.stroke();
-  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(lbl, x + barPx - 1, y - 4);
-  ctx.fillStyle = 'rgba(255,245,220,0.9)'; ctx.fillText(lbl, x + barPx - 2, y - 5);
+  ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + barPx - 1, y); ctx.lineTo(x + barPx - 1, y - 4); ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(lbl, x + barPx / 2 + 1, y - 5);
+  ctx.fillStyle = 'rgba(255,245,220,0.9)'; ctx.fillText(lbl, x + barPx / 2, y - 6);
   ctx.restore();
 }
 
@@ -8105,7 +8110,7 @@ function drawScaleBar(ctx, W, H) {
 // (grab the gold viewport rectangle or drag anywhere), wheel = zoom the main
 // map, hover = crosshair + distance. After a jump `#mini-back` returns to the
 // previous view for 10 s. Hidden on phones (CSS).
-const MINI = { W:180, H:130, pad:5, hover:null, drag:null, back:null, backTimer:null };
+const MINI = { W:164, H:118, pad:5, hover:null, drag:null, back:null, backTimer:null };
 /** The geo window the minimap currently shows (shared by render + hit-testing). */
 function miniWindow() {
   const sw = MINI.W - 2 * MINI.pad, sh = MINI.H - 2 * MINI.pad;
