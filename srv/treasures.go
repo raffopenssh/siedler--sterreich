@@ -377,6 +377,14 @@ type roamState struct {
 	count int
 }
 
+// roamingLifetime: unfound wanderers move on after this; look/claim treat
+// older rows as gone even before the next /roam call prunes them.
+const roamingLifetime = 45 * time.Minute
+
+func roamingGone(t dbgen.Treasure, now time.Time) bool {
+	return t.TreasureType == "roaming" && t.FoundBy == nil && now.Sub(t.CreatedAt) > roamingLifetime
+}
+
 var roamMu sync.Mutex
 var roamBySession = map[string]*roamState{}
 
@@ -425,7 +433,7 @@ func (s *Server) handleRoamTreasures(w http.ResponseWriter, r *http.Request) {
 	roamMu.Unlock()
 
 	// wanderers move on after 45 min
-	s.DB.ExecContext(r.Context(), "DELETE FROM treasures WHERE session_id = ? AND found_by IS NULL AND treasure_type = 'roaming' AND created_at < datetime('now', '-45 minutes')", sessionID)
+	s.DB.ExecContext(r.Context(), "DELETE FROM treasures WHERE session_id = ? AND found_by IS NULL AND treasure_type = 'roaming' AND created_at < ?", sessionID, time.Now().Add(-roamingLifetime).UTC())
 
 	parcels := s.fetchTreasureParcels(req.Lon, req.Lat, 900)
 	if parcels == nil {

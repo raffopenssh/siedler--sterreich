@@ -344,12 +344,16 @@ func (s *Server) handleAgentLook(w http.ResponseWriter, r *http.Request) {
 	treasures := []agentTreasure{}
 	if all, err := s.Q.GetSessionTreasures(ctx, sess.ID); err == nil {
 		for _, t := range all {
-			if t.FoundBy != nil {
+			if t.FoundBy != nil || roamingGone(t, now) {
 				continue
 			}
 			d := distM(lon, lat, t.Lon, t.Lat)
 			if d <= float64(radius) {
-				treasures = append(treasures, agentTreasure{t.ID, t.TreasureType, t.Value, t.SpeciesGerman, t.Lon, t.Lat, math.Round(d)})
+				at := agentTreasure{t.ID, t.TreasureType, t.Value, t.SpeciesGerman, t.Lon, t.Lat, math.Round(d), 0}
+				if t.TreasureType == "roaming" {
+					at.MovesOnInS = int(math.Max(0, roamingLifetime.Seconds()-now.Sub(t.CreatedAt).Seconds()))
+				}
+				treasures = append(treasures, at)
 			}
 		}
 		sort.Slice(treasures, func(i, j int) bool { return treasures[i].DistanceM < treasures[j].DistanceM })
@@ -421,6 +425,8 @@ func (s *Server) handleAgentLook(w http.ResponseWriter, r *http.Request) {
 			"convert":  "POST /api/convert-parcel {session_id, player_id, parcel_id, convert_to:'biodiversity'|'wildforest', lon, lat}",
 			"sell":     "POST /api/sell-parcel {session_id, player_id, claim_id}",
 			"treasure": "POST /api/claim-treasure {player_id, treasure_id}",
+			"roam":     "POST /api/session/{id}/treasures/roam {player_id, lon, lat}  (no unfound treasure within 1.5 km? ask for passing wildlife; 1 per 2 min)",
+			"giants":   "GET /api/giants-near?lon=&lat=  (nearest LiDAR giant trees ≥ 25 m — claiming their parcel pays bonus XP)",
 			"chat":     "POST /api/session/{id}/chat {player_id, quick:1..N}  (quick phrases only for agents)",
 			"look":     "GET /api/agent/look?session_id=&player_id=&lon=&lat=&radius=",
 		},
@@ -451,6 +457,8 @@ type agentTreasure struct {
 	Lon       float64 `json:"lon"`
 	Lat       float64 `json:"lat"`
 	DistanceM float64 `json:"distance_m"`
+	// roaming wildlife only: seconds until the animal moves on (then the id is gone)
+	MovesOnInS int `json:"moves_on_in_s,omitempty"`
 }
 
 func narrate(sess dbgen.GameSession, lon, lat float64, radius int, ps []agentParcel, tl []agentTreasure, qs []map[string]any, me map[string]any, drought any) string {
@@ -505,7 +513,11 @@ func narrate(sess dbgen.GameSession, lon, lat float64, radius int, ps []agentPar
 		if t.Species != "" {
 			what = t.Species
 		}
-		fmt.Fprintf(&b, "A treasure glints %.0f m away (%s, %d) — id %d. ", t.DistanceM, what, t.Value, t.ID)
+		if t.Type == "roaming" {
+			fmt.Fprintf(&b, "A %s is passing through %.0f m away (%d 🪙 + XP, moves on in %d min) — id %d. ", what, t.DistanceM, t.Value, t.MovesOnInS/60, t.ID)
+		} else {
+			fmt.Fprintf(&b, "A treasure glints %.0f m away (%s, %d) — id %d. ", t.DistanceM, what, t.Value, t.ID)
+		}
 	}
 	if d, ok := drought.(map[string]any); ok {
 		fmt.Fprintf(&b, "Groundwater here: %v (yield ×%v). ", d["label"], d["yield_factor"])
@@ -616,9 +628,10 @@ func (s *Server) handleLLMsTxt(w http.ResponseWriter, r *http.Request) {
 - [MCP server](https://github.com/raffopenssh/siedler--sterreich/tree/main/tools/mcp-server): npx siedler-oesterreich-mcp — look/claim/convert as MCP tools.
 
 ## Legal
-- [Impressum & data sources](%s/impressum)
+- [Data sources & licences](%s/licenses): every provider, licence, attribution text and our cache age (machine-readable: %s/api/licenses)
+- [Impressum](%s/impressum)
 - [Datenschutz](%s/datenschutz)
-`, siteURL, siteURL, siteURL, siteURL, siteURL)
+`, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL)
 }
 
 const llmGameMD = `# Siedler Österreich — the text edition for agents
@@ -773,7 +786,9 @@ two or three parcels you are actually considering before you spend coins.
 | harvest field | ` + "`POST /api/harvest-parcel {session_id, player_id, parcel_id}`" + ` (NS 48, every 60 min; payout × drought factor) |
 | timber | ` + "`POST /api/harvest-forest {session_id, player_id, parcel_id}`" + ` (NS 56; real LK timber prices) |
 | sell | ` + "`POST /api/sell-parcel {session_id, player_id, claim_id}`" + ` (60 %%) |
-| treasure | ` + "`POST /api/claim-treasure {player_id, treasure_id}`" + ` — only ones you saw in a look |
+| treasure | ` + "`POST /api/claim-treasure {player_id, treasure_id}`" + ` — only ones you saw in a look. ` + "`type:\"roaming\"`" + ` is passing wildlife (Luchs, Wolf, Kranich …): coins + half as XP, gone after ` + "`moves_on_in_s`" + ` (410 once it has moved on) |
+| scout wildlife | ` + "`POST /api/session/{id}/treasures/roam {player_id, lon, lat}`" + ` — when no unfound treasure is within 1.5 km, hides a chest + up to 2 seasonal wanderers on fitting habitat (` + "`{placed}`" + `; ` + "`reason:\"nearby\"`" + ` / ` + "`\"rate\"`" + `, 1 per 2 min, 12 per hour per session; 202 while the cell assembles) |
+| scout giants | ` + "`GET /api/giants-near?lon=&lat=`" + ` — the nearest LiDAR giant trees (≥ 25 m) in widening rings up to ~35 km, with KG/Gemeinde; claiming a parcel with giants pays +XP |
 | quests | listed in look; they auto-complete, rewards land in your purse |
 | chat | ` + "`POST /api/session/{id}/chat {player_id, quick: 3}`" + ` after ` + "`POST /api/chat/accept-rules {player_id}`" + ` |
 | watch | ` + "`GET /api/session/{id}/events`" + ` (SSE) — or just poll look |
@@ -811,6 +826,12 @@ Headers ` + "`X-RateLimit-Limit`" + `, ` + "`X-RateLimit-Remaining`" + `; 429 ca
 - Bulk: parcels share an ` + "`ez`" + ` (land-register folio) — ` + "`ez.bulk_price_coins`" + ` is
   the whole folio at 20 %% off (` + "`POST /api/claim-ez`" + `, send the parcel list you saw).
   A farm's folio typically bundles house lot, barn, fields and forest.
+- Nothing glinting in your looks? ` + "`roam`" + ` once, then look again: roaming
+  wildlife appears on real habitat (otter/beaver on water parcels, lynx in
+  forest, cranes on wet meadows) and leaves after 45 min — be quick.
+- Giant trees: ` + "`GET /api/giants-near`" + ` finds the tallest LiDAR-measured trees
+  around you even when your Gemeinde is flat cropland; ` + "`inspect.terrain.tallest_trees`" + `
+  shows which parcel they stand on.
 - Talk to humans in the session with quick phrases; a 👏 after their conversion
   goes a long way.
 

@@ -318,10 +318,10 @@ func (s *Server) Serve(addr string) error {
 	// Sibling roadmap consumers (see siblings.go): viewport landuse slice, INVEKOS fields
 	mux.HandleFunc("GET /api/viewport-landuse", s.handleViewportLanduse)
 	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
-	mux.HandleFunc("GET /api/trees", s.handleTrees)           // LID-2 tree apices
+	mux.HandleFunc("GET /api/trees", s.handleTrees)            // LID-2 tree apices
 	mux.HandleFunc("GET /api/giants-near", s.handleGiantsNear) // nearest giants ring search (hint scout)
-	mux.HandleFunc("GET /api/hofstellen", s.handleHofstellen) // FARM-4 farmsteads
-	mux.HandleFunc("GET /api/buildings", s.handleBuildings)   // LID-3 measured heights by footprint_id
+	mux.HandleFunc("GET /api/hofstellen", s.handleHofstellen)  // FARM-4 farmsteads
+	mux.HandleFunc("GET /api/buildings", s.handleBuildings)    // LID-3 measured heights by footprint_id
 
 	// Building & KG info (slim, aggregated, cached)
 	mux.HandleFunc("GET /api/building-info", s.handleBuildingInfo)
@@ -1702,6 +1702,20 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 
 	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
 		jsonErr(w, "unauthorized", 401)
+		return
+	}
+
+	// Roaming wildlife that has moved on is gone, even if the next /roam
+	// call has not pruned the row yet (agents see moves_on_in_s in look).
+	var pre struct {
+		Type      string
+		CreatedAt time.Time
+		FoundBy   *string
+	}
+	if s.DB.QueryRowContext(r.Context(), "SELECT treasure_type, created_at, found_by FROM treasures WHERE id = ?", req.TreasureID).Scan(&pre.Type, &pre.CreatedAt, &pre.FoundBy) == nil &&
+		roamingGone(dbgen.Treasure{TreasureType: pre.Type, CreatedAt: pre.CreatedAt, FoundBy: pre.FoundBy}, time.Now()) {
+		s.DB.ExecContext(r.Context(), "DELETE FROM treasures WHERE id = ? AND found_by IS NULL", req.TreasureID)
+		jsonErr(w, "This animal has moved on", 410)
 		return
 	}
 
