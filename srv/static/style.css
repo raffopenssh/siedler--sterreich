@@ -364,8 +364,12 @@ input[type=text]:focus { border-color:var(--gold); }
 #game-canvas.dragging { cursor:grabbing; }
 
 /* Minimap */
+/* Bottom HUD band: minimap (left), herald (centre), scale bar + © pill (right)
+   share one 12 px baseline/gutter and never overlap — the herald is centred in
+   the gap between minimap and attribution column. */
+:root { --hud-gap:12px; --hud-side:216px; }
 #minimap {
-  position:absolute; bottom:12px; left:12px; width:180px; height:130px;
+  position:absolute; bottom:var(--hud-gap); left:var(--hud-gap); width:180px; height:130px;
   background:var(--panel); border:3px solid var(--gold);
   box-shadow:3px 3px 0 #000; z-index:50; overflow:hidden;
 }
@@ -841,7 +845,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 
 /* Map data attribution (CC BY 4.0 obligation) — collapsed chip, expands on tap */
 .map-attrib {
-  position:absolute; bottom:10px; right:10px; z-index:52;
+  position:absolute; bottom:var(--hud-gap); right:var(--hud-gap); z-index:52;
   display:flex; flex-direction:column-reverse; align-items:flex-end; gap:4px;
   max-width:min(360px, calc(100vw - 24px));
 }
@@ -1001,8 +1005,8 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 
 /* =================== HERALD (typewriter quest/hint dialogue) =================== */
 .herald {
-  position:absolute; bottom:44px; left:50%; transform:translateX(-50%) translateY(16px);
-  width:min(600px, calc(100% - 24px)); z-index:58;
+  position:absolute; bottom:var(--hud-gap); left:50%; transform:translateX(-50%) translateY(16px);
+  width:min(600px, calc(100% - 2 * var(--hud-side))); z-index:58;
   display:flex; gap:12px; align-items:stretch;
   background:var(--panel); border:3px solid var(--gold); box-shadow:4px 4px 0 #000, inset 0 0 0 1px rgba(0,0,0,.5);
   background-image:linear-gradient(180deg, rgba(60,50,30,.25) 0%, transparent 100%);

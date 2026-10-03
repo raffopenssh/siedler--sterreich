@@ -657,3 +657,91 @@ func (s *Server) serveLLM(w http.ResponseWriter, key, u string, ttl time.Duratio
 }
 
 var _ = slog.Info
+
+// GET /api/giants-near?lon&lat → nearest giant trees (h ≥ 25 m) around a
+// point, searched in widening rings on srtm /trees/bbox. Used by the client
+// as a scout when the loaded KGs hold no giants at all (flat crop Gemeinden
+// like Höflein): the golden mist then points to the nearest ones in a
+// neighbouring KG. Cached 6 h per ~0.02° quantised point.
+func (s *Server) handleGiantsNear(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	lon, err1 := strconv.ParseFloat(q.Get("lon"), 64)
+	lat, err2 := strconv.ParseFloat(q.Get("lat"), 64)
+	if err1 != nil || err2 != nil || lon < 9 || lon > 18 || lat < 46 || lat > 49.5 {
+		jsonErr(w, "lon/lat required", 400)
+		return
+	}
+	qlon, qlat := math.Floor(lon/0.02)*0.02+0.01, math.Floor(lat/0.02)*0.02+0.01
+	key := fmt.Sprintf("giants-near:v1:%.2f,%.2f", qlon, qlat)
+	s.cachedFetch(w, key, func() ([]byte, int) {
+		type giant struct {
+			Lon, Lat, H, Dist float64
+			KG                string
+		}
+		mLon := 111320 * math.Cos(qlat*math.Pi/180)
+		var found []giant
+		for _, half := range []float64{0.04, 0.08, 0.16, 0.32} {
+			b := bbox{qlon - half, qlat - half, qlon + half, qlat + half}
+			seen := map[string]bool{}
+			found = found[:0]
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			for _, c := range splitBBox(b, 0.08) {
+				wg.Add(1)
+				go func(c bbox) {
+					defer wg.Done()
+					u := fmt.Sprintf("%s/trees/bbox?bbox=%.5f,%.5f,%.5f,%.5f&min_height=25&limit=400", lidarAPI, c.W, c.S, c.E, c.N)
+					body, st := s.llmGet("srtm:/trees/bbox:g25:"+c.qs(), u, 6*time.Hour)
+					if st != 200 {
+						return
+					}
+					var d struct {
+						Trees []map[string]any `json:"trees"`
+					}
+					if json.Unmarshal(body, &d) != nil {
+						return
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					for _, m := range d.Trees {
+						h, _ := m["height_m"].(float64)
+						tlon, _ := m["lon"].(float64)
+						tlat, _ := m["lat"].(float64)
+						if h < 25 || h > 60 || tlon == 0 {
+							continue
+						}
+						k := fmt.Sprintf("%d:%d", int(tlon*5000), int(tlat*7000))
+						if seen[k] {
+							continue
+						}
+						seen[k] = true
+						kg, _ := m["kg_code"].(string)
+						found = append(found, giant{tlon, tlat, h, math.Hypot((tlon-lon)*mLon, (tlat-lat)*110540), kg})
+					}
+				}(c)
+			}
+			wg.Wait()
+			if len(found) >= 6 {
+				break
+			}
+		}
+		sort.Slice(found, func(i, j int) bool { return found[i].Dist < found[j].Dist })
+		if len(found) > 24 {
+			found = found[:24]
+		}
+		a := admin()
+		out := make([]map[string]any, 0, len(found))
+		for _, g := range found {
+			row := map[string]any{"lon": g.Lon, "lat": g.Lat, "height_m": g.H, "dist_m": math.Round(g.Dist), "kg_code": g.KG}
+			if k := a.KGs[g.KG]; k != nil {
+				row["kg_name"] = k.Name
+				row["gemeinde_name"] = k.GemName
+			}
+			out = append(out, row)
+		}
+		b, _ := json.Marshal(map[string]any{"lon": lon, "lat": lat, "trees": out,
+			"attribution": "Datenquelle: BEV – ALS DTM/DSM (CC BY 4.0, bearbeitet); srtm-lidar-at (CC BY 4.0)"})
+		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(b), ExpiresAt: time.Now().Add(6 * time.Hour)})
+		return b, 200
+	})
+}

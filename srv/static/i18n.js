@@ -485,6 +485,8 @@ const I18N_EXACT = {
   'Riesenbäume zeigen sich erst, wenn du deinen ersten Schatz gefunden hast.': 'Giant trees only appear once you have found your first treasure.',
   'Kauf die Parzelle, auf der ein Riesenbaum steht. Der nächste': 'Buy the parcel a giant tree stands on. The nearest',
   'Goldene Bäume zeigen dir Riesen. Der nächste': 'Golden trees mark giants. The nearest',
+  'Riese hier': 'Giant here',
+  'Riese': 'giant',
   'In dieser Gegend sind noch keine Riesenbäume geladen — fahr ins ✨ Enhanced Gelände.': 'No giant trees loaded around here — head into ✨ enhanced terrain.',
   'Zum Baum fliegen': 'Fly to tree',
 

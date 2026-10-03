@@ -1476,7 +1476,7 @@ async function startGameWithLoading() {
   mark('cadastre_done');
   loadTallSeen();
   GET('/api/player/'+G.player.id).then(pl => {
-    if (pl && pl.treasures_found > 0) { G.tallUnlocked = true; }
+    if (pl && pl.treasures_found > 0) { G.tallUnlocked = true; loadNearbyGiants(); }
   }).catch(()=>{});
   setLoadStep('ls-kg', 'done');
   setLoadProgress(75);
@@ -2022,6 +2022,7 @@ function loadEnhancedForKGs() {
     G.enhancedLoaded.add(kg);
     fetchEnhancedKG(kg); // fire & forget
   }
+  loadNearbyGiants();
 }
 
 /** Water share of a parcel (0..1) from the measured Benützungsart areas
@@ -2048,9 +2049,32 @@ async function fetchEnhancedKG(kg) {
     G.topTrees[kg] = (d.top_trees||[]);
     G.topObjects[kg] = (d.top_objects||[]);
     G.lidarGen++;
+    loadNearbyGiants();
     render();
     updateEnhancedBadge();
   }).catch(e => console.error('lidar kg failed:', kg, e));
+}
+
+/** Nearby-giants scout (G.topTrees['near']): when the loaded KGs hold no
+ *  giant at all (flat crop Gemeinden — Höflein has none ≥ 20 m), ask the
+ *  server for the nearest ones in widening rings so the golden mist still has
+ *  somewhere to point. Re-asked when the camera moves ~2 km; the 'near' list
+ *  is dropped as soon as real KG giants exist (tallIndex dedups overlaps). */
+let _giantScoutKey = '', _giantScoutAt = 0;
+function loadNearbyGiants(force) {
+  if (!G.tallUnlocked || !G.cam) return;
+  const own = Object.keys(G.topTrees).some(k => k !== 'near' && (G.topTrees[k] || []).length);
+  if (own) { if (G.topTrees.near) { delete G.topTrees.near; G.lidarGen++; } return; }
+  const key = Math.round(G.cam.lon / 0.02) + ':' + Math.round(G.cam.lat / 0.02);
+  const now = Date.now();
+  if (!force && key === _giantScoutKey && now - _giantScoutAt < 10 * 60 * 1000) return;
+  _giantScoutKey = key; _giantScoutAt = now;
+  GET('/api/giants-near?lon=' + G.cam.lon.toFixed(5) + '&lat=' + G.cam.lat.toFixed(5)).then(d => {
+    if (!d || d.error || !Array.isArray(d.trees)) return;
+    G.topTrees.near = d.trees.map(t => ({ lon: t.lon, lat: t.lat, height_m: t.height_m, kg_name: t.kg_name, gemeinde_name: t.gemeinde_name, kg_code: t.kg_code }));
+    G.lidarGen++;
+    render();
+  }).catch(() => {});
 }
 
 /** Measured building into the ~20 m centroid grid (dedup on a 2 m key). */
@@ -3981,6 +4005,96 @@ async function maybeRoamTreasures(nearestM) {
     if (r && r.pending) { _roamAskedAt = now - 150000 + 8000; return; }  // cell still assembling → retry in ~8 s
   } catch (e) { /* optional */ }
 }
+/**
+ * Shared "mystic beacon" used by the giant-tree mist and the treasure compass.
+ * One visual language for every "something is out there" hint:
+ *   - 3 drifting radial blobs (tinted) + 2 slow rotating rune rings
+ *   - orbiting sparkle motes with twinkle
+ *   - pulsing chevron on the HUD-safe edge (off-screen) or a landing ring (on-spot)
+ *   - bobbing glyph, title line, distance line (pixel fonts)
+ * o = {x, y, ang, onSpot, fade, glow:'r,g,b', rim:'#hex', glyph, title, dist, bobSeed}
+ */
+function drawBeacon(ctx, o) {
+  const now = Date.now(), sd = o.bobSeed || 0;
+  const ex = o.x, ey = o.y, g = o.glow, rim = o.rim;
+  ctx.save();
+  ctx.globalAlpha = o.fade;
+  // mist blobs
+  for (let i = 0; i < 3; i++) {
+    const wob = now / 900 + i * 2.1 + sd;
+    const bx = ex + Math.sin(wob) * (8 + i * 5);
+    const by = ey + Math.cos(wob * 1.3) * (5 + i * 3);
+    const r = 26 + i * 10 + Math.sin(now / 600 + i) * 4;
+    const grad = ctx.createRadialGradient(bx, by, 0, bx, by, r);
+    grad.addColorStop(0, 'rgba(' + g + ',' + (0.38 - i * 0.08).toFixed(2) + ')');
+    grad.addColorStop(1, 'rgba(' + g + ',0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI * 2); ctx.fill();
+  }
+  // rune rings: two dashed circles counter-rotating, breathing
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 2; i++) {
+    const r = (i ? 30 : 20) + Math.sin(now / 700 + i * 1.7 + sd) * 2;
+    ctx.save(); ctx.translate(ex, ey); ctx.rotate((i ? -1 : 1) * now / (i ? 2600 : 1800) + sd);
+    ctx.setLineDash(i ? [3, 7] : [2, 5]);
+    ctx.strokeStyle = 'rgba(' + g + ',' + (i ? 0.35 : 0.5) + ')';
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+  // sparkle motes
+  for (let i = 0; i < 6; i++) {
+    const a = now / 700 + i * 1.047 + sd;
+    const mx = ex + Math.cos(a) * (18 + (i % 3) * 7);
+    const my = ey + Math.sin(a * 1.15) * (12 + (i % 2) * 6);
+    const tw = 0.5 + Math.sin(now / 180 + i * 2) * 0.5;
+    const sz = i % 3 === 0 ? 3 : 2;
+    ctx.fillStyle = 'rgba(255,255,255,' + (tw * 0.9).toFixed(2) + ')';
+    ctx.fillRect(mx - sz / 2, my - sz / 2, sz, sz);
+    if (sz === 3) { ctx.fillStyle = 'rgba(' + g + ',' + (tw * 0.8).toFixed(2) + ')'; ctx.fillRect(mx - 3, my - 0.5, 6, 1); ctx.fillRect(mx - 0.5, my - 3, 1, 6); }
+  }
+  const bob = Math.sin(now / 350 + sd) * 3;
+  if (!o.onSpot) {
+    // chevron on the edge, pulsing outward along the bearing
+    const pulse = 1 + Math.sin(now / 300 + sd) * 0.18;
+    ctx.save(); ctx.translate(ex, ey); ctx.rotate(o.ang);
+    const d = 30 + bob;
+    ctx.beginPath(); ctx.moveTo(d + 10 * pulse, 0); ctx.lineTo(d - 5, -8); ctx.lineTo(d - 2, 0); ctx.lineTo(d - 5, 8); ctx.closePath();
+    ctx.fillStyle = rim; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(20,14,8,0.9)'; ctx.stroke();
+    // faint trail dashes behind the chevron
+    ctx.strokeStyle = 'rgba(' + g + ',0.55)'; ctx.lineWidth = 2; ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(d - 8, 0); ctx.stroke();
+    ctx.restore();
+  } else {
+    // landing ring: expanding ripple that marks "right here"
+    const k = ((now + sd * 1000) % 1400) / 1400;
+    ctx.strokeStyle = 'rgba(' + g + ',' + (0.8 * (1 - k)).toFixed(2) + ')'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(ex, ey, 10 + k * 36, 0, Math.PI * 2); ctx.stroke();
+  }
+  // glyph + labels (labels flip above the beacon when the chevron points down,
+  // so arrow and text never overlap)
+  const above = !o.onSpot && Math.sin(o.ang) > 0.4;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.font = '20px serif'; ctx.fillStyle = '#fff4d0';
+  ctx.fillText(o.glyph, ex, ey + 7 + bob * 0.5);
+  let ty = above ? ey - 18 : ey + 22;
+  const step = above ? -15 : 16;
+  if (o.title) {
+    ctx.font = MAP_FONT.pixel;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillText(o.title, ex + 1, ty + 1);
+    ctx.fillStyle = '#fff4d0'; ctx.fillText(o.title, ex, ty);
+    ty += step;
+  }
+  if (o.dist) {
+    ctx.font = MAP_FONT.label;
+    if (above && o.title) ty -= 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillText(o.dist, ex + 1, ty + 1);
+    ctx.fillStyle = rim; ctx.fillText(o.dist, ex, ty);
+  }
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+function hintDistTxt(m) { return m >= 950 ? (m / 1000).toFixed(m < 9500 ? 1 : 0).replace('.0', '') + ' km' : Math.round(m / 50) * 50 + ' m'; }
+
 function drawTreasureHint(ctx) {
   const list = unfoundTreasures();
   const now = Date.now();
@@ -3992,36 +4106,24 @@ function drawTreasureHint(ctx) {
   for (const t of list) { const d = treasureDistM(t); if (d < bd) { bd = d; best = t; } }
   if (age > 4000) maybeRoamTreasures(best ? bd : null);
   if (!best || age < 6000) { treasureHintPos = null; return; }
-  const fade = Math.min(1, (age - 6000) / 900);
+  const fade = Math.min(1, (age - 6000) / 1200);
   const [tx, ty] = toScreen(best.lon, best.lat);
-  const ep = edgePoint(tx, ty);
+  let ep = edgePoint(tx, ty);
+  // keep the two beacons apart: if the tree mist already sits here, slide along the edge
+  if (fogHintPos && Math.hypot(fogHintPos.x - ep.x, fogHintPos.y - ep.y) < 120) {
+    const side = Math.abs(Math.cos(ep.ang)) > Math.abs(Math.sin(ep.ang));   // left/right edge → shift vertically
+    const dir = side ? (fogHintPos.y > ep.y ? -1 : 1) : (fogHintPos.x > ep.x ? -1 : 1);
+    ep = { x: ep.x + (side ? 0 : 130 * dir), y: ep.y + (side ? 130 * dir : 0), k: ep.k, ang: ep.ang };
+    const ins = hudSafeInsets();
+    ep.x = Math.min(gc.width - ins.right - 40, Math.max(ins.left + 40, ep.x));
+    ep.y = Math.min(gc.height - ins.bottom - 50, Math.max(ins.top + 40, ep.y));
+  }
   treasureHintPos = { x: ep.x, y: ep.y, lon: best.lon, lat: best.lat, t: best };
   const rar = treasureRarity(best);
   const isCreature = isSpeciesTreasure(best);
-  const distTxt = bd >= 950 ? (bd / 1000).toFixed(bd < 9500 ? 1 : 0).replace('.0', '') + ' km' : Math.round(bd / 50) * 50 + ' m';
-  const bob = Math.sin(now / 420) * 2;
-  ctx.save();
-  ctx.globalAlpha = fade * 0.95;
-  // card
-  const label = (isCreature ? (best.treasure_type === 'roaming' ? '🐾 ' : '🦎 ') + (best.species_german || '') : '💎 ' + rar.name) ;
-  ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  const tw = Math.max(ctx.measureText(label).width, ctx.measureText(distTxt).width) + 16;
-  const cw = Math.max(74, tw), ch = 34;
-  // pull the card inward along the pointing direction so the chevron sits on the edge
-  const cx = ep.x - Math.cos(ep.ang) * (cw / 2 + 10), cy = ep.y - Math.sin(ep.ang) * (ch / 2 + 10) + bob;
-  Object.assign(treasureHintPos, { cx, cy, cw, ch });
-  ctx.fillStyle = 'rgba(20,16,10,0.86)';
-  ctx.beginPath(); ctx.roundRect(cx - cw / 2, cy - ch / 2, cw, ch, 4); ctx.fill();
-  ctx.lineWidth = 2; ctx.strokeStyle = rar.rim; ctx.stroke();
-  ctx.fillStyle = '#fff4d0'; ctx.fillText(label, cx, cy - 7);
-  ctx.fillStyle = rar.rim; ctx.fillText(distTxt, cx, cy + 8);
-  // chevron on the edge, pulsing outward
-  const pulse = 1 + Math.sin(now / 300) * 0.15;
-  ctx.save(); ctx.translate(ep.x, ep.y + bob); ctx.rotate(ep.ang);
-  ctx.beginPath(); ctx.moveTo(10 * pulse, 0); ctx.lineTo(-5, -8); ctx.lineTo(-2, 0); ctx.lineTo(-5, 8); ctx.closePath();
-  ctx.fillStyle = rar.rim; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#1a140c'; ctx.stroke();
-  ctx.restore();
-  ctx.restore();
+  const glyph = isCreature ? (best.treasure_type === 'roaming' ? '🐾' : '🦎') : '💎';
+  const title = isCreature ? (best.species_german || rar.name) : rar.name;
+  drawBeacon(ctx, { x: ep.x, y: ep.y, ang: ep.ang, onSpot: ep.k >= 1, fade: fade * 0.95, glow: rar.glow, rim: rar.rim, glyph, title, dist: hintDistTxt(bd), bobSeed: 1.3 });
 }
 
 function drawTallTreeFogHint(ctx) {
@@ -4048,64 +4150,17 @@ function drawTallTreeFogHint(ctx) {
     if (d < bd) { bd = d; best = { t, x, y }; }
   }
   if (!best) return;
-  // Clamp direction vector to the HUD-safe frame
-  const ep = edgePoint(best.x, best.y);
-  const k = ep.k;
-  // k<1: target is off screen → mist sits at the edge with a chevron.
+  // k<1: target is off screen → mist sits at the HUD-safe edge with a chevron.
   // k=1: an undiscovered giant hides right here → mist gathers on the spot.
-  const onSpot = k >= 1;
+  const ep = edgePoint(best.x, best.y);
+  const onSpot = ep.k >= 1;
   const ex = onSpot ? best.x : ep.x, ey = onSpot ? best.y : ep.y;
   fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat };
-  // Distance in meters (approx equirectangular)
   const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
   const dm = Math.hypot((best.t.lon - G.cam.lon) * mLon, (best.t.lat - G.cam.lat) * 110540);
-  const distTxt = onSpot ? '?' : dm >= 1000 ? (dm/1000).toFixed(1) + ' km' : Math.round(dm/10)*10 + ' m';
-  // Swirling mist: 3 layered drifting blobs + sparkle motes
-  ctx.save();
-  ctx.globalAlpha = fade;
-  for (let i = 0; i < 3; i++) {
-    const wob = now/900 + i * 2.1;
-    const bx = ex + Math.sin(wob) * (8 + i*5);
-    const by = ey + Math.cos(wob * 1.3) * (5 + i*3);
-    const r = 26 + i*10 + Math.sin(now/600 + i) * 4;
-    const grad = ctx.createRadialGradient(bx, by, 0, bx, by, r);
-    grad.addColorStop(0, 'rgba(255,230,140,' + (0.28 - i*0.07).toFixed(2) + ')');
-    grad.addColorStop(1, 'rgba(255,230,140,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI*2); ctx.fill();
-  }
-  // Sparkle motes orbiting the mist
-  for (let i = 0; i < 5; i++) {
-    const a = now/700 + i * 1.257;
-    const mx = ex + Math.cos(a) * (18 + (i%3)*7);
-    const my = ey + Math.sin(a * 1.15) * (12 + (i%2)*6);
-    const tw = 0.5 + Math.sin(now/180 + i*2) * 0.5;
-    ctx.fillStyle = 'rgba(255,245,190,' + (tw*0.9).toFixed(2) + ')';
-    ctx.fillRect(mx-1, my-1, 2, 2);
-  }
-  // Direction chevron pointing outward + pulsing tree glyph
-  const ang = Math.atan2(dy, dx);
-  const bob = Math.sin(now/350) * 3;
-  ctx.translate(ex, ey);
-  ctx.rotate(ang);
-  if (!onSpot) {
-    ctx.fillStyle = 'rgba(255,215,0,0.95)';
-    ctx.beginPath();
-    ctx.moveTo(34 + bob, 0); ctx.lineTo(22 + bob, -7); ctx.lineTo(22 + bob, 7);
-    ctx.closePath(); ctx.fill();
-  }
-  ctx.rotate(-ang);
-  ctx.font = '20px serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('\uD83C\uDF32', 0, 7);
-  // Distance label
-  ctx.font = MAP_FONT.label;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.fillText(distTxt, 1, 25);
-  ctx.fillStyle = '#ffd700';
-  ctx.fillText(distTxt, 0, 24);
-  ctx.textAlign = 'left';
-  ctx.restore();
+  const far = best.t._kg === 'near';   // giant outside the loaded KGs (nearby-giants scout)
+  const title = onSpot ? tr('Riese hier') : (far && best.t.kg_name ? best.t.kg_name : Math.round(best.t.height_m) + ' m ' + tr('Riese'));
+  drawBeacon(ctx, { x: ex, y: ey, ang: ep.ang, onSpot, fade, glow: '255,230,140', rim: '#ffd700', glyph: '\uD83C\uDF32', title, dist: onSpot ? '?' : hintDistTxt(dm), bobSeed: 0 });
 }
 
 /** Big landmark tree sprite with subtle sway + height label; banner for tall objects. */
@@ -5665,7 +5720,7 @@ function drawDeadTree(ctx, x, y, u, seed, hornets) {
  *  meadows and fields, a nest box in gardens. ~14% of parcels, hash-stable. */
 function drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash) {
   const m = hashMix(hash ^ 0x9e3779b9);
-  if (m % 100 >= 14) return;
+  if (m % 100 >= 14 || G.cam.zoom < 16.5) return;
   const u = G.cam.zoom > 17.5 ? 2 : 1;
   if ((sx2 - sx1) < 60 * u || (sy2 - sy1) < 40 * u) return;
   // try a few hash-stable spots near the parcel edge (farmers keep hives at the margin)
@@ -8023,12 +8078,25 @@ function drawScaleBar(ctx, W, H) {
   if (barPx < 40) { barM = 1000; barPx = (barM/mPerDeg)*s; }
   if (barPx > 250) { barM = 20; barPx = (barM/mPerDeg)*s; }
 
-  const x = 20, y = H - 25;
-  ctx.fillStyle = '#000'; ctx.fillRect(x-1,y-1,barPx+2,6);
-  ctx.fillStyle = '#fff'; ctx.fillRect(x,y,barPx,4);
-  ctx.fillStyle = '#000'; ctx.fillRect(x,y,barPx/2,4);
-  ctx.font = MAP_FONT.small; ctx.fillStyle = '#fff';
-  ctx.fillText(barM>=1000?(barM/1000)+'km':barM+'m', x+barPx+6, y+4);
+  // Bottom-right, just above the © attribution pill — the minimap (bottom-left)
+  // carries its own scale, so the main one must not sit next to it.
+  // Subtle: a thin ruler with end ticks and a quiet label, right-aligned with
+  // the © pill and sitting just above it (phones: above the bottom chip row).
+  let y = H - 25, right = W - 12;
+  const mr = gc.getBoundingClientRect();
+  const at = document.getElementById('map-attrib');
+  if (at && at.offsetParent !== null) { const r = at.getBoundingClientRect(); y = Math.min(y, r.top - mr.top - 10); right = r.right - mr.left; }
+  const x = Math.round(right - barPx) + 0.5; y = Math.round(y) + 0.5;
+  const lbl = barM >= 1000 ? (barM / 1000) + ' km' : barM + ' m';
+  ctx.save();
+  ctx.font = MAP_FONT.small; ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineCap = 'butt';
+  ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + barPx, y); ctx.lineTo(x + barPx, y - 4); ctx.stroke();
+  ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,245,220,0.85)';
+  ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + barPx, y); ctx.lineTo(x + barPx, y - 4); ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillText(lbl, x + barPx - 1, y - 4);
+  ctx.fillStyle = 'rgba(255,245,220,0.9)'; ctx.fillText(lbl, x + barPx - 2, y - 5);
+  ctx.restore();
 }
 
 // ---- Minimap ----
@@ -9632,7 +9700,7 @@ function hudSafeInsets() {
   const W = gc.width, H = gc.height;
   const ins = { top: 70, bottom: 40, left: 20, right: 20 };
   const vis = el => el && el.offsetParent !== null && el.getBoundingClientRect().height > 0;
-  const rect = id => { const el = document.getElementById(id); return vis(el) ? el.getBoundingClientRect() : null; };
+  const rect = id => { const el = document.getElementById(id); if (id === 'herald' && !(el && el.classList.contains('show'))) return null; return vis(el) ? el.getBoundingClientRect() : null; };
   for (const id of ['game-search', 'hud-badges', 'muni-toast', 'abroad-badge']) {
     const r = rect(id); if (r) ins.top = Math.max(ins.top, r.bottom - mr.top + 12);
   }
@@ -9648,7 +9716,7 @@ function hudSafeInsets() {
     if (Math.abs(cur - y) > 1) stack.style.top = y + 'px';
     const sr = rect('bottom-stack'); if (sr) ins.top = Math.max(ins.top, sr.bottom - mr.top + 12);
   } else if (stack && stack.style.top) stack.style.top = '';
-  for (const id of ['bottom-stack', 'map-attrib']) {
+  for (const id of ['bottom-stack', 'map-attrib', 'herald', 'minimap']) {
     const r = rect(id); if (r && r.top - mr.top > H * 0.5) ins.bottom = Math.max(ins.bottom, mr.bottom - r.top + 12);
   }
   const zc = rect('zoom-controls'); if (zc && zc.left - mr.left > W * 0.5) ins.right = Math.max(ins.right, mr.right - zc.left + 12);
@@ -10081,6 +10149,7 @@ async function claimTreasure(t) {
   // First treasure unlocks the giant trees (enhanced mode)
   if (!G.tallUnlocked) {
     G.tallUnlocked = true;
+    loadNearbyGiants(true);
     if (allTallTrees().length > 0) {
       setTimeout(() => toast('🌲 Gerücht: Irgendwo da steht ein Riesenbaum... Find ihn und tipp ihn an!', 'ok'), 1200);
     }
@@ -10359,7 +10428,7 @@ window.DEV = {
   trees(mode) {
     if (!mode) return Object.assign(giantChronik(), { unlocked: G.tallUnlocked, revealed: G.tallRevealed });   // read-only
     if (mode === 'reset') { G.tallSeen = new Set(); saveTallSeen(); for (const t of allTallTrees()) t._seenAt = 0; G.tallRevealed = false; render(); return giantChronik(); }
-    G.tallUnlocked = mode !== 'locked'; G.tallRevealed = mode === 'revealed' || mode === 'all';
+    G.tallUnlocked = mode !== 'locked'; G.tallRevealed = mode === 'revealed' || mode === 'all'; loadNearbyGiants(true);
     if (mode === 'revealed') discoverTrees(tallTreesInView().slice(0, giantDrawBudget()), true);
     if (mode === 'all') discoverTrees(allTallTrees());
     render(); return giantChronik();
@@ -11560,7 +11629,7 @@ function drawStationSprite(ctx, x, y, cat, u, t) {
 }
 function drawGwStations(ctx) {
   _drawnStations = [];
-  if (!G.gwVisible || G.cam.zoom < 15 || !G.gwPoints.length) return;
+  if (!G.gwVisible || G.cam.zoom < 16 || !G.gwPoints.length) return;
   const u = G.cam.zoom >= 18 ? 3 : G.cam.zoom >= 16.5 ? 2 : 1.5, t = Date.now() / 600;
   const W = gc.width, H = gc.height, seen = {};
   ctx.save();
@@ -12186,8 +12255,9 @@ function drawHofSprite(ctx, x, y, u, seed) {
   if (seed % 2) { px(8, -3, 3, 3, '#c8a040'); px(8, -3, 3, 1, '#e0c060'); }
 }
 function drawHofstellen(ctx) {
-  if (G.cam.zoom < 15 || !G.hofstellen.length) return;
-  const u = G.cam.zoom >= 18.5 ? 3 : G.cam.zoom >= 16.5 ? 2 : 1;
+  // Street level only (z ≥ 17.5): below that the tractors compete with treasures.
+  if (G.cam.zoom < 17.5 || !G.hofstellen.length) return;
+  const u = G.cam.zoom >= 18.5 ? 3 : 2;
   const b = viewBounds();
   for (const h of G.hofstellen) {
     if (h.lon < b.w || h.lon > b.e || h.lat < b.s || h.lat > b.n) continue;
@@ -12195,7 +12265,7 @@ function drawHofstellen(ctx) {
     const [x, y] = toScreen(h.lon, h.lat);
     const seed = simpleHash(h.id);
     drawHofSprite(ctx, x + 10 * u, y + 8 * u, u, seed);
-    if (G.cam.zoom >= 17) {
+    if (G.cam.zoom >= 18.5) {
       ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       const lbl = (h.organic ? '🌿 ' : '🚜 ') + tr('Hofstelle');
       // several farmsteads in one yard (wine villages) → one label per slot

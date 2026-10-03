@@ -318,6 +318,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/viewport-landuse", s.handleViewportLanduse)
 	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
 	mux.HandleFunc("GET /api/trees", s.handleTrees)           // LID-2 tree apices
+	mux.HandleFunc("GET /api/giants-near", s.handleGiantsNear) // nearest giants ring search (hint scout)
 	mux.HandleFunc("GET /api/hofstellen", s.handleHofstellen) // FARM-4 farmsteads
 	mux.HandleFunc("GET /api/buildings", s.handleBuildings)   // LID-3 measured heights by footprint_id
 

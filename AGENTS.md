@@ -145,15 +145,18 @@ as `202 {status:"pending", retry_after_s}` + `Retry-After` (`relayCellStatus`).
 
 `kg_warm` table (`kg_code, warmed_at, expires_at=+24 h, cells, parcels, reason`).
 Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2 h.
-- **Daily plan**: 100 KGs/day in 5 contiguous patches (~20 adjacent KGs, seed
-  Gemeinde prefers srtm grid25), one patch per 24h/5; persisted as
-  `warm-plan:<date>` in api_cache so restarts resume.
+- **Daily plan**: 100 KGs/day in 20 patches of 5 KGs: a small Gemeinde whose
+  KGs are *all* srtm-enhanced (grid25) + nearest neighbour KGs (any), one patch
+  per 24h/20, ≤ 4 per Bundesland; persisted as `warm-plan:v2:<date>` in
+  api_cache so restarts resume.
 - **Neighbour**: first foreground build of a cell enqueues the KGs touching it +
   adjacent KGs (low prio, debounced 1 h per cell).
 - **Session**: `POST /api/session/create` → `warmGemeinde` (medium prio);
   `prewarmKGs` (siblings.go) adds KGs along a water flowpath.
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
-  only Gemeinden whose KGs are all warm and not expiring within 2 h.
+  only Gemeinden whose KGs are warm (not expiring within 2 h) **and** srtm
+  grid25 (`enhancedKGSet`); the spawn KG itself must be enhanced. Picks are
+  logged `lucky: pick`.
 
 Known limitation: a cached cell (≤ 24 h) can disagree with a live bevdirect
 `/ez` or `/parcel` answer (e.g. `building_count`). Deliberately not fixed —
