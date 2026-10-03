@@ -195,6 +195,15 @@ is a deprecated alias). Hit-test **all rings even-odd** (ring[0] of a part is th
 exterior, following rings holes; part order is not a contract). Footprints are
 single Polygons. Go side: `geomRings`, `pipRingsGo`, `bboxOfRaw` (viewport.go).
 
+**Hints vs. popups.** Canvas beacons (`edgePoint` → `avoidObstacles`) are clamped
+to `hudSafeInsets()` and steered around open popups (`_hudObstacles`; full-width
+phone sheets become insets); a covered target gets a chevron aimed at it. Desktop
+popups are corner-anchored and `placePopupClear(id,lon,lat)` toggles `.flip` so
+they never sit on the tapped spot; right-anchored panels use `right:60px` (zoom
+column). Phones: every popup is a sheet (grabber, swipe header down → `.peek`,
+again → close, tap → expand; `initPopupSheets`). Call `invalidateHudInsets()`
+after moving a popup programmatically (class changes are observed automatically).
+
 **Austrian border.** `srv/static/austria.json` → `G.atBorder`; `drawForeignShading()`,
 `drawAustriaBorderLine()`, minimap, `updateAbroadBadge()`, `tilesInAustria()`.
 `insideAustria()` returns **true** while loading — never gate strictly on it.
