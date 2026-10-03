@@ -1,0 +1,17 @@
+{
+  "name": "siedler-xbrowser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install-browsers": "playwright install chromium firefox webkit",
+    "xb": "node xb.mjs",
+    "quick": "node xb.mjs --engines=webkit,chromium --form=desktop",
+    "webkit": "node xb.mjs --engines=webkit",
+    "mobile": "node xb.mjs --form=mobile"
+  },
+  "dependencies": {
+    "playwright": "1.47.2",
+    "pixelmatch": "5.3.0",
+    "pngjs": "7.0.0"
+  }
+}

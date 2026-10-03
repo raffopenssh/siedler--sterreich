@@ -479,3 +479,16 @@ Multi-tab QA: register a 2nd player via `POST /api/register`, join with
 breaker opens after 3 failures, chip counts down, map refills on restart.
 Gotcha: `DEV.treasure(id)` / `DEV.parcel(id)` need the exact id. Screenshot
 recipes: `docs/screenshot-recipes.md`; glitch log `docs/glitches.md`.
+
+## Cross-browser QA harness (`tools/xbrowser/`)
+
+`tools/xb.sh` walks every app state (welcome, invite, picker, loading, all
+zooms, every popup, EZ, Chronik, Herald, treasures, giant trees locked/hint/
+fog/revealed, Naturschutz/Naturwald/Schlag/field mocks, station, flow, similar,
+search, chat, rules, mobile sheet, chrome off, GPS) in Chromium, Firefox and
+WebKit (Safari engine), desktop 1440×900 + phone 390×844 @2x. Flags JS errors,
+missing fonts, clipped text, off-screen chrome, dead canvas animations and
+pixel Δ vs Chromium. Scenes live in `tools/xbrowser/scenes.mjs` — add one per
+new feature. Report: `tools/xbrowser/out/report.html`, served by systemd
+`xb-report` at `https://siedler-oesterreich.exe.xyz:8765/report.html`.
+`tools/xb.sh --quick` for webkit+chromium core scenes; `--engines= --form= --only=`.

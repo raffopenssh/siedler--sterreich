@@ -1,0 +1,81 @@
+// Scene catalogue for xb.mjs. Every app state we know of, in walk order.
+// A scene is { id, title, anim?, forms?, run({page, S, BASE, form, engine, sleep}) → info }.
+// `anim: true` samples the canvas twice and flags a dead animation.
+// Scenes must leave the game in a sane state (DEV.closeAll etc.) for the next one.
+
+const ev = (page, fn, arg) => page.evaluate(fn, arg);
+const closeAll = page => ev(page, () => { DEV.closeAll(); DEV.flow(false); DEV.sheet(false); for (const id of ['dossier-popup','station-popup']) document.getElementById(id)?.classList.remove('open'); });
+const settle = (page, ms = 700) => page.waitForTimeout(ms);
+
+// ---------- pre-game screens (own navigations) ----------
+export const PRE_SCENES = [
+  { id: 'welcome', title: 'Welcome screen', run: async ({ page, BASE }) => {
+    await page.goto(`${BASE}/?lang=de&dev=1`, { waitUntil: 'load' });
+    await page.waitForSelector('#screen-welcome.active'); await settle(page, 1200);
+    await page.fill('#input-name', 'Prüfer Ärger-Übel'); await settle(page, 300);
+  } },
+  { id: 'welcome-invite', title: 'Welcome via /join/<code>', run: async ({ page, BASE, S }) => {
+    await page.goto(`${BASE}/join/${S.invite}?lang=de&dev=1`, { waitUntil: 'load' });
+    await page.waitForSelector('#screen-welcome.active'); await settle(page, 1500);
+  } },
+  { id: 'pick', title: 'Municipality picker', run: async ({ page, BASE }) => {
+    await page.goto(`${BASE}/?lang=de&dev=1`, { waitUntil: 'load' });
+    await page.waitForSelector('#screen-welcome.active');
+    await ev(page, () => show('pick')); await settle(page, 2500);
+  } },
+  { id: 'pick-search', title: 'Picker: search results', run: async ({ page }) => {
+    await page.fill('#input-search', 'Maut'); await settle(page, 1500);
+  } },
+  { id: 'loading', title: 'Loading screen (42 %)', run: async ({ page }) => {
+    await ev(page, () => DEV.loading(42, 'Mautern an der Donau')); await settle(page, 1500);
+  } },
+];
+
+// ---------- in-game states (one session, sequential) ----------
+export const SCENES = [
+  { id: 'game-z16', title: 'Game · z16 spawn', anim: true, run: async ({ page, S }) => { await closeAll(page); return ev(page, s => DEV.goto(s.lon, s.lat, 16), S); } },
+  { id: 'game-z13', title: 'Game · z13 overview', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 13), S) },
+  { id: 'game-z14.5', title: 'Game · z14.5', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 14.5), S) },
+  { id: 'game-z18', title: 'Game · z18 detail', anim: true, run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 18), S) },
+  { id: 'game-z20', title: 'Game · z20 max', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 20), S) },
+  { id: 'relief', title: 'Relief / hillshade on', run: async ({ page, S }) => { await ev(page, s => DEV.goto(s.lon, s.lat, 15), S); await ev(page, () => DEV.relief && DEV.relief(true)); await settle(page, 2500); } },
+  { id: 'relief-off', title: 'Relief off, N2K off', run: async ({ page }) => { await ev(page, () => { DEV.relief && DEV.relief(false); DEV.n2k(false); }); await settle(page, 500); } },
+  { id: 'n2k-on', title: 'Natura 2000 + Wasserschutz overlay', run: async ({ page }) => { await ev(page, () => DEV.n2k(true)); await settle(page, 800); } },
+  { id: 'popup-field', title: 'Parcel popup · field (NS 48)', run: async ({ page, S }) => {
+    await ev(page, s => DEV.goto(s.lon, s.lat, 17), S);
+    return ev(page, async () => { const c = DEV.parcelsNear(f => extractLuCode('', f) === '48' && f.area_sqm > 2000, 1)[0]; if (!c) return 'no field'; await DEV.parcel(c.parcel_id, true); await new Promise(r => setTimeout(r, 2500)); return G.sel?.properties?.parcel_id; });
+  } },
+  { id: 'popup-building', title: 'Parcel popup · building + footprint', run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const b = await DEV.building(0); await new Promise(r => setTimeout(r, 1500)); return b && { fp: b.footprint_id, ns: b.ns_code }; }); } },
+  { id: 'popup-forest', title: 'Parcel popup · forest (Holzernte rows)', run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const f = DEV.forests(1)[0]; if (!f) return 'no forest'; await DEV.forest(f.parcel_id, true); await new Promise(r => setTimeout(r, 3000)); return f.parcel_id; }); } },
+  { id: 'ez', title: 'EZ folio highlight + popup', anim: true, run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const c = DEV.ezCandidates(3, 30)[0]; if (!c) return 'no ez'; const [kg, ez] = c.key.split('-EZ'); const n = DEV.ez(kg, +ez); await new Promise(r => setTimeout(r, 1500)); return { c, n }; }); } },
+  { id: 'kg-popup', title: 'KG summary popup', run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const kg = [...G.kgsLoaded][0]; await DEV.kg(kg); await new Promise(r => setTimeout(r, 2500)); return kg; }); } },
+  { id: 'dossier', title: 'Gemeinde-Chronik (dossier)', run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const d = await DEV.dossier(); await new Promise(r => setTimeout(r, 1500)); return d && { drought: d.drought?.label }; }); } },
+  { id: 'dossier-forest', title: 'Chronik · forest tab', run: async ({ page }) => ev(page, async () => { await DEV.dossier(undefined, 'forest'); await new Promise(r => setTimeout(r, 1200)); }) },
+  { id: 'dossier-farm', title: 'Chronik · farm tab', run: async ({ page }) => ev(page, async () => { await DEV.dossier(undefined, 'farm'); await new Promise(r => setTimeout(r, 1200)); }) },
+  { id: 'quest-herald', title: 'Quest → Herald briefing + ping', anim: true, run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const r = await DEV.quest('Schatzsucher', true); await new Promise(res => setTimeout(res, 2500)); return r && (r.title || r.id || true); }); } },
+  { id: 'treasure', title: 'Treasure sprite (nearest)', anim: true, run: async ({ page }) => { await closeAll(page).then(() => ev(page, () => DEV.herald && DEV.herald('dismiss'))); return ev(page, async () => { const t = await DEV.treasure(); await new Promise(r => setTimeout(r, 1500)); return t && { id: t.id, type: t.treasure_type }; }); } },
+  { id: 'treasure-compass', title: 'Treasure compass (none on screen)', anim: true, run: async ({ page, S }) => { await ev(page, s => DEV.goto(s.lon + 0.03, s.lat + 0.02, 18), S); await settle(page, 6000); return ev(page, () => ({ unfound: DEV.treasures().length })); } },
+  { id: 'treasure-claim', title: 'Treasure claim FX + toast', anim: true, run: async ({ page }) => ev(page, async () => { const t = await DEV.treasure(undefined, true); await new Promise(r => setTimeout(r, 600)); return t && t.id; }) },
+  { id: 'trees-locked', title: 'Giant trees · locked', run: async ({ page, S }) => { await closeAll(page); await ev(page, () => DEV.trees('locked')); await ev(page, s => DEV.goto(s.lon, s.lat, 15), S); await settle(page, 1500); } },
+  { id: 'trees-hint', title: 'Giant trees · golden hint trees', anim: true, run: async ({ page }) => ev(page, async () => { DEV.trees('hint'); await new Promise(r => setTimeout(r, 2500)); const t = DEV.tree(0); await new Promise(r => setTimeout(r, 1500)); return t && { h: t.height_m, n: allTallTrees().length }; }) },
+  { id: 'trees-fog', title: 'Giant trees · fog beacon (none on screen)', anim: true, run: async ({ page, S }) => { await ev(page, s => DEV.goto(s.lon + 0.03, s.lat + 0.02, 19), S); await settle(page, 6500); } },
+  { id: 'trees-revealed', title: 'Giant trees · revealed + tree popup', anim: true, run: async ({ page }) => ev(page, async () => { DEV.trees('revealed'); await new Promise(r => setTimeout(r, 2000)); const t = DEV.tree(0); await new Promise(r => setTimeout(r, 1500)); if (t) showTreePopup(t); await new Promise(r => setTimeout(r, 800)); return t && { h: t.height_m }; }) },
+  { id: 'nature', title: 'Naturschutz reserve scene (mock)', anim: true, run: async ({ page, S }) => { await closeAll(page); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 17.5); const c = DEV.parcelsNear(f => f.area_sqm > 3000 && f.area_sqm < 30000 && ['48','52','55'].includes(extractLuCode('', f)), 1)[0]; if (!c) return 'none'; const id = c.parcel_id; const [lon, lat] = featureLonLat(DEV.find(id)); await DEV.goto(lon, lat, 18); await DEV.mock(id, { to: 'biodiversity' }); await new Promise(r => setTimeout(r, 2500)); return id; }, S); } },
+  { id: 'nature-popup', title: 'Naturschutz parcel popup (mine)', run: async ({ page }) => ev(page, async () => { const c = G.claimed.find(x => x._mock && x.converted_to === 'biodiversity'); if (!c) return 'none'; await DEV.parcel(c.parcel_id); await new Promise(r => setTimeout(r, 1500)); return c.parcel_id; }) },
+  { id: 'wildforest', title: 'Naturwald scene (mock)', anim: true, run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const f = DEV.forests(5).find(x => x.area_sqm > 2000) || DEV.forests(1)[0]; if (!f) return 'none'; const id = f.parcel_id; const [lon, lat] = featureLonLat(DEV.find(id)); await DEV.goto(lon, lat, 18); await DEV.mock(id, { to: 'wildforest' }); await new Promise(r => setTimeout(r, 2500)); return id; }); } },
+  { id: 'schlag', title: 'Holzernte Schlag + regrowth (mock, 10 min ago)', anim: true, run: async ({ page }) => ev(page, async () => { const c = G.claimed.find(x => x._mock && x.converted_to === 'wildforest'); if (!c) return 'none'; await DEV.mock(c.parcel_id, { harvestedMinAgo: 10 }); await DEV.parcel(c.parcel_id); await new Promise(r => setTimeout(r, 2500)); return c.parcel_id; }) },
+  { id: 'fields', title: 'Field stages (mock harvested)', run: async ({ page, S }) => { await closeAll(page); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 17); const fs = DEV.fields(undefined, 6); let n = 0; for (const f of fs) { const id = f.parcel_id; await DEV.mock(id, { harvestedMinAgo: 5 + 12 * n }); n++; } await new Promise(r => setTimeout(r, 2000)); return n; }, S); } },
+  { id: 'station', title: 'Grundwasser-Messstelle popup', run: async ({ page }) => { await closeAll(page); return ev(page, async () => { const st = await DEV.station(); if (!st.length) return 'none'; await DEV.station(st[0].id); await new Promise(r => setTimeout(r, 2500)); return st[0].id; }); } },
+  { id: 'flow', title: 'Wassertropfen-Reise (flow animation)', anim: true, run: async ({ page, S }) => { await closeAll(page); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 16); const r = await DEV.flow(s.lon, s.lat); await new Promise(res => setTimeout(res, 4000)); return r; }, S); } },
+  { id: 'similar', title: 'Similar parcels mode', run: async ({ page, S }) => { await ev(page, () => { DEV.flow(false); DEV.closeAll(); }); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 17); const c = DEV.parcelsNear(f => f.area_sqm > 1500, 1)[0]; if (!c) return 'none'; const id = c.parcel_id; const r = await DEV.similar(id); await new Promise(res => setTimeout(res, 2000)); return r && (r.length ?? r.count ?? true); }, S); } },
+  { id: 'search', title: 'In-game search dropdown', run: async ({ page }) => { await ev(page, () => { DEV.closeAll(); const b = document.getElementById('btn-similar-clear'); b && b.click(); }); await page.fill('#game-search-input', 'Mautern'); await settle(page, 2000); } },
+  { id: 'chat', title: 'Chat message + toasts', run: async ({ page }) => { await ev(page, () => { document.getElementById('game-search-input').value = ''; document.getElementById('game-search-input').blur(); }); await ev(page, () => { const s = document.getElementById('sidebar'); s && s.classList.add('expanded'); }); await page.fill('#input-chat', 'Grüß Gott aus dem Prüfstand 🌲'); await page.keyboard.press('Enter'); await settle(page, 1200); await ev(page, () => { toast('Parzelle gekauft · +120 ⚡', 'ok'); toast('Nicht genug Münzen', 'err'); }); await settle(page, 400); } },
+  { id: 'chat-rules', title: 'Chat rules modal', run: async ({ page }) => { await ev(page, () => showChatRules(false)); await settle(page, 600); } },
+  { id: 'chat-rules-closed', title: 'Rules closed, sidebar collapsed', run: async ({ page }) => { await ev(page, () => { document.getElementById('btn-rules-close')?.click(); const m = document.getElementById('chat-rules-modal'); if (m) m.style.display = 'none'; DEV.sheet(false); }); await settle(page, 400); } },
+  { id: 'sheet', title: 'Mobile bottom sheet expanded', forms: ['mobile'], run: async ({ page }) => { await ev(page, () => DEV.sheet(true)); await settle(page, 800); } },
+  { id: 'sheet-popup', title: 'Mobile: popup over sheet', forms: ['mobile'], run: async ({ page }) => ev(page, async () => { DEV.sheet(false); const c = DEV.parcelsNear(f => f.area_sqm > 1500, 1)[0]; if (!c) return 'none'; await DEV.parcel(c.parcel_id, true); await new Promise(r => setTimeout(r, 1500)); }) },
+  { id: 'no-chrome', title: 'Map only (chrome off)', run: async ({ page }) => { await ev(page, () => { DEV.closeAll(); DEV.chrome(false); }); await settle(page, 500); } },
+  { id: 'chrome-back', title: 'Chrome back + sidebar hidden', run: async ({ page }) => { await ev(page, () => { DEV.chrome(true); DEV.sidebar(false); }); await settle(page, 500); } },
+  { id: 'gps', title: 'GPS marker', run: async ({ page, S }) => { await ev(page, () => DEV.sidebar(true)); await ev(page, s => DEV.gps(s.lon + 0.0005, s.lat + 0.0003), S); await settle(page, 800); } },
+  { id: 'reset', title: 'Reset mocks (real claims)', run: async ({ page }) => ev(page, async () => { await DEV.mock(null); DEV.closeAll(); }) },
+];
