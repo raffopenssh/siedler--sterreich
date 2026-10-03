@@ -1,0 +1,20 @@
+{
+  "name": "Siedler Österreich",
+  "short_name": "Siedler AT",
+  "description": "Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#1a1408",
+  "theme_color": "#1a1408",
+  "lang": "de-AT",
+  "categories": ["games", "education"],
+  "icons": [
+    {
+      "src": "/static/og-image.png",
+      "sizes": "1200x630",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

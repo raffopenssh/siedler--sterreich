@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Siedler Österreich – Entdecke und schütze Österreichs Natur</title>
+
+<!-- SEO -->
+<meta name="description" content="Siedler Österreich ist ein Multiplayer-Browserspiel, in dem du echte österreichische Katasterparzellen erkundest, beanspruchst und die Biodiversität schützt. Spiele mit Freunden und stelle 30 % der Fläche unter Naturschutz! Auch für KI-Agenten spielbar (/llm/game).">
+<meta name="keywords" content="Siedler Österreich, Browserspiel, Kataster, Naturschutz, Biodiversität, Multiplayer, Österreich, Parzellen, Gemeinde">
+<meta name="author" content="exe.dev">
+<meta name="robots" content="index, follow">
+<link rel="alternate" type="text/markdown" href="/llm/game" title="Agent edition – how to play as an LLM agent">
+<link rel="alternate" type="application/openapi+json" href="/openapi.json" title="OpenAPI">
+<link rel="help" href="/llms.txt">
+<link rel="canonical" href="https://siedler-oesterreich.exe.xyz:8000/">
+
+<!-- Open Graph -->
+<meta property="og:title" content="Siedler Österreich – Entdecke und schütze Österreichs Natur">
+<meta property="og:description" content="Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität deiner Gemeinde.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://siedler-oesterreich.exe.xyz:8000/">
+<meta property="og:image" content="https://siedler-oesterreich.exe.xyz:8000/static/og-image.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Siedler Österreich – Multiplayer-Kataster-Strategiespiel">
+<meta property="og:locale" content="de_AT">
+<meta property="og:site_name" content="Siedler Österreich">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Siedler Österreich – Entdecke und schütze Österreichs Natur">
+<meta name="twitter:description" content="Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität.">
+<meta name="twitter:image" content="https://siedler-oesterreich.exe.xyz:8000/static/og-image.png">
+<meta name="twitter:image:alt" content="Siedler Österreich – Multiplayer-Kataster-Strategiespiel">
+
+<!-- App / PWA -->
+<meta name="theme-color" content="#1a1408">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Siedler AT">
+<link rel="apple-touch-icon" href="/static/og-image.png">
+<link rel="manifest" href="/static/manifest.json">
+
+<!-- Favicon -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+
+<!-- Structured Data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Siedler Österreich",
+  "description": "Multiplayer-Browserspiel: Erkunde echte österreichische Katasterdaten, beanspruche Parzellen und schütze die Biodiversität deiner Gemeinde.",
+  "url": "https://siedler-oesterreich.exe.xyz:8000/",
+  "applicationCategory": "GameApplication",
+  "operatingSystem": "Web",
+  "inLanguage": "de-AT",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "EUR"
+  },
+  "author": {
+    "@type": "Organization",
+    "name": "exe.dev",
+    "url": "https://exe.dev"
+  },
+  "image": "https://siedler-oesterreich.exe.xyz:8000/static/og-image.png",
+  "screenshot": "https://siedler-oesterreich.exe.xyz:8000/static/og-image.png",
+  "genre": ["Strategy", "Multiplayer", "Educational"],
+  "gamePlatform": "Web Browser"
+}
+</script>
+
+<!-- Fonts (self-hosted) & Styles -->
+<link rel="preload" href="/static/game-bg.jpg?v=1" as="image" type="image/jpeg">
+<link rel="preload" href="/static/fonts/press-start-2p-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/vt323-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/style.css?v=20261004b">
+</head>
+<body>
+<div id="app">
+  
+  <!-- Chat rules (first use) -->
+  <div id="chat-rules-modal" class="modal-bg" style="display:none">
+    <div class="modal pixel-panel">
+      <h3>🛡️ Chat-Regeln</h3>
+      <ol id="chat-rules-list" class="rules-list"></ol>
+      <p class="rules-small">Nachrichten werden automatisch geprüft. Melde alles, was dir unangenehm ist – wir sehen es uns an. Bei Gefahr: <b>Rat auf Draht 147</b> (kostenlos, 24h) · <a href="https://www.stopline.at" target="_blank" rel="noopener">stopline.at</a></p>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-rules-accept">Verstanden ✓</button>
+        <button class="btn btn-small" id="btn-rules-close">Später</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Report dialog -->
+  <div id="report-modal" class="modal-bg" style="display:none">
+    <div class="modal pixel-panel">
+      <h3>⚑ Melden</h3>
+      <div class="rules-small" id="report-target"></div>
+      <div id="report-reasons" class="report-reasons"></div>
+      <textarea id="report-note" maxlength="300" placeholder="Optional: Was ist passiert?"></textarea>
+      <p class="rules-small">Die Nachricht wird sofort ausgeblendet und der Spieler für dich blockiert. Bei mehreren Meldungen wird der Spieler automatisch stummgeschaltet.</p>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-report-send" disabled>Melden</button>
+        <button class="btn btn-small" id="btn-report-cancel">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast-container"></div>
+
+  <!-- ===================== WELCOME ===================== -->
+  <div id="screen-welcome" class="screen active">
+    <div class="welcome-bg"></div>
+    <div class="welcome-content">
+      <div class="logo-art">
+        <span class="logo-castle">🏰</span>
+        <h1 class="logo-text">SIEDLER<br>ÖSTERREICH</h1>
+        <div class="beta-badge">⚒ BETA · PROTOTYP</div>
+        <p class="beta-note">In Entwicklung – Spielstände, Preise und Regeln können sich noch ändern.</p>
+      </div>
+      <div class="welcome-panel">
+        <div id="invite-banner" class="invite-banner" style="display:none"></div>
+        <div class="name-row">
+          <input type="text" id="input-name" placeholder="Dein Pseudonym..." maxlength="30" autocomplete="off">
+          <button class="btn btn-small btn-reroll" id="btn-reroll" title="Neuer Vorschlag">🎲</button>
+        </div>
+        <div class="btn-row" id="welcome-buttons-normal">
+          <button class="btn btn-primary" id="btn-register">Neues Spiel</button>
+          <button class="btn btn-lucky" id="btn-lucky">🍀 Auf Glück</button>
+        </div>
+        <div class="btn-row" id="welcome-buttons-invite" style="display:none">
+          <button class="btn btn-gold btn-large" id="btn-join-invite">⚔️ Mitspielen</button>
+        </div>
+        <div id="welcome-error" class="error-text"></div>
+      </div>
+      <div id="quick-rejoin" class="quick-rejoin"></div>
+      <div class="welcome-legal">
+        <span class="legal-note">Beta · keine Cookies · kein Tracking · Chat automatisch gefiltert · <a href="/datenschutz#jugendschutz">ab 14 Jahren</a> (jünger nur mit Einwilligung der Eltern)</span>
+        <span class="legal-attrib">Daten: <a href="https://www.bev.gv.at" rel="noopener license" target="_blank">© BEV</a> Kataster &amp; ALS, <a href="https://creativecommons.org/licenses/by/4.0/deed.de" rel="noopener license" target="_blank">CC BY 4.0</a> (bearbeitet) · <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">© OpenStreetMap-Mitwirkende</a> (ODbL) · <a href="/impressum#daten">weitere Quellen</a></span>
+        <nav>
+          <a href="/impressum">Impressum</a> ·
+          <a href="/datenschutz">Datenschutz</a> ·
+          <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener" target="_blank">GitHub</a> ·
+          <a href="/llm/game" title="Text-Edition für KI-Agenten">🤖 Für Agenten</a>
+        </nav>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MAP PICKER ===================== -->
+  <div id="screen-pick" class="screen">
+    <div class="pick-header">
+      <h2>🗺️ Wähle deine Gemeinde</h2>
+      <div class="pick-search">
+        <input type="text" id="input-search" placeholder="Gemeinde, Adresse oder PLZ..." autocomplete="off">
+        <div id="search-results" class="search-dropdown"></div>
+      </div>
+      <button class="btn btn-secondary btn-small" id="btn-back-pick" style="display:none">◀ Zurück</button>
+      <span class="pick-legend" id="pick-gwi-legend" style="display:none" title="Grundwasser-Status-Index (groundwater-at, CC BY 4.0)">💧 Wasserstress: <i class="lg-watch"></i> beobachten <i class="lg-stressed"></i> belastet</span>
+    </div>
+    <canvas id="pick-canvas"></canvas>
+    <div id="pick-info" class="pick-info"></div>
+  </div>
+
+  <!-- ===================== LOBBY ===================== -->
+  <div id="screen-lobby" class="screen">
+    <div class="lobby-panel">
+      <h2 class="lobby-title">🏰 Spiellobby</h2>
+      <div id="lobby-muni" class="lobby-muni"></div>
+      <div id="lobby-create">
+        <button class="btn btn-primary btn-large" id="btn-create-session">Neues Spiel erstellen</button>
+        <div class="lobby-divider">— oder mit Code beitreten —</div>
+        <div class="btn-row">
+          <input type="text" id="input-invite" placeholder="Einladungscode...">
+          <button class="btn btn-gold" id="btn-join-session">Beitreten</button>
+        </div>
+      </div>
+      <div id="lobby-waiting" style="display:none">
+        <div class="pixel-label">Einladungslink:</div>
+        <div class="invite-box" id="invite-url"></div>
+        <div class="pixel-label">Spieler:</div>
+        <ul id="lobby-players" class="player-list"></ul>
+        <button class="btn btn-primary btn-large" id="btn-start">🎮 Spiel starten</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== LOADING ===================== -->
+  <div id="screen-loading" class="screen">
+    <div class="loading-wrap">
+      <div class="loading-ring-area">
+        <svg class="loading-ring" viewBox="0 0 120 120">
+          <defs>
+            <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#4a9e38" />
+              <stop offset="50%" stop-color="#7ac44a" />
+              <stop offset="100%" stop-color="#d4a843" />
+            </linearGradient>
+          </defs>
+          <circle class="ring-bg" cx="60" cy="60" r="52" />
+          <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52" />
+          <!-- animated sparkle dots on the ring -->
+          <circle class="ring-sparkle" cx="60" cy="8" r="2.5">
+            <animateTransform attributeName="transform" type="rotate" from="0 60 60" to="360 60 60" dur="3s" repeatCount="indefinite"/>
+          </circle>
+        </svg>
+        <div class="loading-ring-pct" id="loading-ring-pct">0%</div>
+      </div>
+      <h2 class="loading-title">Siedlung wird vorbereitet...</h2>
+      <div class="loading-muni" id="loading-muni"></div>
+      <div class="loading-sub" id="loading-sub"></div>
+      <div class="loading-steps" id="loading-steps">
+        <div class="load-step" id="ls-session"><span class="ls-icon">⏳</span> Spielsitzung erstellen</div>
+        <div class="load-step" id="ls-parcels"><span class="ls-icon">⏳</span> Landschaft: Relief, Bäume, Gebäude, Straßen &amp; Flüsse</div>
+        <div class="load-step" id="ls-kg"><span class="ls-icon">⏳</span> Kataster live aus BEV-Kacheln (Parzellen, Gebäude, Nutzung)</div>
+        <div class="load-step" id="ls-treasures"><span class="ls-icon">⏳</span> Arten &amp; Schätze platzieren</div>
+        <div class="load-step" id="ls-ready"><span class="ls-icon">⏳</span> Karte rendern</div>
+      </div>
+      <div class="loading-info" id="loading-info">
+        <div class="loading-tip active" id="tip-0">
+          <div class="tip-icon">🗺️</div>
+          <div class="tip-text"><b>Echte Katasterdaten</b><br>Jede Parzelle in diesem Spiel basiert auf echten österreichischen Grundstücksdaten — mit realen Flächen, Nutzungsarten und Grenzen.</div>
+        </div>
+        <div class="loading-tip" id="tip-1">
+          <div class="tip-icon">🌿</div>
+          <div class="tip-text"><b>Naturschutz-Ziel: 30%</b><br>Kaufe Parzellen und wandle sie in Naturschutzgebiete um. Dein Ziel: 30% der Fläche deiner Gemeinde unter Schutz stellen!</div>
+        </div>
+        <div class="loading-tip" id="tip-2">
+          <div class="tip-icon">💰</div>
+          <div class="tip-text"><b>Wirtschaft &amp; Strategie</b><br>Du startest mit 10.000 Münzen. Kaufe klug — dicht bebaute Parzellen kosten mehr als ländliche Flächen!</div>
+        </div>
+        <div class="loading-tip" id="tip-3">
+          <div class="tip-icon">🦎</div>
+          <div class="tip-text"><b>Seltene Arten entdecken</b><br>Auf der Karte verstecken sich bedrohte Tierarten aus der Europäischen Roten Liste — Luchs, Steinadler, Apollofalter und mehr. Finde sie und lerne über Artenschutz!</div>
+        </div>
+        <div class="loading-tip" id="tip-4">
+          <div class="tip-icon">⚔️</div>
+          <div class="tip-text"><b>Multiplayer</b><br>Lade Freunde über einen Einladungslink ein und siedelt gemeinsam — oder gegeneinander — in derselben Gemeinde!</div>
+        </div>
+        <div class="loading-tip" id="tip-5">
+          <div class="tip-icon">🐟</div>
+          <div class="tip-text"><b>Europäische Rote Liste</b><br>Die Artenfunde basieren auf der EU-Roten-Liste gefährdeter Arten. Der Huchen (stark gefährdet) und der Sterlet (gefährdet) leben in Österreichs Flüssen — hilf, ihren Lebensraum zu schützen!</div>
+        </div>
+      </div>
+      <div class="loading-invite" id="loading-invite" style="display:none">
+        <div class="loading-invite-inner">
+          <span class="loading-invite-icon">⚔️</span>
+          <span class="loading-invite-label">Freunde einladen:</span>
+          <span class="loading-invite-url" id="loading-invite-url"></span>
+          <button class="btn btn-small" id="loading-invite-copy">📋 Kopieren</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== GAME ===================== -->
+  <div id="screen-game" class="screen">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <button class="sb-toggle" id="sb-toggle" onclick="document.getElementById('sidebar').classList.toggle('expanded')">
+        <span class="sb-toggle-icon">▲</span>
+        <span id="sb-toggle-stats">🪙 <b id="st-coins">1000</b> &nbsp; ⚡ <b id="st-xp">0</b> &nbsp; 📍 <b id="st-parcels">0</b></span>
+      </button>
+      <div class="sb-header">
+        <span id="game-title">Siedler</span>
+        <button class="btn btn-small" id="btn-invite">📋</button>
+      </div>
+      <div class="sb-section">
+        <h3>🏰 <span id="s-name">-</span></h3>
+        <div class="stat"><span>🪙 Münzen</span><b id="s-coins">1000</b></div>
+        <div class="stat"><span>⚡ Erfahrung</span><b id="s-xp">0</b></div>
+        <div class="stat"><span>🎯 Level</span><b id="s-level">1</b></div>
+        <div class="stat"><span>📍 Parzellen</span><b id="s-parcels">0</b></div>
+      </div>
+      <div class="sb-section">
+        <h3>🌿 Naturschutz-Ziel: 30%</h3>
+        <div class="bio-wrap">
+          <div class="bio-bar" id="bio-bar"></div>
+          <div class="bio-marker" style="left:30%"></div>
+          <span class="bio-label" id="bio-label">0%</span>
+        </div>
+        <div class="stat sb-chronik" id="sb-chronik" onclick="openDossier(null,'water')" title="Gemeinde-Chronik öffnen" style="display:none"><span>💧 Grundwasser</span><b id="sb-drought">…</b></div>
+      </div>
+      <div class="sb-section" id="sec-players">
+        <h3>⚔️ Mitspieler</h3>
+        <div id="game-players"></div>
+      </div>
+      <div class="sb-section sb-scroll" id="sec-quests">
+        <h3>📜 Aufgaben</h3>
+        <div id="quest-list"></div>
+      </div>
+      <div class="sb-section" id="sec-rejoin" style="display:none">
+        <div class="rejoin-ingame">🔑 <a id="rejoin-ingame-link" href="#">Wiedereinstiegs-Link kopieren</a></div>
+        <div class="rejoin-ingame">⚔️ <a id="join-ingame-link" href="#">Einladungs-Link kopieren</a></div>
+      </div>
+      <div class="sb-chat">
+        <div class="chat-title">💬 Chat
+          <span class="chat-tools">
+            <select id="chat-mode" title="Chat-Modus (nur Spielersteller)" style="display:none">
+              <option value="free">Chat: frei</option>
+              <option value="quick">Chat: Schnellnachrichten</option>
+              <option value="off">Chat: aus</option>
+            </select>
+            <button class="chat-tool" id="btn-chat-quick" title="Schnellnachrichten">⚡</button>
+            <button class="chat-tool" id="btn-chat-safety" title="Chat-Regeln &amp; Sicherheit">🛡️</button>
+          </span>
+        </div>
+        <div id="chat-log" class="chat-log"></div>
+        <div id="chat-quick" class="chat-quick" style="display:none"></div>
+        <div id="chat-off-note" class="chat-off-note" style="display:none">Der Chat ist in diesem Spiel deaktiviert.</div>
+        <div class="chat-input-row" id="chat-input-row">
+          <input type="text" id="input-chat" placeholder="Nachricht..." maxlength="300">
+          <button id="btn-chat" title="Senden" aria-label="Senden">▶</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main canvas -->
+    <main id="game-main">
+      <div id="game-search" class="game-search">
+        <div class="game-search-inner">
+          <span class="game-search-icon">🔍</span>
+          <input type="text" id="game-search-input" placeholder="Adresse, Ried, Alm, Gipfel... (/)" autocomplete="off">
+          <kbd class="game-search-kbd">/</kbd>
+        </div>
+        <div id="game-search-results" class="search-dropdown"></div>
+      </div>
+      <div id="muni-toast" class="muni-toast"></div>
+      <canvas id="game-canvas"></canvas>
+      <div id="minimap" title="Klick: springen · Ziehen: schwenken · Doppelklick: heranzoomen"><canvas id="mini-canvas"></canvas><button id="mini-back" type="button" title="Zurück zur vorigen Ansicht">↩</button></div>
+      <div id="parcel-popup" class="popup draggable-popup">
+        <div class="popup-drag-handle" data-drag-target="parcel-popup">☰</div>
+        <button class="popup-close" id="popup-close">✕</button>
+        <h3 id="pp-title">-</h3>
+        <div class="pp-grid">
+          <span>Parzelle</span><b id="pp-id">-</b>
+          <span>KG</span><b id="pp-kg">-</b>
+          <span>EZ</span><b id="pp-ez">-</b>
+          <span id="pp-flur-l" style="display:none">Flur</span><b id="pp-flur" style="display:none">-</b>
+          <span>Fläche</span><b id="pp-area">-</b>
+          <span>Nutzung</span><b id="pp-use">-</b>
+          <span>Bebauung</span><b id="pp-density">-</b>
+          <span id="pp-field-l" style="display:none">Feld</span><b id="pp-field" style="display:none">-</b>
+          <span id="pp-crop-l" style="display:none">Anbau</span><b id="pp-crop" style="display:none">-</b>
+          <span id="pp-eco-l" style="display:none">Ernte</span><b id="pp-eco" style="display:none">-</b>
+          <span id="pp-well-l" style="display:none">Brunnen</span><b id="pp-well" style="display:none">-</b>
+          <span>Besitzer</span><b id="pp-owner">-</b>
+          <span>Preis</span><b id="pp-price">-</b>
+        </div>
+        <div class="pp-sec" id="pp-sec-bldg" style="display:none">
+          <button class="pp-sec-h" data-sec="bldg">🏚️ Gebäude <i>▸</i></button>
+          <div class="pp-sec-b" id="pp-bldg"></div>
+        </div>
+        <div class="pp-sec" id="pp-sec-env" style="display:none">
+          <button class="pp-sec-h" data-sec="env">⛰️ Gelände &amp; Umgebung <i>▸</i></button>
+          <div class="pp-sec-b"><div class="pp-grid pp-enhanced" id="pp-enhanced"></div></div>
+        </div>
+        <div class="pp-grid pp-sim" id="pp-sim" style="display:none"></div>
+        <div id="pp-actions" class="pp-actions"></div>
+      </div>
+      <div id="tree-popup" class="popup draggable-popup tree-popup">
+        <div class="popup-drag-handle" data-drag-target="tree-popup">☰</div>
+        <button class="popup-close" id="tree-popup-close">✕</button>
+        <h3>🌲 Riesenbaum</h3>
+        <div class="pp-grid">
+          <span>Höhe</span><b id="tp-height">-</b>
+          <span>Geschätztes Alter</span><b id="tp-age">-</b>
+          <span>Rang</span><b id="tp-rank">-</b>
+          <span>Chronik</span><b id="tp-chron">-</b>
+        </div>
+        <div class="tp-hist-title">Höhenvergleich (Bäume in der Nähe) — Balken antippen = hinfliegen</div>
+        <div id="tp-hist" class="tp-hist"></div>
+      </div>
+      <div id="kg-popup" class="popup draggable-popup kg-popup">
+        <div class="popup-drag-handle" data-drag-target="kg-popup">☰</div>
+        <button class="popup-close" id="kg-popup-close">✕</button>
+        <h3 id="kg-title">🏘️ Katastralgemeinde</h3>
+        <div id="kg-body" class="kg-body"></div>
+      </div>
+      <div id="dossier-popup" class="popup draggable-popup kg-popup dossier-popup">
+        <div class="popup-drag-handle" data-drag-target="dossier-popup">☰</div>
+        <button class="popup-close" id="dossier-popup-close">✕</button>
+        <h3 id="dossier-title">📖 Gemeinde-Chronik</h3>
+        <div class="dossier-tabs" id="dossier-tabs">
+          <button data-tab="water" class="on">💧 Wasser</button>
+          <button data-tab="forest">🌲 Wald</button>
+          <button data-tab="farm">🚜 Höfe</button>
+        </div>
+        <div id="dossier-body" class="kg-body"></div>
+      </div>
+      <div id="station-popup" class="popup draggable-popup kg-popup station-popup">
+        <div class="popup-drag-handle" data-drag-target="station-popup">☰</div>
+        <button class="popup-close" id="station-popup-close">✕</button>
+        <h3 id="station-title">📏 Messstelle</h3>
+        <div id="station-body" class="kg-body"></div>
+      </div>
+      <div id="ez-popup" class="popup draggable-popup ez-popup">
+        <div class="popup-drag-handle" data-drag-target="ez-popup">☰</div>
+        <button class="popup-close" id="ez-popup-close">✕</button>
+        <h3 id="ez-title">📋 Einlagezahl (EZ)</h3>
+        <div class="pp-grid" id="ez-stats"></div>
+        <div id="ez-actions" class="pp-actions"></div>
+      </div>
+      <div id="zoom-controls" class="zoom-controls">
+        <button class="btn btn-small" id="btn-zoomin">+</button>
+        <button class="btn btn-small" id="btn-zoomout">−</button>
+        <button class="btn btn-small" id="btn-gearth" title="In Google Earth öffnen">🌍</button>
+        <button class="btn btn-small" id="btn-share" title="Diese Ansicht teilen — Einladungslink kopieren">🔗</button>
+        <button class="btn btn-small" id="btn-n2k" title="Schutzgebiete (Natura 2000 &amp; Wasserschutz) ein/aus">🛡️</button>
+        <button class="btn btn-small" id="btn-topo" title="Flurnamen &amp; Ortsnamen (BEV) ein/aus">🏷️</button>
+        <button class="btn btn-small" id="btn-gps" title="Mein Standort" style="display:none">📍</button>
+      </div>
+      <div id="herald" class="herald" role="status" aria-live="polite">
+        <div class="herald-avatar" id="herald-avatar">🏰</div>
+        <div class="herald-body">
+          <div class="herald-tag" id="herald-tag"></div>
+          <div class="herald-text" id="herald-text"></div>
+          <div class="herald-foot">
+            <span class="herald-dots" id="herald-dots"></span>
+            <button class="btn btn-small btn-gold herald-act" id="herald-act" style="display:none"></button>
+            <span class="herald-next" id="herald-next">▼</span>
+          </div>
+        </div>
+        <button class="herald-close" id="herald-close" title="Ausblenden" aria-label="Ausblenden">✕</button>
+      </div>
+      <div id="map-loading" class="map-loading" style="display:none">⏳ Lade Gelände…</div>
+      <div id="hud-badges" class="hud-badges">
+        <div id="enhanced-badge" class="enhanced-badge" style="display:none">✨ Enhanced Gelände</div>
+        <button id="water-chip" class="water-chip st-unknown" style="display:none" title="Grundwasser heute — Gemeinde-Chronik öffnen" onclick="openDossier(null,'water')">💧 …</button>
+      </div>
+      <div id="abroad-badge" class="abroad-badge" style="display:none">🚧 Außerhalb Österreichs — keine Katasterdaten</div>
+      <div id="map-attrib" class="map-attrib" aria-label="Datenquellen">
+        <button class="map-attrib-toggle" id="map-attrib-toggle" title="Datenquellen &amp; Lizenzen" aria-expanded="false">© BEV · OSM</button>
+        <div class="map-attrib-body">
+          <div class="map-attrib-title">📜 Datenquellen</div>
+          <div class="map-attrib-row" id="map-attrib-bev">© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet</div>
+          <div class="map-attrib-row">Kataster live aus den <a href="https://kataster.bev.gv.at" rel="noopener" target="_blank">BEV-Kacheln</a> zusammengesetzt (max. 24 h zwischengespeichert) · Höhenmodell, Bäume &amp; Gebäudehöhen: BEV ALS, CC BY 4.0, bearbeitet · Flur- &amp; Ortsnamen: BEV DLM Geographische Namen, CC BY 4.0 · <a href="/lizenzen" target="_blank">alle Lizenzen</a></div>
+          <div class="map-attrib-row">Straßen, Gewässer, Bahn: <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">© OpenStreetMap-Mitwirkende</a>, ODbL</div>
+          <div class="map-attrib-row">Schutzgebiete: EEA Natura 2000 · Gemeinden &amp; Bodenpreise: Statistik Austria (CC BY 4.0) · Landbedeckung: Copernicus / ESA WorldCover 2021 (CC BY 4.0)</div>
+          <div class="map-attrib-row">Felder (Schläge) &amp; Hofstellen: <a href="https://www.data.gv.at" rel="noopener" target="_blank">AMA INVEKOS</a> via data.gv.at, CC BY 4.0 (aggregiert, keine Namen) · Förderprofile: AMA Transparenzdatenbank, Gemeinde-Aggregat · Waldverlust &amp; CO₂: Hansen/GFW GFC-2024, Harris et al. (CC BY 4.0) · Holzpreise: LK Holzmarktberichte / Statistik Austria (CC BY 4.0)</div>
+          <div class="map-attrib-row">Grundwasser, Pegel &amp; Wasserschutzgebiete: <a href="https://ehyd.gv.at" rel="noopener" target="_blank">BML eHYD</a>, Wasserschatz 2021, WISE/EEA (CC BY 4.0) · Fließweg: MERIT Hydro / mghydro.com (CC BY-NC-SA 4.0, nur Darstellung) · Dürre: Copernicus EDO</div>
+          <div class="map-attrib-row">Relief: BEV ALS-DTM 25 m (CC BY 4.0) · Baumhöhen &amp; Gebäudehöhen: ALS-Ableitung (BEV, CC BY 4.0) · Staatsgrenze: geoBoundaries gbOpen (CC BY-SA 4.0) · Rote Liste: IUCN / EEA</div>
+          <div class="map-attrib-note">Spielerische Darstellung – keine amtliche Auskunft. <a href="/impressum">Impressum</a></div>
+        </div>
+      </div>
+      <div id="flow-chip" class="flow-chip" style="display:none"><span id="flow-chip-text">💧 …</span><button onclick="clearFlow()" title="Wasserweg ausblenden">✕</button></div>
+      <button id="btn-similar-clear" class="similar-clear-chip" style="display:none" onclick="clearSimilar()">✕ Ähnliche ausblenden</button>
+    </main>
+  </div>
+</div>
+
+<script src="/static/i18n.js?v=20261004a"></script>
+<script src="/static/game.js?v=20261004d"></script>
+</body>
+</html>

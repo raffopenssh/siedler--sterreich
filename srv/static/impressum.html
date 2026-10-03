@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Impressum – Siedler Österreich</title>
+<meta name="robots" content="noindex, follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<link rel="stylesheet" href="/static/style.css?v=20260716e">
+<link rel="stylesheet" href="/static/legal.css?v=20260716e">
+</head>
+<body class="legal">
+<div class="legal-wrap">
+  <a class="legal-back" href="/">◀ Zurück zum Spiel</a>
+  <h1>Impressum</h1>
+  <p><em><a href="/imprint">English version</a></em></p>
+
+  <h2>Angaben gemäß § 25 MedienG und § 5 ECG</h2>
+  <p><strong>Medieninhaber und Herausgeber:</strong></p>
+  <p>Raffael Hickisch<br>
+  Goldschlagstraße 23/18<br>
+  1150 Wien<br>
+  Österreich</p>
+
+  <p><strong>Kontakt:</strong><br>
+  E-Mail: <a href="#" class="obf-email"></a></p>
+
+  <h2 id="melden">Melden von Inhalten &amp; Kontaktstelle (DSA)</h2>
+  <p>Siedler Österreich ist ein kleiner, nicht-kommerzieller Dienst ohne
+  Moderationsteam. Damit trotzdem schnell reagiert wird, ist der Schutz
+  automatisiert: Chat-Nachrichten werden vor der Veröffentlichung gefiltert
+  (Beleidigungen, Hass, sexuelle Inhalte, Kontaktdaten, Grooming-Muster),
+  gemeldete Nachrichten werden <strong>sofort</strong> ausgeblendet, und
+  Spieler mit mehreren unabhängigen Meldungen werden automatisch
+  stummgeschaltet. Jede Meldung erzeugt eine Benachrichtigung an den
+  Betreiber.</p>
+  <p><strong>Zentrale Kontaktstelle</strong> gemäß Art. 11 und 12 DSA
+  (Digital Services Act) für Behörden und Nutzer:innen – für Meldungen
+  rechtswidriger Inhalte, Jugendschutz-Anliegen und Beschwerden gegen
+  automatische Maßnahmen (Art. 20 DSA):<br>
+  E-Mail: <a href="#" class="obf-email2"></a><br>
+  Sprachen: Deutsch, Englisch. Meldungen im Spiel: Symbol ⚑ neben jeder
+  Chat-Nachricht.</p>
+  <p>Wir bearbeiten Meldungen nach bestem Wissen und Gewissen; es besteht
+  keine Verpflichtung zur proaktiven Überwachung (Art. 8 DSA).</p>
+
+  <h2>Grundlegende Richtung</h2>
+  <p>Siedler Österreich ist ein nicht-kommerzielles Browserspiel in der
+  Alpha-Phase. Es dient der spielerischen Erkundung öffentlicher
+  österreichischer Katasterdaten und der Sensibilisierung für Naturschutz
+  und Biodiversität, sowie der Demonstration von Datenverarbeitungsmethoden.</p>
+
+  <h2>Quellcode</h2>
+  <p>Der Quellcode dieses Projekts ist offen verfügbar auf
+  <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>.</p>
+
+  <h2 id="daten">Datenquellen und Lizenzen</h2>
+  <p>Die Kartendarstellung basiert auf offenen Daten. Alle Quellen werden <strong>server-seitig</strong>
+  abgerufen; der Browser spricht nie direkt mit den Datendiensten. Eine maschinenlesbare Liste mit
+  Abrufort, Lizenz, Attribution und maximaler Cache-Dauer je Quelle steht unter
+  <a href="/lizenzen">/lizenzen</a> bzw. <a href="/api/licenses">/api/licenses</a>.</p>
+  <ul>
+    <li><strong>Kataster (Grundstücke, Gebäudegrundrisse, Benützungsarten)</strong>: © BEV – Bundesamt für Eich- und
+    Vermessungswesen, Katastralmappe als Vektorkacheln von
+    <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
+    Lizenz <a href="https://creativecommons.org/licenses/by/4.0/deed.de" rel="noopener license">CC BY 4.0</a>.
+    Pflichthinweis: <em>„© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet“</em>.
+    Die Kacheln werden <strong>live</strong> für den gerade sichtbaren 0,02°-Rasterausschnitt durch <code>bevdirect-serve</code>
+    auf unserem Server zusammengesetzt (vereinigt, Koordinaten gerundet, Flächen je Benützungsart gemessen) und
+    <strong>höchstens 24 Stunden</strong> zwischengespeichert. Wir führen keine Katasterdatenbank und nutzen nicht das
+    Katasterservice (JSON-API); nichts ist nach Grundstücksnummer, Einlagezahl oder Eigentümer abfragbar.
+    Das BEV unterstützt oder billigt dieses Projekt nicht.</li>
+    <li><strong>Verwaltungsgrenzen (KG- und Gemeinde-Register)</strong>: BEV OGD Verwaltungsgrenzen (VGD) 1:50 000,
+    Stichtag 2026-04-01, CC BY 4.0, bearbeitet (eingebettete Tabelle).</li>
+    <li><strong>Gelände, Landbedeckung, Baum- und Gebäudehöhen, Relief</strong>: Ableitungen aus dem BEV ALS-Höhenmodell
+    (DTM/DSM 1 m) und Orthofoto (CC BY 4.0, bearbeitet), Copernicus Sentinel-1/-2 (ESA), ESA WorldCover (CC BY 4.0),
+    Hansen/UMD Global Forest Change (CC BY 4.0) – bereitgestellt über die öffentliche Schicht von
+    <em>srtm-lidar-at</em> (nur Ausschnitt-, Punkt- und KG-Abfragen, keine Grundstücksdaten), 25-m-Raster,
+    je Grundstück gemittelt; Cache höchstens 24 h.</li>
+    <li><strong>Umfeld-Daten</strong> (nur Punkt- und Ausschnittabfragen, kein Kataster) über die öffentliche Schicht von
+    <em>umfeld-at</em>, Cache höchstens 24 h:
+    <strong>Gemeinden und Bodenpreis-Modell</strong>: Datenquelle STATISTIK AUSTRIA (CC BY 4.0) – Modellwerte, keine Angebote.
+    <strong>Schutzgebiete</strong>: Natura 2000, Europäische Umweltagentur (EEA); WDPA (UNEP-WCMC &amp; IUCN, nicht-kommerziell).
+    <strong>Straßen, Gewässer, Bahn, Haltestellen, Adressen</strong>: © OpenStreetMap-Mitwirkende,
+    <a href="https://www.openstreetmap.org/copyright" rel="noopener">ODbL 1.0</a> (OSM-abgeleitete Felder werden getrennt gehalten).
+    <strong>Ried- und Ortsnamen</strong>: BEV – Geographische Namen (DLM), CC BY 4.0, bearbeitet.
+    <strong>Rechtsbezüge</strong>: RIS, Bundeskanzleramt (CC BY 4.0).</li>
+    <li><strong>Feldstücke (INVEKOS-Schläge) und Hofstellen</strong>: AMA / BML, INSPIRE-INVEKOS über
+    <a href="https://www.data.gv.at" rel="noopener">data.gv.at</a>, CC BY 4.0 – aggregiert, Hofstellen nur als
+    gehashte Punkte ohne Namen. <strong>Förderprofile</strong> (nur Gemeinde-Aggregate, keine Empfängerdaten):
+    AMA Transparenzdatenbank, CC BY 4.0.</li>
+    <li><strong>Waldverlust und Kohlenstoffbilanz</strong>: Hansen et al. Global Forest Change 2024 v1.12 und
+    Harris et al. Forest Carbon Flux (Global Forest Watch), CC BY 4.0. <strong>Holzeinschlag und Holzpreise</strong>:
+    Statistik Austria (CC BY 4.0), LK-Holzmarktberichte (preise.agrarforschung.at) – Modellwerte, keine Angebote.</li>
+    <li><strong>Grundwasser, Pegel, Messstellen, Nitrat, Wasserschutzgebiete</strong>: BML
+    <a href="https://ehyd.gv.at" rel="noopener">eHYD</a>, Wasserschatz Österreich 2021, WISE / EEA, CC BY 4.0.
+    <strong>Dürreindex</strong>: Copernicus European Drought Observatory. <strong>Fließweg des Wassers</strong>:
+    MERIT Hydro / MERIT-Basins via mghydro.com, CC BY-NC-SA 4.0 (nur Darstellung, nicht kommerziell).</li>
+    <li><strong>Staatsgrenze</strong>: geoBoundaries gbOpen, CC BY-SA 4.0 (vereinfacht). <strong>Rote Liste</strong>:
+    IUCN European Red List / EEA.</li>
+  </ul>
+  <p>Die Darstellung im Spiel ist vereinfacht und spielerisch verfremdet; sie ist keine
+  amtliche Auskunft und hat keinerlei Rechtswirkung. Eigentümerdaten werden nicht verarbeitet.
+  Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.</p>
+
+  <h2>Haftungsausschluss</h2>
+  <p>Die Inhalte dieser Website wurden mit größtmöglicher Sorgfalt erstellt.
+  Für die Richtigkeit, Vollständigkeit und Aktualität der Inhalte kann jedoch
+  keine Gewähr übernommen werden. Die Nutzung erfolgt auf eigene Gefahr.
+  Insbesondere stellen die im Spiel angezeigten Grundstücks-, Eigentums- und
+  Preisinformationen keine realen Rechtsverhältnisse dar.</p>
+  <p>Für die Inhalte externer Links übernehmen wir keine Haftung. Für den
+  Inhalt der verlinkten Seiten sind ausschließlich deren Betreiber
+  verantwortlich.</p>
+
+  <h2>Urheberrecht</h2>
+  <p>Die durch den Seitenbetreiber erstellten Inhalte und Werke auf diesen
+  Seiten unterliegen dem österreichischen Urheberrecht. Der Quellcode steht
+  über das oben verlinkte Repository zur Verfügung. Verwendete offene Daten
+  unterliegen den Lizenzbedingungen der jeweiligen Datenanbieter.
+  Schriften „Press Start 2P“ (CodeMan38) und „VT323“ (Peter Hull) unter der
+  <a href="/static/fonts/OFL.txt" rel="noopener license">SIL Open Font License 1.1</a>.
+  Alle Grafiken werden prozedural gezeichnet; es werden keine Assets Dritter verwendet.</p>
+
+  <div class="legal-footer">
+    <a href="/">Startseite</a> · <a href="/datenschutz">Datenschutz</a> ·
+    <a href="/imprint">English</a> ·
+    <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>
+  </div>
+</div>
+<script>
+(function(){
+  // Contact address is char-shifted and only assembled on user interaction.
+  var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  var k2=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,110,114,107,111,118,102,107,122,100,117,125,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email2').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k2.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
+  document.querySelectorAll('.obf-email').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
+})();
+</script>
+</body>
+</html>

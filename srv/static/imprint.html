@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Imprint – Siedler Österreich</title>
+<meta name="robots" content="noindex, follow">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<link rel="stylesheet" href="/static/style.css?v=20260716e">
+<link rel="stylesheet" href="/static/legal.css?v=20260716e">
+</head>
+<body class="legal">
+<div class="legal-wrap">
+  <a class="legal-back" href="/">◀ Back to the game</a>
+  <h1>Imprint</h1>
+  <p><em><a href="/impressum">Deutsche Version</a> — the German version is legally authoritative.</em></p>
+
+  <h2>Disclosure pursuant to § 25 MedienG and § 5 ECG (Austria)</h2>
+  <p><strong>Media owner and publisher:</strong></p>
+  <p>Raffael Hickisch<br>
+  Goldschlagstraße 23/18<br>
+  1150 Vienna<br>
+  Austria</p>
+
+  <p><strong>Contact:</strong><br>
+  E-mail: <a href="#" class="obf-email" data-label="Show e-mail ▸"></a></p>
+
+  <h2 id="report">Reporting content &amp; point of contact (DSA)</h2>
+  <p>Siedler Österreich is a small non-commercial service without a moderation
+  team. Protection is therefore automated: chat messages are filtered before
+  publication (insults, hate, sexual content, contact details, grooming
+  patterns), reported messages are hidden <strong>immediately</strong>, and
+  players receiving several independent reports are muted automatically.
+  Every report notifies the operator.</p>
+  <p><strong>Single point of contact</strong> under Art. 11 and 12 DSA for
+  authorities and users – for notices of illegal content, child-safety
+  concerns and complaints against automated measures (Art. 20 DSA):<br>
+  E-mail: <a href="#" class="obf-email2" data-label="Show e-mail ▸"></a><br>
+  Languages: German, English. In-game reporting: ⚑ icon next to every chat
+  message.</p>
+
+  <h2>Purpose</h2>
+  <p>Siedler Österreich is a non-commercial browser game in alpha stage. It
+  serves the playful exploration of public Austrian cadastre data, raises
+  awareness for nature conservation and biodiversity, and demonstrates data
+  processing methods.</p>
+
+  <h2>Source code</h2>
+  <p>The source code of this project is openly available on
+  <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>.</p>
+
+  <h2 id="daten">Data sources and licences</h2>
+  <p>The map display is based on open data. Every source is fetched <strong>server-side</strong>;
+  the browser never talks to the data providers. A machine-readable list with fetch location,
+  licence, attribution and maximum cache age per source is available at
+  <a href="/lizenzen">/lizenzen</a> and <a href="/api/licenses">/api/licenses</a>.</p>
+  <ul>
+    <li><strong>Cadastre (parcels, building footprints, land-use areas)</strong>: © BEV – Federal Office of
+    Metrology and Surveying, cadastral map as vector tiles from
+    <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
+    licensed <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener license">CC BY 4.0</a>.
+    Mandatory notice: <em>“© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet”</em>.
+    The tiles are assembled <strong>live</strong> for the visible 0.02° grid cell by <code>bevdirect-serve</code> on our
+    server (merged, coordinates rounded, area per land-use class measured) and cached for <strong>at most 24 hours</strong>.
+    We keep no cadastre database and do not use the Katasterservice (JSON API); nothing can be queried by parcel
+    number, folio (EZ) or owner. BEV does not endorse this project.</li>
+    <li><strong>Administrative boundaries (KG and municipality register)</strong>: BEV OGD Verwaltungsgrenzen (VGD)
+    1:50 000, reference date 2026-04-01, CC BY 4.0, modified (embedded table).</li>
+    <li><strong>Terrain, land cover, tree and building heights, relief</strong>: derived from the BEV ALS elevation
+    model (DTM/DSM 1 m) and orthophoto (CC BY 4.0, modified), Copernicus Sentinel-1/-2 (ESA), ESA WorldCover (CC BY 4.0),
+    Hansen/UMD Global Forest Change (CC BY 4.0) – served through the public tier of <em>srtm-lidar-at</em>
+    (bbox, point and KG-code queries only, no parcel data), 25 m grid, averaged per parcel; cached at most 24 h.</li>
+    <li><strong>Context data</strong> (point and bbox queries only, no cadastre) through the public tier of
+    <em>umfeld-at</em>, cached at most 24 h:
+    <strong>Municipalities and land-price model</strong>: Source STATISTIK AUSTRIA (CC BY 4.0) – model values, no offers.
+    <strong>Protected areas</strong>: Natura 2000, European Environment Agency (EEA); WDPA (UNEP-WCMC &amp; IUCN, non-commercial).
+    <strong>Roads, water, rail, transit stops, addresses</strong>: © OpenStreetMap contributors,
+    <a href="https://www.openstreetmap.org/copyright" rel="noopener">ODbL 1.0</a> (OSM-derived fields are kept separate).
+    <strong>Field and place names</strong>: BEV – Geographic Names (DLM), CC BY 4.0, modified.
+    <strong>Legal references</strong>: RIS, Federal Chancellery (CC BY 4.0).</li>
+    <li><strong>Field blocks (INVEKOS Schläge) and farmsteads</strong>: AMA / BML, INSPIRE INVEKOS via
+    <a href="https://www.data.gv.at" rel="noopener">data.gv.at</a>, CC BY 4.0 – aggregated, farmsteads as hashed
+    points without names. <strong>Subsidy profiles</strong> (municipal aggregates only, no recipient data):
+    AMA Transparenzdatenbank, CC BY 4.0.</li>
+    <li><strong>Forest loss and carbon flux</strong>: Hansen et al. Global Forest Change 2024 v1.12 and
+    Harris et al. Forest Carbon Flux (Global Forest Watch), CC BY 4.0. <strong>Timber harvest and prices</strong>:
+    Statistics Austria (CC BY 4.0), LK timber market reports (preise.agrarforschung.at) – model values, no offers.</li>
+    <li><strong>Groundwater, gauges, monitoring stations, nitrate, water protection areas</strong>: BML
+    <a href="https://ehyd.gv.at" rel="noopener">eHYD</a>, Wasserschatz Österreich 2021, WISE / EEA, CC BY 4.0.
+    <strong>Drought index</strong>: Copernicus European Drought Observatory. <strong>Water flow path</strong>:
+    MERIT Hydro / MERIT-Basins via mghydro.com, CC BY-NC-SA 4.0 (display only, non-commercial).</li>
+    <li><strong>National border</strong>: geoBoundaries gbOpen, CC BY-SA 4.0 (simplified). <strong>Red List</strong>:
+    IUCN European Red List / EEA.</li>
+  </ul>
+  <p>The in-game presentation is simplified and playfully altered; it is not an official
+  statement and has no legal effect whatsoever. No owner data is processed. This game is not
+  operated or endorsed by BEV, Statistics Austria, the EEA, ESA or OSM.</p>
+
+  <h2>Disclaimer</h2>
+  <p>The contents of this website were created with the greatest possible
+  care. However, no guarantee can be given for the correctness, completeness
+  and timeliness of the contents. Use is at your own risk. In particular, the
+  parcel, ownership and price information shown in the game does not
+  represent real legal circumstances.</p>
+  <p>We accept no liability for the content of external links. The operators
+  of linked pages are solely responsible for their content.</p>
+
+  <h2>Copyright</h2>
+  <p>The content and works created by the site operator on these pages are
+  subject to Austrian copyright law. The source code is available via the
+  repository linked above. Open data used is subject to the licence terms of
+  the respective data providers. Fonts "Press Start 2P" (CodeMan38) and "VT323" (Peter Hull)
+  under the <a href="/static/fonts/OFL.txt" rel="noopener license">SIL Open Font License 1.1</a>.
+  All graphics are drawn procedurally; no third-party assets are used.</p>
+
+  <div class="legal-footer">
+    <a href="/">Home</a> · <a href="/privacy">Privacy</a> ·
+    <a href="/impressum">Deutsch</a> ·
+    <a href="https://github.com/raffopenssh/siedler--sterreich" rel="noopener">GitHub</a>
+  </div>
+</div>
+<script>
+(function(){
+  var k=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,118,108,104,103,111,104,117,67,106,112,100,108,111,49,102,114,112];
+  var k2=[117,100,105,105,100,104,111,107,108,102,110,108,118,102,107,46,110,114,107,111,118,102,107,122,100,117,125,67,106,112,100,108,111,49,102,114,112];
+  document.querySelectorAll('.obf-email2').forEach(function(a){
+    a.textContent=a.dataset.label||'E-Mail anzeigen ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k2.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
+  document.querySelectorAll('.obf-email').forEach(function(a){
+    a.textContent=a.dataset.label||'Show e-mail ▸';
+    a.addEventListener('click',function(ev){
+      ev.preventDefault();
+      var e=k.map(function(c){return String.fromCharCode(c-3);}).join('');
+      a.textContent=e; a.href='mai'+'lto:'+e;
+    },{once:true});
+  });
+})();
+</script>
+</body>
+</html>

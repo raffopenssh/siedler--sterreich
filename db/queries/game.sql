@@ -1,0 +1,251 @@
+-- name: CreatePlayer :exec
+INSERT INTO players (id, name, rejoin_token, coins) VALUES (?, ?, ?, 10000);
+
+-- name: GetPlayerByName :one
+SELECT * FROM players WHERE name = ?;
+
+-- name: GetPlayerByToken :one
+SELECT * FROM players WHERE rejoin_token = ?;
+
+-- name: GetPlayerByID :one
+SELECT * FROM players WHERE id = ?;
+
+-- name: UpdatePlayerMunicipality :exec
+UPDATE players SET municipality_code = ?, municipality_name = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: UpdatePlayerCoins :exec
+UPDATE players SET coins = coins + ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: UpdatePlayerXP :exec
+UPDATE players SET xp = xp + ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: UpdatePlayerLevel :exec
+UPDATE players SET level = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: UpdatePlayerBiodiversity :exec
+UPDATE players SET biodiversity_score = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: CreateSession :exec
+INSERT INTO game_sessions (id, name, invite_code, municipality_code, municipality_name, center_lon, center_lat, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetSession :one
+SELECT * FROM game_sessions WHERE id = ?;
+
+-- name: GetSessionByInvite :one
+SELECT * FROM game_sessions WHERE invite_code = ?;
+
+-- name: JoinSession :exec
+INSERT OR IGNORE INTO session_players (session_id, player_id) VALUES (?, ?);
+
+-- name: GetSessionPlayers :many
+SELECT p.* FROM players p
+JOIN session_players sp ON sp.player_id = p.id
+WHERE sp.session_id = ?;
+
+-- name: GetPlayerSessions :many
+SELECT gs.* FROM game_sessions gs
+JOIN session_players sp ON sp.session_id = gs.id
+WHERE sp.player_id = ? AND gs.status = 'active';
+
+-- name: ClaimParcel :exec
+INSERT INTO parcel_claims (session_id, player_id, parcel_hash, kg_code, gnr, ez_hash, area_sqm, landuse, purchase_price, tall_trees)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetParcelClaim :one
+SELECT * FROM parcel_claims WHERE session_id = ? AND parcel_hash = ?;
+
+-- name: GetPlayerParcels :many
+SELECT * FROM parcel_claims WHERE session_id = ? AND player_id = ?;
+
+-- name: GetSessionParcels :many
+SELECT * FROM parcel_claims WHERE session_id = ?;
+
+-- name: ConvertParcel :exec
+UPDATE parcel_claims SET converted_to = ? WHERE id = ?;
+
+-- name: CreateChallenge :exec
+INSERT INTO challenges (session_id, player_id, challenge_type, title, description, target_parcel_hash, reward_coins, reward_xp)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetPlayerChallenges :many
+SELECT * FROM challenges WHERE session_id = ? AND player_id = ? AND completed = 0;
+
+-- name: CompleteChallenge :exec
+UPDATE challenges SET completed = 1, completed_at = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: CreateTreasure :exec
+INSERT INTO treasures (session_id, lon, lat, treasure_type, value, species_name, species_german, species_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetSessionTreasures :many
+SELECT * FROM treasures WHERE session_id = ? AND found_by IS NULL;
+
+-- name: ClaimTreasure :execrows
+UPDATE treasures SET found_by = ?, found_at = CURRENT_TIMESTAMP WHERE id = ? AND found_by IS NULL;
+
+-- name: CreateChatMessage :one
+INSERT INTO chat_messages (session_id, player_id, message) VALUES (?, ?, ?) RETURNING *;
+
+-- name: GetRecentChat :many
+SELECT cm.*, p.name as player_name FROM chat_messages cm
+JOIN players p ON p.id = cm.player_id
+WHERE cm.session_id = ? AND cm.hidden = 0
+ORDER BY cm.created_at DESC LIMIT ?;
+
+-- name: GetCachedData :one
+SELECT data FROM api_cache WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP;
+
+-- name: SetCachedData :exec
+INSERT OR REPLACE INTO api_cache (cache_key, data, fetched_at, expires_at)
+VALUES (?, ?, CURRENT_TIMESTAMP, ?);
+
+-- name: DeleteExpiredCache :execrows
+-- Expired rows with an ETag are kept up to 30 days as revalidation candidates.
+DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP
+  AND (etag = '' OR expires_at <= datetime('now', '-30 days'));
+
+-- name: GetStaleCachedData :one
+-- Body + etag regardless of expiry (for If-None-Match revalidation).
+SELECT data, etag FROM api_cache WHERE cache_key = ? AND etag != '';
+
+-- name: SetCachedDataEtag :exec
+INSERT OR REPLACE INTO api_cache (cache_key, data, etag, fetched_at, expires_at)
+VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?);
+
+-- name: TouchCache :exec
+UPDATE api_cache SET fetched_at = CURRENT_TIMESTAMP, expires_at = ? WHERE cache_key = ?;
+
+-- name: GetSessionBiodiversityPercent :one
+SELECT
+    COALESCE(SUM(CASE WHEN converted_to IN ('biodiversity','wildforest') THEN area_sqm ELSE 0 END), 0) as bio_area,
+    COALESCE(SUM(area_sqm), 0) as total_area
+FROM parcel_claims WHERE session_id = ?;
+
+-- name: CreateParcelOffer :exec
+INSERT INTO parcel_offers (session_id, parcel_hash, claim_id, buyer_id, seller_id, offer_price)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: GetPendingOffersForParcel :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.parcel_hash = ? AND po.status = 'pending'
+ORDER BY po.offer_price DESC;
+
+-- name: GetPendingOffersForSeller :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.seller_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC;
+
+-- name: GetPendingOffersForBuyer :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.buyer_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC;
+
+-- name: GetOfferByID :one
+SELECT * FROM parcel_offers WHERE id = ?;
+
+-- name: UpdateOfferStatus :exec
+UPDATE parcel_offers SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: CancelPendingOffersForParcel :exec
+UPDATE parcel_offers SET status = 'cancelled', resolved_at = CURRENT_TIMESTAMP
+WHERE parcel_hash = ? AND session_id = ? AND status = 'pending';
+
+-- name: GetSessionOffers :many
+SELECT po.*, bp.name as buyer_name, sp.name as seller_name
+FROM parcel_offers po
+JOIN players bp ON bp.id = po.buyer_id
+JOIN players sp ON sp.id = po.seller_id
+WHERE po.session_id = ? AND po.status = 'pending'
+ORDER BY po.created_at DESC;
+
+-- ---- Safety / moderation ----
+
+-- name: GetChatMessage :one
+SELECT * FROM chat_messages WHERE id = ?;
+
+-- name: HideChatMessage :exec
+UPDATE chat_messages SET hidden = 1, flag = ? WHERE id = ?;
+
+-- name: HidePlayerChatInSession :exec
+UPDATE chat_messages SET hidden = 1, flag = ? WHERE session_id = ? AND player_id = ? AND hidden = 0;
+
+-- name: GetChatContext :many
+SELECT cm.id, cm.player_id, cm.message, cm.hidden, cm.flag, cm.created_at, p.name as player_name
+FROM chat_messages cm JOIN players p ON p.id = cm.player_id
+WHERE cm.session_id = ? ORDER BY cm.created_at DESC LIMIT 25;
+
+-- name: AddChatStrike :one
+UPDATE players SET chat_strikes = chat_strikes + ? WHERE id = ? RETURNING chat_strikes;
+
+-- name: SetChatMute :exec
+UPDATE players SET chat_muted_until = ? WHERE id = ?;
+
+-- name: SetChatBan :exec
+UPDATE players SET chat_banned = 1 WHERE id = ?;
+
+-- name: AcceptChatRules :exec
+UPDATE players SET chat_rules_accepted = 1 WHERE id = ?;
+
+-- name: SetSessionChatMode :exec
+UPDATE game_sessions SET chat_mode = ? WHERE id = ?;
+
+-- name: CreateReport :one
+INSERT INTO reports (session_id, message_id, reported_player_id, reporter_id, reason, note, action)
+VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: SetReportAction :exec
+UPDATE reports SET action = ? WHERE id = ?;
+
+-- name: CountDistinctReportersForPlayer :one
+SELECT COUNT(DISTINCT reporter_id) FROM reports
+WHERE reported_player_id = ? AND created_at > datetime('now', '-1 day');
+
+-- name: CountReportsByReporterRecent :one
+SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND created_at > datetime('now', '-1 hour');
+
+-- name: ReporterAlreadyReported :one
+SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND reported_player_id = ? AND session_id = ?
+AND created_at > datetime('now', '-1 hour');
+
+-- name: AddBlock :exec
+INSERT OR IGNORE INTO player_blocks (player_id, blocked_id) VALUES (?, ?);
+
+-- name: RemoveBlock :exec
+DELETE FROM player_blocks WHERE player_id = ? AND blocked_id = ?;
+
+-- name: ListBlocks :many
+SELECT pb.blocked_id, p.name FROM player_blocks pb JOIN players p ON p.id = pb.blocked_id WHERE pb.player_id = ?;
+
+-- name: LogSafetyEvent :exec
+INSERT INTO safety_events (kind, player_id, session_id, detail) VALUES (?, ?, ?, ?);
+
+-- name: PurgeOldChat :execrows
+DELETE FROM chat_messages WHERE created_at < datetime('now', '-30 days')
+AND id NOT IN (SELECT message_id FROM reports WHERE message_id IS NOT NULL);
+
+-- name: PurgeOldReports :execrows
+DELETE FROM reports WHERE created_at < datetime('now', '-180 days');
+
+-- name: PurgeOldSafetyEvents :execrows
+DELETE FROM safety_events WHERE created_at < datetime('now', '-180 days');
+
+-- name: DeleteCacheLike :execrows
+DELETE FROM api_cache WHERE cache_key LIKE ?;
+
+-- name: HarvestParcel :exec
+UPDATE parcel_claims SET harvested_at = CURRENT_TIMESTAMP, harvests = harvests + 1 WHERE id = ?;
+
+-- name: SetParcelWell :exec
+UPDATE parcel_claims SET well_at = CURRENT_TIMESTAMP, well_depth_m = ? WHERE id = ?;
+
+-- name: SetPlayerAgent :exec
+UPDATE players SET agent = ? WHERE id = ?;

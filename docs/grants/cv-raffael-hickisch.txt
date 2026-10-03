@@ -1,0 +1,119 @@
+================================================================================
+ RAFFAEL HICKISCH
+ Wien
+ raffaelhickisch@gmail.com · https://kohlschwarz.at
+ https://www.linkedin.com/in/raffaelhickisch · https://github.com/raffael-hickisch
+================================================================================
+
+Lebenslauf zur Einreichung: Content Vienna 2026 — „Siedler Österreich: Boden"
+Rolle im Projekt: Einreicher · Konzept · Daten · Entwicklung
+
+
+PROFIL
+--------------------------------------------------------------------------------
+Ökologe und Informatiker mit über 15 Jahren Praxis in Management und Planung
+großer, besiedelter Landschaften (Zentralafrika, Sahel, Ostafrika, Europa).
+Mitgründer des Chinko-Naturreservats (55.000 km², Zentralafrikanische
+Republik). Seit Jänner 2026 Entwicklung offener Anwendungen auf Basis
+öffentlicher Daten für Österreich mit KI-Coding-Agenten – darunter eine
+österreichweite Landschaftssegmentierung aus 1-m-LiDAR-Daten und Siedler
+Österreich, ein Aufbauspiel auf dem echten Kataster.
+
+
+RELEVANZ FÜR DAS PROJEKT
+--------------------------------------------------------------------------------
+Daten & Spiel (2026, allein, Wien)
+  - Siedler Österreich — Mehrspieler-Browserspiel auf den rund 10 Mio.
+    Katasterparzellen Österreichs; 713 Spieler:innen, 371 Gemeinden,
+    live seit April 2026
+  - srtm-lidar-at — Watershed-Segmentierung von 20-cm-Orthofotos und
+    1-m-LiDAR-Daten für alle 8.440 Katastralgemeinden; Parzellenmerkmale
+    und Objekte (z. B. die höchsten Bäume) klassifiziert; ca. 40 TB
+    Rohdaten; Ergebnisse auf Zenodo
+  - kohlschwarz.at — 12 offene Apps, die EU- und nationale Open-Data-Quellen
+    verbinden (Grundwasser, Holzeinschlag, Agrarförderungen, Netzkapazität,
+    INSPIRE)
+  - Five Megapixel Conservation — Monitoring- und Berichtsapp für
+    afrikanische Schutzgebiete (Live-Positionsdaten, tägliche Verarbeitung
+    von Feuer- und Entwaldungsdaten)
+  - Umsetzung in Python/Go mit KI-Coding-Agenten auf exe.dev (Claude);
+    Porträt bei exe.dev: „Meet the conservationist who turned 40 terabytes
+    of government data into a video game"
+
+Land- & Naturschutzpraxis
+  - Mitgründer Chinko-Naturreservat (ZAR); Aufbau der Trägerorganisation
+  - Schutzgebietsplanung, Training und Managementberatung in über 12 Parks
+    in Tschad, Südsudan, ZAR, Gabun, Mali, Burkina Faso und Tansania
+  - Koordinator EuroLargeCarnivores (2017–2022), europaweites Projekt zur
+    Koexistenz von Mensch und großen Beutegreifern
+  - ca. 2.500 h händischer Waldumbau (Fichtenforst → laubholzreicher
+    Mischwald, 20 von 44 ha, mit der Handsäge)
+
+Wissenschaft
+  - 3 begutachtete Publikationen (Conservation Biology, Biological
+    Conservation)
+  - Kaplan Graduate Award 2013 (Leopardenpopulation, Chinko)
+
+
+AUSBILDUNG
+--------------------------------------------------------------------------------
+2017        Postgraduate Diploma, International Wildlife Conservation
+            WildCRU, Department of Zoology, University of Oxford
+2009–2013   MSc Soziale Ökologie — IFF Institut für Soziale Ökologie, Wien
+2006–2009   BSc Informatik — Universität Wien
+
+
+BERUFLICHER WERDEGANG
+--------------------------------------------------------------------------------
+seit 2026   Selbstständiger Entwickler, Wien — Geodaten-Apps und Spiele auf
+            Basis öffentlicher Daten (kohlschwarz.at, srtm-lidar-at, Siedler
+            Österreich); Vorbereitung des Unternehmens Veridical Earth
+            (Entscheidungsunterstützung für Landnutzung)
+2021–2026   Consultant, Schutzgebietsmanagement & Landnutzungsplanung
+            Boma & Badingilo (Südsudan): 10-Jahres-Managementplan,
+              Landnutzungskartierung vor Ort, Aufbau von Leitstellen- und
+              Community-Teams · Chinko (ZAR): Sofortmaßnahmenplan ·
+              Zakouma, Ennedi, Siniaka Minia (Tschad): Landnutzungsplanung,
+              Arbeitspläne, Teams für die Arbeit mit nomadischen Hirten ·
+              Arly/W (Burkina Faso): Prioritäten-Interventionsplan ·
+              ChemChem (Tansania): Training des Leitstellenpersonals
+2019–2022   Technischer Berater, Parc Fina / Boucle du Baoulé, Mali —
+            Machbarkeit, NGO-Gründung, Businessplanung, Training, Vorstand
+2017–2022   Projektkoordinator, EuroLargeCarnivores
+            (www.eurolargecarnivores.eu)
+2016        Consultant, Nationalparkverwaltung Gabun (ANPN) —
+            technische Unterstützung
+2014–2015   Management, Chinko-Naturreservat, ZAR — Mitgründung des
+            Reservats und Aufbau der Trägerorganisation (ehrenamtlich ab 2009)
+2009–2014   Wissenschaftlicher Mitarbeiter, Fakultät für Informatik,
+            Universität Wien — Lehre und technischer Betrieb
+2009        Application Tester, Abacus Research AG — Test und Debugging
+            eines ERP-Systems
+2005–2006   Österreichisches Rotes Kreuz — Zivildienst
+
+
+PUBLIKATIONEN
+--------------------------------------------------------------------------------
+Singer, L., Wietlisbach, X., Hickisch, R., et al. (2023). The spatial
+  distribution and temporal trends of livestock damages caused by wolves in
+  Europe. Biological Conservation, 282, 110039.
+Aebischer, T., Ibrahim, T., Hickisch, R., Furrer, R.D., Leuenberger, C. &
+  Wegmann, D. (2020). Apex predators decline after an influx of pastoralists
+  in former Central African Republic hunting zones. Biological Conservation,
+  241, 108326.
+Hickisch, R., Hodgetts, T., Johnson, P.J., Sillero-Zubiri, C., Tockner, K. &
+  Macdonald, D.W. (2019). Effects of publication bias on conservation
+  planning. Conservation Biology, 33(5), 1151–1163.
+
+
+SPRACHEN
+--------------------------------------------------------------------------------
+Deutsch (Muttersprache) · Englisch · Französisch
+
+
+LINKS
+--------------------------------------------------------------------------------
+Spiel       https://siedler-oesterreich.exe.xyz:8000/
+Portfolio   https://kohlschwarz.at
+Blog        https://blog.exe.dev/meet-the-conservationist-who-turned-40-terabytes-of-government-data-into-a-video-game
+GitHub      https://github.com/raffael-hickisch · https://github.com/raffopenssh
