@@ -157,6 +157,30 @@ const MAP_FONT = {
   small: '11px VT323, monospace',            // sub-lines (category, units)
   pixel: '9px "Press Start 2P", monospace',  // badges / rewards
 };
+// Safari (macOS/iOS WebKit, not the Linux build) ignores textAlign for canvas
+// strings that contain colour emoji — the complex-text path anchors them at
+// the left edge, so centred labels ran off their pills (N2K chip, giant-tree
+// tags, beacons). Emulate centre/right alignment by measuring and drawing
+// left-anchored; plain strings keep the native fast path.
+(function patchSafariEmojiAlign() {
+  const ua = navigator.userAgent || '';
+  if (!/AppleWebKit/.test(ua) || /Chrome|Chromium|Edg\//.test(ua)) return;
+  const EMOJI = /\p{Extended_Pictographic}/u;
+  const P = CanvasRenderingContext2D.prototype;
+  for (const m of ['fillText', 'strokeText']) {
+    const orig = P[m];
+    P[m] = function (text, x, y, maxW) {
+      const al = this.textAlign;
+      if ((al === 'center' || al === 'right' || al === 'end') && typeof text === 'string' && EMOJI.test(text)) {
+        const tw = this.measureText(text).width;
+        this.textAlign = 'left';
+        try { return orig.call(this, text, x - (al === 'center' ? tw / 2 : tw), y); }
+        finally { this.textAlign = al; }
+      }
+      return maxW === undefined ? orig.call(this, text, x, y) : orig.call(this, text, x, y, maxW);
+    };
+  }
+})();
 const G = {
   player: null, session: null,
   playerToken: null,    // rejoin token, sent as X-Player-Token on API calls
