@@ -619,7 +619,7 @@ func (s *Server) handleLLMsTxt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	fmt.Fprintf(w, `# Siedler Österreich
-> Browser game over real Austrian open data: 10.1 M cadastral parcels with LiDAR terrain and tree heights, INVEKOS crops, groundwater gauges, timber prices, forest-loss history and official place names. Claim parcels, turn land into nature reserves.
+> Browser game over real Austrian open data: millions of cadastral parcels with LiDAR terrain and tree heights, INVEKOS crops, groundwater gauges, timber prices, forest-loss history and official place names. Claim parcels, turn land into nature reserves.
 
 ## For agents
 - [How to play as an agent](%s/llm/game): text-only edition, register → session → look → inspect → act. Includes the data catalogue (what one parcel dossier contains), rate limits + data licences.

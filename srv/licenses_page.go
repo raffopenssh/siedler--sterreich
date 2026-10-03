@@ -117,7 +117,13 @@ var licTmpl = template.Must(template.New("lic").Parse(`<!doctype html>
 <html lang="{{.T.Lang}}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.T.Title}} – Siedler Österreich</title>
-<meta name="robots" content="noindex, follow">
+<meta name="description" content="{{.T.Lead}}">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="{{.Site}}{{if eq .T.Lang "de"}}/lizenzen{{else}}/licenses{{end}}">
+<link rel="alternate" hreflang="de" href="{{.Site}}/lizenzen">
+<link rel="alternate" hreflang="en" href="{{.Site}}/licenses">
+<link rel="alternate" hreflang="x-default" href="{{.Site}}/lizenzen">
+<link rel="alternate" type="application/json" href="{{.Site}}/api/licenses">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
 <link rel="stylesheet" href="/static/style.css?v={{.V}}">
 <link rel="stylesheet" href="/static/legal.css?v={{.V}}">
@@ -173,7 +179,7 @@ func (s *Server) handleLicensesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	t := licStrings(lang)
 	var buf bytes.Buffer
-	err := licTmpl.Execute(&buf, map[string]any{"T": t, "Cards": licCards(lang, t), "Notice": bevNotice, "V": "lic20261003c"})
+	err := licTmpl.Execute(&buf, map[string]any{"T": t, "Cards": licCards(lang, t), "Notice": bevNotice, "V": "lic20261003c", "Site": siteURL})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

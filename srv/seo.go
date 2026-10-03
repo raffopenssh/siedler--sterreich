@@ -2,7 +2,9 @@ package srv
 
 import (
 	"fmt"
+	"html"
 	"net/http"
+	"strings"
 )
 
 const siteURL = "https://siedler-oesterreich.exe.xyz:8000"
@@ -10,24 +12,57 @@ const siteURL = "https://siedler-oesterreich.exe.xyz:8000"
 func (s *Server) handleRobots(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	fmt.Fprintf(w, "# Agents: the text edition of this game lives at %s/llm/game (see also /llms.txt, /openapi.json)\nUser-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n", siteURL, siteURL)
+	fmt.Fprintf(w, "# Agents: the text edition of this game lives at %s/llm/game (see also /llms.txt, /openapi.json)\n"+
+		"# Data sources & licences: %s/lizenzen (EN: /licenses, JSON: /api/licenses)\n"+
+		"# Game sessions (and agents playing) carry BEV cadastre tiles — never index them.\n"+
+		"User-agent: *\nAllow: /$\nAllow: /lizenzen\nAllow: /licenses\nAllow: /impressum\nAllow: /imprint\nAllow: /datenschutz\nAllow: /privacy\n"+
+		"Allow: /llm/game\nAllow: /llms.txt\nAllow: /openapi.json\nAllow: /agents\nAllow: /static/\nAllow: /og-image\nAllow: /sitemap.xml\n"+
+		"Disallow: /api/\nDisallow: /admin/\nDisallow: /llm/ahead\nDisallow: /join/\nDisallow: /rejoin/\nDisallow: /*?*sid=\nDisallow: /*?*pid=\nDisallow: /*?*rejoin=\nDisallow: /*?*invite=\nDisallow: /\n\nSitemap: %s/sitemap.xml\n", siteURL, siteURL, siteURL)
+}
+
+// sitemapEntry is one indexable page. Alt holds hreflang → path for pages
+// that exist in both languages (every alternate is listed on every variant,
+// as the sitemaps protocol requires).
+type sitemapEntry struct {
+	Path, Changefreq, Priority string
+	Alt                        map[string]string
+}
+
+var legalAlt = func(de, en string) map[string]string {
+	return map[string]string{"de": de, "en": en, "x-default": de}
+}
+
+var sitemapEntries = []sitemapEntry{
+	{Path: "/", Changefreq: "weekly", Priority: "1.0"},
+	{Path: "/lizenzen", Changefreq: "monthly", Priority: "0.6", Alt: legalAlt("/lizenzen", "/licenses")},
+	{Path: "/licenses", Changefreq: "monthly", Priority: "0.6", Alt: legalAlt("/lizenzen", "/licenses")},
+	{Path: "/llm/game", Changefreq: "weekly", Priority: "0.8"},
+	{Path: "/llms.txt", Changefreq: "weekly", Priority: "0.5"},
+	{Path: "/agents", Changefreq: "hourly", Priority: "0.7"},
+	{Path: "/impressum", Changefreq: "monthly", Priority: "0.3", Alt: legalAlt("/impressum", "/imprint")},
+	{Path: "/imprint", Changefreq: "monthly", Priority: "0.3", Alt: legalAlt("/impressum", "/imprint")},
+	{Path: "/datenschutz", Changefreq: "monthly", Priority: "0.3", Alt: legalAlt("/datenschutz", "/privacy")},
+	{Path: "/privacy", Changefreq: "monthly", Priority: "0.3", Alt: legalAlt("/datenschutz", "/privacy")},
 }
 
 func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
+	var b strings.Builder
+	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+	b.WriteString("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\n")
+	for _, e := range sitemapEntries {
+		b.WriteString("  <url>\n")
+		fmt.Fprintf(&b, "    <loc>%s</loc>\n", html.EscapeString(siteURL+e.Path))
+		for _, lang := range []string{"de", "en", "x-default"} {
+			if p, ok := e.Alt[lang]; ok {
+				fmt.Fprintf(&b, "    <xhtml:link rel=\"alternate\" hreflang=\"%s\" href=\"%s\"/>\n", lang, html.EscapeString(siteURL+p))
+			}
+		}
+		fmt.Fprintf(&b, "    <changefreq>%s</changefreq>\n    <priority>%s</priority>\n  </url>\n", e.Changefreq, e.Priority)
+	}
+	b.WriteString("</urlset>\n")
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	fmt.Fprintf(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"+
-		"<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n"+
-		"  <url>\n"+
-		"    <loc>%s/</loc>\n"+
-		"    <changefreq>weekly</changefreq>\n"+
-		"    <priority>1.0</priority>\n"+
-		"  </url>\n"+
-		"  <url><loc>%s/llm/game</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>\n"+
-		"  <url><loc>%s/agents</loc><changefreq>hourly</changefreq><priority>0.7</priority></url>\n"+
-		"  <url><loc>%s/impressum</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n"+
-		"  <url><loc>%s/datenschutz</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n"+
-		"</urlset>\n", siteURL, siteURL, siteURL, siteURL, siteURL)
+	fmt.Fprint(w, b.String())
 }
 
 func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {
@@ -66,4 +101,33 @@ func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {
   <text x="600" y="500" text-anchor="middle" font-family="monospace" font-size="20" fill="#8a7e5a">Echte Katasterdaten &#183; Multiplayer &#183; Biodiversit&#228;t sch&#252;tzen</text>
   <text x="600" y="575" text-anchor="middle" font-family="monospace" font-size="18" fill="#6b5530">siedler-oesterreich.exe.xyz</text>
 </svg>`)
+}
+
+// sessionURL reports whether a request addresses a running game (invite /
+// rejoin links, session or player ids in the query). Those pages render BEV
+// cadastre tiles and player state and must never land in a search index.
+func sessionURL(r *http.Request) bool {
+	p := r.URL.Path
+	if strings.HasPrefix(p, "/join/") || strings.HasPrefix(p, "/rejoin/") || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/admin/") {
+		return true
+	}
+	q := r.URL.Query()
+	for _, k := range []string{"sid", "pid", "rejoin", "invite", "pname"} {
+		if q.Has(k) {
+			return true
+		}
+	}
+	return false
+}
+
+// noindexMiddleware stamps X-Robots-Tag: noindex on every session / API
+// response so the HTML <meta robots> of index.html cannot leak a game into
+// an index via an invite or rejoin link.
+func noindexMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sessionURL(r) {
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
