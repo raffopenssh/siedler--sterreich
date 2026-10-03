@@ -2,16 +2,17 @@ package srv
 
 // Prewarming of cadastre cells (bevdirect-serve → api_cache, 24 h max).
 //
-//   - Daily plan: 100 KGs/day in 5 geographic patches (~20 adjacent KGs each,
-//     seeded on a Gemeinde with srtm grid25 terrain when possible), one patch
-//     every 24h/5. A patch is contiguous so a lucky player can roam.
+//   - Daily plan: 100 KGs/day in 20 patches (5 KGs each): a small, fully
+//     srtm-enhanced Gemeinde (grid25 → relief, giants) plus its nearest
+//     neighbour KGs (enhanced or not), one patch every 24h/20, spread over
+//     the Bundesländer. 20 destinations → 20 lucky players land in 20 places.
 //   - Neighbour warming: the first viewport build in a cell enqueues the KGs
 //     touching that cell plus their adjacent KGs (low priority).
 //   - Session warming: POST /api/session/create enqueues the Gemeinde's KGs.
 //   - One worker, polite pacing (~0.8 s between cells, yields to foreground
 //     viewport builds), never re-warms a KG that is fresh for ≥ 2 h.
 //
-// GET /api/lucky picks a Gemeinde whose KGs are warm. GET /api/warm/status
+// GET /api/lucky picks a Gemeinde whose KGs are warm and enhanced. GET /api/warm/status
 // shows plan + queue.
 
 import (
@@ -31,8 +32,9 @@ import (
 
 const (
 	warmDailyKGs   = 100
-	warmPatches    = 5
+	warmPatches    = 20 // 20 destinations a day → 20 lucky players land in 20 places
 	warmPatchSize  = warmDailyKGs / warmPatches
+	warmPlanVer    = "v2"
 	warmCellPause  = 800 * time.Millisecond
 	warmFreshGuard = 2 * time.Hour // don't re-warm what is still fresh for this long
 )
@@ -287,7 +289,9 @@ func (s *Server) warmPlanner() {
 	}
 }
 
-func (s *Server) planKey(now time.Time) string { return "warm-plan:" + now.Format("2006-01-02") }
+func (s *Server) planKey(now time.Time) string {
+	return "warm-plan:" + warmPlanVer + ":" + now.Format("2006-01-02")
+}
 
 func (s *Server) loadOrMakePlan(now time.Time) *warmPlan {
 	if p, ok := s.warm.plan.Load().(*warmPlan); ok && p != nil && p.Date == now.Format("2006-01-02") {
@@ -312,20 +316,38 @@ func (s *Server) savePlan(p *warmPlan) {
 	s.warm.plan.Store(p)
 	enc, _ := json.Marshal(p)
 	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
-		CacheKey: "warm-plan:" + p.Date, Data: string(enc), ExpiresAt: time.Now().Add(48 * time.Hour),
+		CacheKey: "warm-plan:" + warmPlanVer + ":" + p.Date, Data: string(enc), ExpiresAt: time.Now().Add(48 * time.Hour),
 	})
 }
 
-// makePlan picks warmPatches seed Gemeinden (preferring ones with srtm
-// grid25 terrain, spread across Bundesländer) and grows each into a patch
-// of adjacent KGs. Deterministic per date so a restart keeps the plan.
+// makePlan picks warmPatches seed Gemeinden — each one fully srtm-enhanced
+// (every KG grid25, so /api/lucky accepts it as a destination) and small
+// enough to fit the per-patch budget — spread across Bundesländer, and
+// grows each into a patch: the Gemeinde's own KGs first, then the nearest
+// neighbouring KGs (enhanced or not) so a lucky player can roam a bit.
+// Deterministic per date so a restart keeps the plan.
 func (s *Server) makePlan(now time.Time) *warmPlan {
 	adm := admin()
 	rng := rand.New(rand.NewSource(int64(now.Year())*10000 + int64(now.YearDay())))
-	enh := s.enhancedGemeindeSet()
+	enhKG := s.enhancedKGSet()
 	var seeds []string
-	for code := range adm.Gemeinde {
-		if len(enh) == 0 || enh[code] {
+	for code, g := range adm.Gemeinde {
+		if len(g.KGs) == 0 || len(g.KGs) > warmPatchSize {
+			continue
+		}
+		ok := true
+		for _, kg := range g.KGs {
+			if len(enhKG) > 0 && !enhKG[kg] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			seeds = append(seeds, code)
+		}
+	}
+	if len(seeds) == 0 { // registry unknown: any Gemeinde
+		for code := range adm.Gemeinde {
 			seeds = append(seeds, code)
 		}
 	}
@@ -335,16 +357,30 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	fresh := s.freshWarmSet()
 	plan := &warmPlan{Date: now.Format("2006-01-02"), Started: map[string]bool{}}
 	usedState := map[string]int{}
+	perState := (warmPatches + 8) / 9 * 2 // ≈ 2× the fair share per Bundesland
 	for _, seed := range seeds {
 		if len(plan.Patches) >= warmPatches {
 			break
 		}
 		g := adm.Gemeinde[seed]
-		if usedState[g.State] >= 2 { // spread over the country
+		if usedState[g.State] >= perState {
 			continue
 		}
+		allFresh := true
+		for _, kg := range g.KGs {
+			if used[kg] {
+				allFresh = false // overlaps an earlier patch
+				break
+			}
+			if !fresh[kg] {
+				allFresh = false
+			}
+		}
+		if allFresh {
+			continue // already warm (or taken) — pick a different destination
+		}
 		patch := s.growPatch(seed, used, fresh)
-		if len(patch) < warmPatchSize/2 {
+		if len(patch) == 0 {
 			continue
 		}
 		usedState[g.State]++
@@ -354,10 +390,9 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	return plan
 }
 
-// growPatch: BFS over KG adjacency from the seed Gemeinde's KGs until
-// warmPatchSize KGs, skipping already-fresh ones. Seeds are enhanced
-// Gemeinden; the walk may cross into not-yet-enhanced neighbours (that is
-// fine for roaming — /api/lucky only spawns players in enhanced KGs).
+// growPatch: the seed Gemeinde's KGs, then BFS over KG adjacency (enhanced
+// or not — roaming across the border is fine, only the spawn must be
+// enhanced) until warmPatchSize KGs, skipping already-fresh ones.
 func (s *Server) growPatch(seed string, used, fresh map[string]bool) []string {
 	adm := admin()
 	g := adm.Gemeinde[seed]
