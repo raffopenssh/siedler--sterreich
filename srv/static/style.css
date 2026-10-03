@@ -441,8 +441,9 @@ input[type=text]:focus { border-color:var(--gold); }
 .popup h3 { font:10px var(--font-pixel); color:var(--gold); margin-bottom:10px; }
 .pp-grid {
   display:grid; grid-template-columns:auto 1fr; gap:2px 14px;
-  font:20px var(--font-game);
+  font:20px var(--font-game); line-height:1.15; /* explicit: VT323 'normal' differs per engine (Firefox taller) */
 }
+.ez-save { display:block; font:15px var(--font-game); color:#1e5a1e; line-height:1.1; margin-top:3px; }
 .pp-grid span { color:var(--text-dim); }
 .pp-grid b { color:var(--text); font-weight:normal; }
 .pp-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }

@@ -55,7 +55,8 @@ const CHECKS = `(() => {
       const ox = el.scrollWidth - el.clientWidth, oy = el.scrollHeight - el.clientHeight;
       const scrolls = /auto|scroll/.test(cs.overflowX + cs.overflowY);
       const ell = cs.textOverflow === 'ellipsis';
-      if (!scrolls && !ell && (ox > 2 || oy > 3) && el.clientWidth > 0) out.clipped.push({ el: pathOf(el), ox, oy, w: el.clientWidth, h: el.clientHeight, text: el.textContent.trim().slice(0, 40) });
+      const hid = cs.overflow === 'hidden' && ox <= 4 && oy <= 3; /* deliberate clip (rotated chevron) */
+      if (!scrolls && !ell && !hid && (ox > 2 || oy > 3) && el.clientWidth > 0) out.clipped.push({ el: pathOf(el), ox, oy, w: el.clientWidth, h: el.clientHeight, text: el.textContent.trim().slice(0, 40) });
     }
     if (/fixed|absolute/.test(cs.position) && (el.id || /popup|chip|hud|modal|toast|btn|sheet|herald|minimap|attrib/.test(el.className))) {
       const r = el.getBoundingClientRect();

@@ -9974,7 +9974,7 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
     }
     const discountedPrice = Math.round(totalPrice * 0.8);
     const savings = totalPrice - discountedPrice;
-    ezAct.innerHTML = `<button class="btn btn-gold btn-small" style="width:100%" onclick="doClaimEZ('${kgCode}','${ez}')">📋 Ganze EZ kaufen: ${discountedPrice}🪙 <span style='font-size:14px;color:#2a2'>(-20% = -${savings}🪙)</span></button>`;
+    ezAct.innerHTML = `<button class="btn btn-gold btn-small" style="width:100%" onclick="doClaimEZ('${kgCode}','${ez}')">📋 Ganze EZ kaufen: ${discountedPrice}🪙 <span class="ez-save">−20 % = −${savings}🪙</span></button>`;
   }
 
   G.ezHighlight = {kg: kgCode, ez: ez};
