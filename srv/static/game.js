@@ -370,6 +370,7 @@ function toast(msg, type) {
 function show(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById('screen-'+id).classList.add('active');
+  if (id === 'game' && typeof updateQuestScrollHint === 'function') requestAnimationFrame(updateQuestScrollHint);
 }
 
 function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
@@ -1575,6 +1576,7 @@ async function startGameWithLoading() {
 async function startGame() { await startGameWithLoading(); }
 
 function resizeGame() {
+  if (typeof updateQuestScrollHint === 'function') requestAnimationFrame(updateQuestScrollHint);
   const wrap = document.getElementById('game-main');
   gc.width = wrap.clientWidth;
   gc.height = wrap.clientHeight;
@@ -2410,7 +2412,7 @@ function renderPlayerList() {
   document.getElementById('game-players').innerHTML = G.players.map((p,i) => {
     if (!G.pcolors[p.id]) G.pcolors[p.id] = PLAYER_COLORS[G.pci++ % PLAYER_COLORS.length];
     const coins = p.id === G.player.id ? G.player.coins : p.coins;
-    return `<div class="stat"><span style="color:${G.pcolors[p.id]}">■</span> ${esc(p.name)}${p.id===G.player.id?' (du)':''}<b>${coins}🪙</b></div>`;
+    return `<div class="stat pl-row"><span class="pl-name"><i class="pl-sw" style="color:${G.pcolors[p.id]}">■</i>${esc(p.name)}${p.id===G.player.id?' <em>('+tr('du')+')</em>':''}</span><b>${coins}🪙</b></div>`;
   }).join('');
 }
 const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲',harvest:'🌾',timber:'🪓'};
@@ -2435,9 +2437,17 @@ function renderQuests() {
       <div class="qt">${icon} ${esc(c.title)}</div>
       <div class="qd">${esc(c.description||'')}</div>
       ${bar}<div class="qr">+${c.reward_coins}🪙 +${c.reward_xp}⚡<span class="qgo">▸</span></div></div>`;
-  }).join('') || '<div style="font:16px VT323;color:var(--text-dim)">Alle erledigt!</div>';
+  }).join('') || '<div class="sb-empty">' + tr('Alle erledigt!') + '</div>';
   Herald.questsChanged();
+  requestAnimationFrame(updateQuestScrollHint);
 }
+/** Quests list: fade the bottom edge while more cards are below the fold. */
+function updateQuestScrollHint() {
+  const el = document.getElementById('sec-quests'); if (!el) return;
+  el.classList.toggle('more', el.scrollHeight - el.clientHeight - el.scrollTop > 6);
+}
+document.getElementById('sec-quests').addEventListener('scroll', updateQuestScrollHint, { passive: true });
+window.addEventListener('resize', updateQuestScrollHint);
 
 // ---- Quest briefings: what to do, where, and a one-tap action that moves the
 // game along (fly to the nearest treasure, open an owned parcel to convert, …).
@@ -2597,7 +2607,7 @@ function renderChat() {
         <button title="Melden" onclick="openReport(${m.id||0},'${m.player_id}','${esc(m.player_name||'')}')">⚑</button>
         <button title="Blockieren" onclick="blockPlayer('${m.player_id}','${esc(m.player_name||'')}')">🚫</button></span>` : '';
     return `<div class="chat-msg" data-id="${m.id||0}" onclick="this.classList.toggle('touch')"><span class="cn">${esc(m.player_name||'?')}:</span> ${esc(m.message)}${act}</div>`;
-  }).join('');
+  }).join('') || '<div class="sb-empty chat-empty">' + tr('Noch keine Nachrichten — sag Hallo! Mitspieler sehen den Chat sofort.') + '</div>';
   el.scrollTop = el.scrollHeight;
 }
 

@@ -199,10 +199,11 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .quick-rejoin a { color:var(--gold); cursor:pointer; text-decoration:underline; }
 .welcome-legal {
-  margin-top:28px; font:15px var(--font-game); color:var(--text-dim); opacity:.75;
+  margin-top:28px; font:15px var(--font-game); color:var(--text-dim); opacity:.7; line-height:1.4;
 }
-.welcome-legal .legal-note { display:block; margin-bottom:4px; letter-spacing:.5px; }
-.welcome-legal .legal-attrib { display:block; margin-bottom:6px; font-size:14px; line-height:1.35; max-width:520px; margin-left:auto; margin-right:auto; }
+.welcome-legal .legal-note { display:block; letter-spacing:.5px; }
+.welcome-legal .legal-attrib { display:block; margin-bottom:8px; font-size:14px; max-width:520px; margin-left:auto; margin-right:auto; }
+.welcome-legal nav { letter-spacing:.3px; }
 .welcome-legal a { color:var(--text-dim); text-decoration:underline; }
 .welcome-legal a:hover { color:var(--gold); }
 .invite-share {
@@ -647,7 +648,8 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   /* The sheet itself scrolls: sections must not shrink away (quests were
      collapsing to their sticky h3 — 18px — inside the flex column). */
   #sidebar .sb-section { flex-shrink:0; }
-  .sb-scroll { max-height:none; overflow:visible; }
+  .sb-scroll { max-height:none; min-height:0; overflow:visible; }
+  .sb-scroll.more { -webkit-mask-image:none; mask-image:none; }
   .sb-scroll h3 { position:static; margin:0 0 6px; padding:0; }
 
   /* Minimap — hidden on mobile to avoid popup overlap */
