@@ -314,6 +314,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/municipalities", s.handleMunicipalities)
 	mux.HandleFunc("GET /api/licenses", s.handleLicenses)
 	mux.HandleFunc("GET /lizenzen", s.handleLicensesPage)
+	mux.HandleFunc("GET /licenses", s.handleLicensesPage)
 	// Sibling roadmap consumers (see siblings.go): viewport landuse slice, INVEKOS fields
 	mux.HandleFunc("GET /api/viewport-landuse", s.handleViewportLanduse)
 	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
