@@ -202,7 +202,7 @@ input[type=text]:focus { border-color:var(--gold); }
   margin-top:28px; font:15px var(--font-game); color:var(--text-dim); opacity:.7; line-height:1.4;
 }
 .welcome-legal .legal-note { display:block; letter-spacing:.5px; }
-.welcome-legal .legal-attrib { display:block; margin-bottom:8px; font-size:14px; max-width:520px; margin-left:auto; margin-right:auto; }
+.welcome-legal .legal-attrib { display:block; margin-bottom:8px; font-size:14px; max-width:600px; margin-left:auto; margin-right:auto; }
 .welcome-legal nav { letter-spacing:.3px; }
 .welcome-legal a { color:var(--text-dim); text-decoration:underline; }
 .welcome-legal a:hover { color:var(--gold); }

@@ -20,6 +20,7 @@ type licPageStrings struct {
 	LegalHead                                                                     string
 	Legal                                                                         [][2]string
 	FooterJSON, FooterNoEndorse, FooterImprint, ImprintHref                       string
+	HomeHref, FooterHome, PrivacyHref, FooterPrivacy, OtherLangHref, OtherLang    string
 }
 
 type licCard struct {
@@ -54,7 +55,7 @@ func licStrings(lang string) licPageStrings {
 				{"Non-commercial only", "WDPA (non-commercial) and MERIT Hydro (CC BY-NC-SA 4.0) are only permissible because the service is non-commercial. Should it ever be commercialised, both sources would have to go."},
 				{"Share-alike", "geoBoundaries gbOpen (CC BY-SA 4.0): the simplified border file /static/austria.json is passed on under CC BY-SA 4.0. OSM lines are only rendered (Produced Work, ODbL §4.3)."},
 			},
-			FooterJSON: "Machine-readable version:", FooterNoEndorse: "This game is not operated or endorsed by BEV, Statistics Austria, the EEA, ESA or OpenStreetMap.", FooterImprint: "More in the imprint", ImprintHref: "/imprint",
+			FooterJSON: "Machine-readable version:", FooterNoEndorse: "This game is not operated or endorsed by BEV, Statistics Austria, the EEA, ESA or OpenStreetMap.", FooterImprint: "Imprint", ImprintHref: "/imprint", HomeHref: "/", FooterHome: "Home", PrivacyHref: "/privacy", FooterPrivacy: "Privacy", OtherLangHref: "/lizenzen", OtherLang: "Deutsch",
 		}
 	}
 	return licPageStrings{
@@ -80,7 +81,7 @@ func licStrings(lang string) licPageStrings {
 			{"Nur nicht-kommerziell", "WDPA (nicht-kommerziell) und MERIT Hydro (CC BY-NC-SA 4.0) sind nur zulässig, weil der Dienst nicht-kommerziell ist. Bei einer Kommerzialisierung müssten beide Quellen entfallen."},
 			{"Share-alike", "geoBoundaries gbOpen (CC BY-SA 4.0): die vereinfachte Grenzdatei /static/austria.json wird unter CC BY-SA 4.0 weitergegeben. OSM-Linien werden nur dargestellt (Produced Work, ODbL §4.3)."},
 		},
-		FooterJSON: "Maschinenlesbar:", FooterNoEndorse: "Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.", FooterImprint: "Weitere Angaben im Impressum", ImprintHref: "/impressum#daten",
+		FooterJSON: "Maschinenlesbar:", FooterNoEndorse: "Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.", FooterImprint: "Impressum", ImprintHref: "/impressum", HomeHref: "/", FooterHome: "Startseite", PrivacyHref: "/datenschutz", FooterPrivacy: "Datenschutz", OtherLangHref: "/licenses", OtherLang: "English",
 	}
 }
 
@@ -158,8 +159,9 @@ var licTmpl = template.Must(template.New("lic").Parse(`<!doctype html>
   </div>
 
   <div class="legal-footer">
-    <p>{{.T.FooterJSON}} <a href="/api/licenses">/api/licenses</a> · <a href="{{.T.ImprintHref}}">{{.T.FooterImprint}}</a></p>
     <p>{{.T.FooterNoEndorse}}</p>
+    <p>{{.T.FooterJSON}} <a href="/api/licenses">/api/licenses</a></p>
+    <p><a href="{{.T.HomeHref}}">{{.T.FooterHome}}</a> · <a href="{{.T.ImprintHref}}">{{.T.FooterImprint}}</a> · <a href="{{.T.PrivacyHref}}">{{.T.FooterPrivacy}}</a> · <a href="{{.T.OtherLangHref}}">{{.T.OtherLang}}</a></p>
   </div>
 </div>
 </body></html>`))
@@ -171,7 +173,7 @@ func (s *Server) handleLicensesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	t := licStrings(lang)
 	var buf bytes.Buffer
-	err := licTmpl.Execute(&buf, map[string]any{"T": t, "Cards": licCards(lang, t), "Notice": bevNotice, "V": "lic20261003b"})
+	err := licTmpl.Execute(&buf, map[string]any{"T": t, "Cards": licCards(lang, t), "Notice": bevNotice, "V": "lic20261003c"})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

@@ -31,11 +31,10 @@ import (
 )
 
 type Server struct {
-	DB           *sql.DB
-	Hostname     string
-	TemplatesDir string
-	StaticDir    string
-	Q            *dbgen.Queries
+	DB        *sql.DB
+	Hostname  string
+	StaticDir string
+	Q         *dbgen.Queries
 
 	// CAD-5: last seen geometry assembly tag per KG (+ purge counter for /llm/ahead & DEV)
 	assemblySeen   sync.Map
@@ -133,11 +132,10 @@ func New(dbPath, hostname string) (*Server, error) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
 	srv := &Server{
-		Hostname:     hostname,
-		TemplatesDir: filepath.Join(baseDir, "templates"),
-		StaticDir:    filepath.Join(baseDir, "static"),
-		sseClients:   make(map[string]map[chan string]bool),
-		warm:         newWarmer(),
+		Hostname:   hostname,
+		StaticDir:  filepath.Join(baseDir, "static"),
+		sseClients: make(map[string]map[chan string]bool),
+		warm:       newWarmer(),
 	}
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
