@@ -88,6 +88,7 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("X-Cache", "HIT")
 		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(browserCacheMaxAge))
 		w.Write(gz)
 		return
 	}

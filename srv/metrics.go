@@ -297,7 +297,7 @@ func (s *Server) apiCacheStatsQuery() map[string]any {
 	out := map[string]any{}
 	var rows int64
 	var bytes *int64
-	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*), SUM(LENGTH(data)) FROM api_cache").Scan(&rows, &bytes); err != nil {
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*), SUM(LENGTH(CAST(data AS BLOB))) FROM api_cache").Scan(&rows, &bytes); err != nil {
 		out["error"] = err.Error()
 		return out
 	}

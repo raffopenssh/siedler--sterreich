@@ -34,7 +34,7 @@ type Server struct {
 	DB        *sql.DB
 	Hostname  string
 	StaticDir string
-	Q         *dbgen.Queries
+	Q         Store
 
 	// CAD-5: last seen geometry assembly tag per KG (+ purge counter for /llm/ahead & DEV)
 	assemblySeen   sync.Map
@@ -84,6 +84,7 @@ func (s *Server) cachedFetchX(w http.ResponseWriter, cacheKey string, fetch func
 	if cached, err := s.Q.GetCachedData(context.Background(), cacheKey); err == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache", "HIT")
+		browserCache(w, []byte(cached))
 		w.Write(transform([]byte(cached)))
 		return
 	}
@@ -125,7 +126,21 @@ func (s *Server) cachedFetchX(w http.ResponseWriter, cacheKey string, fetch func
 		w.Write(res.body)
 		return
 	}
+	browserCache(w, res.body)
 	w.Write(transform(res.body))
+}
+
+// browserCacheMaxAge lets the browser reuse a ready cached body (cells,
+// bbox layers) across page reloads instead of re-downloading ~150 KB gz per
+// cell; data upstream changes at most daily, and the client dedups in memory
+// anyway. Pending / partial answers (`ready:false`) are never cacheable.
+const browserCacheMaxAge = 3600
+
+func browserCache(w http.ResponseWriter, body []byte) {
+	if w.Header().Get("Cache-Control") != "" || bytes.Contains(body, []byte(`"ready":false`)) {
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(browserCacheMaxAge))
 }
 
 func New(dbPath, hostname string) (*Server, error) {
@@ -140,7 +155,7 @@ func New(dbPath, hostname string) (*Server, error) {
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
 	}
-	srv.Q = dbgen.New(srv.DB)
+	srv.Q = Store{dbgen.New(srv.DB)}
 	return srv, nil
 }
 
@@ -177,6 +192,7 @@ func (s *Server) Serve(addr string) error {
 	loadParcelKey(filepath.Join(filepath.Dir(s.StaticDir), ".."))
 	s.hashLegacyParcelRows()
 	go s.cacheJanitor()
+	go s.compressLegacyCache()
 	go s.safetyJanitor()
 	go s.warmLoop()
 	go s.warmPlanner()
