@@ -46,7 +46,7 @@ func licenseSources() []licenseSource {
 			Modified:    "zusammengesetzt aus Kacheln, vereinigt, Koordinaten gerundet, mit Flächen/Benützungsart je Grundstück angereichert",
 			UsedFor:     []string{"Grundstückspolygone", "Gebäudegrundrisse", "Benützungsarten-Flächen", "EZ-Gruppierung im Sichtbereich", "Gemeinde/KG am Punkt"},
 			MaxCacheH:   24,
-			Notes:       "Zusammengesetzte Rasterzellen werden höchstens 24 h in unserem Zwischenspeicher gehalten (api_cache, kg_warm) und täglich ausgedünnt; bevdirect hält Kacheln 24 h, Zellen 6 h. Nichts ist nach Grundstücksnummer, EZ oder Eigentümer abfragbar.",
+			Notes:       "Rechtsgrundlage: Produktbeschreibung „Katastralmappe VTC“ (BEV_S_KA_Katastralmappe_VTC.pdf) Abschnitt 2.3 Lizenz: „Für die hier beschriebenen Produkte gilt die Standardlizenz Creative Commons CC BY 4.0“ – das Tileset https://kataster.bev.gv.at/tiles/{kataster|symbole}/{z}/{x}/{y}.pbf ist dieses Produkt. CC BY 4.0 Abschnitt 4 räumt ausdrücklich auch das Sui-generis-Datenbankrecht (§§ 76c–76e UrhG) ein: Entnahme, Weiterverwendung, Vervielfältigung und Weitergabe wesentlicher Teile der Datenbank sind lizenziert. Die kostenpflichtige DKM (Katastralmappe und Sachdaten digital, BEV-Nutzungsbedingungen Amtsblatt 3/2022) und das Katasterservice (Such-/Auskunfts-API) nutzen wir nicht. Zusammengesetzte Rasterzellen werden höchstens 24 h in unserem Zwischenspeicher gehalten (api_cache, kg_warm) und täglich ausgedünnt; bevdirect hält Kacheln 24 h, Zellen 6 h. Nichts ist nach Grundstücksnummer, EZ oder Eigentümer abfragbar. Hinweis BEV: aus den Kacheln können keine rechtsverbindlichen Koordinaten abgeleitet werden – das Spiel ist keine amtliche Auskunft.",
 		},
 		{
 			ID: "bev_vgd", Name: "Verwaltungsgrenzen (KG- und Gemeinde-Register mit Umgriffen)",
@@ -92,6 +92,13 @@ func (s *Server) licensesDoc() map[string]any {
 			"prewarm":          fmt.Sprintf("%d Katastralgemeinden pro Tag in %d zusammenhängenden Gebieten; beim Laden einer KG werden Nachbar-KGs im Hintergrund vorgewärmt; alles verfällt nach 24 h", warmDailyKGs, warmPatches),
 			"context_max_age":  "24h (Umfeld, Landschaft), 6h (Wasser)",
 			"no_endorsement":   "Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.",
+			"legal_basis": map[string]string{
+				"bev_vtc_licence":    "BEV Produktbeschreibung Katastralmappe VTC, Abschnitt 2.3: CC BY 4.0 (https://www.bev.gv.at/Services/Geoinformationsdienste/Services/Katasterservice.html → Download BEV_S_KA_Katastralmappe_VTC.pdf)",
+				"database_right":     "CC BY 4.0 legalcode Abschnitt 4 (Sui Generis Database Rights) lizenziert Entnahme und Weiterverwendung wesentlicher Teile; damit ist §76c ff UrhG für das VTC-Produkt abgedeckt. Unsere 24-h-Grenze und der Verzicht auf eine Gst./EZ-Abfrage gehen darüber hinaus.",
+				"attribution_format": "„© BEV, JJJJ“ + Quelle + Lizenz + Bearbeitungshinweis (BEV Nutzungsbedingungen §2.3.3; CC BY 4.0 §3(a)); auf jeder Kartenansicht (#map-attrib), in /lizenzen, im Impressum und als `notice` in jeder Kataster-Antwort unserer API.",
+				"non_commercial":     "Nicht-kommerzieller Dienst (Impressum). Nur dadurch zulässig: WDPA (nicht-kommerziell) und MERIT Hydro (CC BY-NC-SA 4.0; alternativ ODbL). Bei einer Kommerzialisierung müssten diese beiden Quellen entfallen.",
+				"share_alike":        "geoBoundaries gbOpen (CC BY-SA 4.0): die vereinfachte Grenzdatei /static/austria.json wird unter CC BY-SA 4.0 weitergegeben. OSM-Linien werden nur dargestellt (Produced Work, ODbL §4.3).",
+			},
 		},
 		"sources": licenseSources(),
 		"links":   map[string]string{"impressum": "/impressum#daten", "page": "/lizenzen"},
@@ -115,6 +122,12 @@ Wir führen keine Katasterdatenbank: zusammengesetzte Rasterzellen (0,02°) blei
 täglich werden `+fmt.Sprint(warmDailyKGs)+` Katastralgemeinden in `+fmt.Sprint(warmPatches)+` zusammenhängenden Gebieten vorgewärmt, beim Laden einer KG die Nachbar-KGs –
 und alles verfällt wieder nach 24 h. Nichts ist nach Grundstücksnummer, Einlagezahl oder Eigentümer abfragbar.</p>
 <p>`+html.EscapeString(bevNotice)+`</p>
+<p><small><strong>Rechtsgrundlage Kataster:</strong> Die Vektorkacheln sind das BEV-Produkt „Katastralmappe VTC“; dessen
+<a href="https://www.bev.gv.at/Services/Geoinformationsdienste/Services/Katasterservice.html" rel="noopener">Produktbeschreibung</a>
+(BEV_S_KA_Katastralmappe_VTC.pdf, Abschnitt 2.3) stellt es unter CC BY 4.0. Diese Lizenz umfasst in Abschnitt 4 ausdrücklich das
+Sui-generis-Datenbankrecht (§§ 76c–76e UrhG), also Entnahme und Weiterverwendung wesentlicher Teile. Die kostenpflichtige DKM und das
+Katasterservice (Such-/Auskunfts-API) nutzen wir nicht. Aus den Kacheln lassen sich laut BEV keine rechtsverbindlichen Koordinaten ableiten –
+das Spiel ist keine amtliche Auskunft. Dieser Dienst ist nicht-kommerziell; WDPA und MERIT Hydro (CC BY-NC-SA) sind nur deshalb zulässig.</small></p>
 <table><thead><tr><th>Quelle</th><th>Woher wir laden</th><th>Lizenz</th><th>Verwendung</th><th>max. Cache</th></tr></thead><tbody>`)
 	for _, src := range licenseSources() {
 		cache := "–"

@@ -23,8 +23,10 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -48,7 +50,9 @@ func envOr(k, def string) string {
 // bevNotice is the attribution every cadastre-derived response must carry
 // (BEV Nutzungsbedingungen §2.3.3). bevdirect sends the year-bearing text
 // in `notice`; this is the fallback when we synthesise a body ourselves.
-const bevNotice = "© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet"
+// Format "© BEV, JJJJ" per §2.3.3; the year is the year of the tile data,
+// i.e. always the current one (the VTC is rebuilt from the live cadastre).
+var bevNotice = "© BEV, " + strconv.Itoa(time.Now().Year()) + " – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet"
 
 // cadastreTTL is the hard upper bound for anything derived from the BEV
 // tiles in our api_cache (policy: "max 24 h", see licenses.go).
