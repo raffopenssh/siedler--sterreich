@@ -15,9 +15,8 @@ func (s *Server) handleRobots(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# Agents: the text edition of this game lives at %s/llm/game (see also /llms.txt, /openapi.json)\n"+
 		"# Data sources & licences: %s/lizenzen (EN: /licenses, JSON: /api/licenses)\n"+
 		"# Game sessions (and agents playing) carry BEV cadastre tiles — never index them.\n"+
-		"User-agent: *\nAllow: /$\nAllow: /lizenzen\nAllow: /licenses\nAllow: /impressum\nAllow: /imprint\nAllow: /datenschutz\nAllow: /privacy\n"+
-		"Allow: /llm/game\nAllow: /llms.txt\nAllow: /openapi.json\nAllow: /agents\nAllow: /static/\nAllow: /og-image\nAllow: /sitemap.xml\n"+
-		"Disallow: /api/\nDisallow: /admin/\nDisallow: /llm/ahead\nDisallow: /join/\nDisallow: /rejoin/\nDisallow: /*?*sid=\nDisallow: /*?*pid=\nDisallow: /*?*rejoin=\nDisallow: /*?*invite=\nDisallow: /\n\nSitemap: %s/sitemap.xml\n", siteURL, siteURL, siteURL)
+		"User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /admin/\nDisallow: /llm/ahead\nDisallow: /join/\nDisallow: /rejoin/\n"+
+		"Disallow: /*?*sid=\nDisallow: /*?*pid=\nDisallow: /*?*rejoin=\nDisallow: /*?*invite=\nDisallow: /*?*pname=\n\nSitemap: %s/sitemap.xml\n", siteURL, siteURL, siteURL)
 }
 
 // sitemapEntry is one indexable page. Alt holds hreflang → path for pages
