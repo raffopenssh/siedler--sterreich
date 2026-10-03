@@ -355,7 +355,9 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 }
 
 // growPatch: BFS over KG adjacency from the seed Gemeinde's KGs until
-// warmPatchSize KGs, skipping already-fresh ones.
+// warmPatchSize KGs, skipping already-fresh ones. Seeds are enhanced
+// Gemeinden; the walk may cross into not-yet-enhanced neighbours (that is
+// fine for roaming — /api/lucky only spawns players in enhanced KGs).
 func (s *Server) growPatch(seed string, used, fresh map[string]bool) []string {
 	adm := admin()
 	g := adm.Gemeinde[seed]
@@ -403,14 +405,28 @@ func (s *Server) freshWarmSet() map[string]bool {
 // without triggering a fetch: Gemeinden with at least one v2/grid25 KG.
 func (s *Server) enhancedGemeindeSet() map[string]bool {
 	out := map[string]bool{}
+	adm := admin()
+	for kg := range s.enhancedKGSet() {
+		if k := adm.KGs[kg]; k != nil {
+			out[k.Gemeinde] = true
+		}
+	}
+	return out
+}
+
+// enhancedKGSet: the KG codes with srtm grid25 terrain (v2) — the only ones
+// with hillshade tiles, heightfields and the giant-tree index. Unpadded and
+// padded forms both present so callers can look up either.
+func (s *Server) enhancedKGSet() map[string]bool {
+	out := map[string]bool{}
 	raw, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey)
 	if err != nil {
 		return out
 	}
 	var d struct {
 		KGs []struct {
-			Gemeinde string `json:"gemeinde_code"`
-			V2       bool   `json:"v2"`
+			KG string `json:"kg_code"`
+			V2 bool   `json:"v2"`
 		} `json:"kgs"`
 	}
 	if json.Unmarshal([]byte(raw), &d) != nil {
@@ -418,7 +434,11 @@ func (s *Server) enhancedGemeindeSet() map[string]bool {
 	}
 	for _, k := range d.KGs {
 		if k.V2 {
-			out[k.Gemeinde] = true
+			out[k.KG] = true
+			out[unpadKG(k.KG)] = true
+			if len(k.KG) == 4 {
+				out["0"+k.KG] = true
+			}
 		}
 	}
 	return out
@@ -447,14 +467,26 @@ func (s *Server) handleLucky(w http.ResponseWriter, r *http.Request) {
 func (s *Server) luckyPick() luckyPick {
 	adm := admin()
 	fresh := s.freshWarmSet()
+	enhKG := s.enhancedKGSet()
 	enh := s.enhancedGemeindeSet()
 	type cand struct {
 		g    *gemeindeAdmin
 		warm int
 	}
 	var full, partial []cand
-	byGem := map[string]int{}
+	// A KG only counts as "playable" when it is warm AND srtm-enhanced: a
+	// warm-but-bare KG has parcels, but no relief, no giant trees, no
+	// heightfield — the player would think the landscape layer is broken.
+	// Only when the registry is unknown (fresh install, srtm down) does warm
+	// alone count.
+	playable := map[string]bool{}
 	for kg := range fresh {
+		if len(enhKG) == 0 || enhKG[kg] {
+			playable[kg] = true
+		}
+	}
+	byGem := map[string]int{}
+	for kg := range playable {
 		if k := adm.KGs[kg]; k != nil {
 			byGem[k.Gemeinde]++
 		}
@@ -468,43 +500,27 @@ func (s *Server) luckyPick() luckyPick {
 		if n >= len(g.KGs) || (len(g.KGs) >= 5 && n >= (len(g.KGs)*3+3)/4) {
 			full = append(full, c)
 		} else {
-			// Partially warm Gemeinde: fine as long as the settlement centre
-			// (where the player spawns) lies in a warm KG — checked in
-			// luckyCenter below; keep them as a second tier.
+			// Partially playable Gemeinde: fine as long as the settlement
+			// centre (where the player spawns) lies in a playable KG —
+			// checked in luckyCenter below; keep them as a second tier.
 			partial = append(partial, c)
 		}
 	}
 	pick := func(pool []cand) (luckyPick, bool) {
-		// Prefer enhanced (srtm grid25) Gemeinden — ~85 % of the time when
-		// there are a few of them, 50 % when the enhanced subset is tiny, so
-		// a pool of 12 does not collapse to the same 1–2 names all day.
-		var enhPool []cand
-		for _, c := range pool {
-			if enh[c.g.Code] {
-				enhPool = append(enhPool, c)
-			}
-		}
-		if len(enhPool) > 0 {
-			pEnh := 0.85
-			if len(enhPool) < 3 {
-				pEnh = 0.5
-			}
-			if rand.Float64() < pEnh {
-				pool = enhPool
-			}
-		}
-		// Try a few random candidates; skip ones whose centre is not warm.
+		// Try a few random candidates; skip ones whose centre is not playable.
 		order := rand.Perm(len(pool))
 		for i, idx := range order {
-			if i >= 4 {
+			if i >= 6 {
 				break
 			}
 			c := pool[idx]
-			lon, lat, ok := s.luckyCenter(c.g, fresh)
+			lon, lat, ok := s.luckyCenter(c.g, playable)
 			if !ok {
 				continue
 			}
-			return luckyPick{GemeindeCode: c.g.Code, Name: c.g.Name, Lon: lon, Lat: lat, State: c.g.State, Enhanced: enh[c.g.Code], Warm: true, WarmKGs: c.warm, KGs: c.g.KGs, Pool: len(pool)}, true
+			lp := luckyPick{GemeindeCode: c.g.Code, Name: c.g.Name, Lon: lon, Lat: lat, State: c.g.State, Enhanced: enh[c.g.Code], Warm: true, WarmKGs: c.warm, KGs: c.g.KGs, Pool: len(pool)}
+			slog.Info("lucky: pick", "gemeinde", c.g.Code, "name", c.g.Name, "enhanced", lp.Enhanced, "warm_kgs", c.warm, "pool", len(pool))
+			return lp, true
 		}
 		return luckyPick{}, false
 	}
@@ -536,6 +552,7 @@ func (s *Server) luckyPick() luckyPick {
 	if slon, slat, ok := s.settlementCenter(g.Name, lon, lat); ok {
 		lon, lat = slon, slat
 	}
+	slog.Info("lucky: cold pick (nothing warm+enhanced)", "gemeinde", g.Code, "name", g.Name, "enhanced", enh[g.Code])
 	return luckyPick{GemeindeCode: g.Code, Name: g.Name, Lon: lon, Lat: lat, State: g.State, Enhanced: enh[g.Code], KGs: g.KGs, Pool: 0}
 }
 
