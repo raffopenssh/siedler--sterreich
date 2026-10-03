@@ -3653,7 +3653,10 @@ function showTreePopup(tree) {
 
   document.getElementById('parcel-popup').classList.remove('open');
   document.getElementById('ez-popup').classList.remove('open');
-  document.getElementById('tree-popup').classList.add('open');
+  const tp = document.getElementById('tree-popup');
+  tp.classList.remove('peek'); tp.classList.add('open');
+  placePopupClear('tree-popup', tree.lon, tree.lat);
+  invalidateHudInsets();
 }
 
 /** Giant trees actually drawn in the last frame: [{t, x, y, hint}]. Drives
@@ -9168,10 +9171,14 @@ function showParcelPopup(f, tappedFp) {
   document.getElementById('parcel-popup').classList.add('open');
   // Reset inline position so CSS handles it (mobile vs desktop)
   const pp = document.getElementById('parcel-popup');
+  pp.classList.remove('peek');
   if (!pp.dataset.userMoved) {
     pp.style.left = ''; pp.style.bottom = '';
     pp.style.right = ''; pp.style.top = '';
+    pp.classList.remove('flip');
+    const ll = featureLonLat(f); if (ll) placePopupClear('parcel-popup', ll[0], ll[1]);
   }
+  invalidateHudInsets();
   render();
 }
 
@@ -9275,7 +9282,7 @@ async function openKGSummary(kg) {
   const body = document.getElementById('kg-body');
   document.getElementById('kg-title').textContent = '🏘️ ' + (kgName(kg) || 'KG ' + kg);
   body.innerHTML = '<div class="kg-loading">Lädt…</div>';
-  pop.classList.add('open');
+  pop.classList.remove('peek'); pop.classList.add('open'); invalidateHudInsets();
   let d = G.kgSummaries[kg];
   if (!d) {
     // Retry transient upstream failures (server answers 503 with a retryable
@@ -9696,7 +9703,9 @@ window.flyToSimilarRef = function flyToSimilarRef() {
 /** Screen-edge insets (canvas px) that keep canvas hints clear of the DOM HUD:
  *  search bar + badge row + N2K banner at the top, chip stack / attribution at
  *  the bottom, zoom column right, minimap. Cached ~400 ms; cheap getBoundingClientRect. */
-let _hudInsets = null, _hudInsetsAt = 0;
+let _hudInsets = null, _hudInsetsAt = 0, _hudObstacles = [];
+/** Drop the cached insets (popup opened/closed/dragged) so hints react within a frame. */
+function invalidateHudInsets() { _hudInsetsAt = 0; }
 function hudSafeInsets() {
   const now = performance.now();
   if (_hudInsets && now - _hudInsetsAt < 400) return _hudInsets;
@@ -9725,15 +9734,19 @@ function hudSafeInsets() {
     const r = rect(id); if (r && r.top - mr.top > H * 0.5) ins.bottom = Math.max(ins.bottom, mr.bottom - r.top + 12);
   }
   const zc = rect('zoom-controls'); if (zc && zc.left - mr.left > W * 0.5) ins.right = Math.max(ins.right, mr.right - zc.left + 12);
-  // open popups: desktop = side panels, phone = bottom sheet
+  // open popups: full-width sheets (phones) eat a screen edge; floating panels
+  // become obstacles that edgePoint() steers beacons around (see avoidObstacles).
+  _hudObstacles = [];
   for (const id of ['parcel-popup', 'ez-popup', 'kg-popup', 'tree-popup', 'dossier-popup', 'station-popup']) {
     const el = document.getElementById(id);
-    if (!el || !el.classList.contains('open')) continue;
+    if (!el || !el.classList.contains('open') || el.classList.contains('closing')) continue;
     const r = el.getBoundingClientRect(); if (r.height <= 0) continue;
-    const cx = (r.left + r.right) / 2 - mr.left, top = r.top - mr.top;
-    if (r.width > W * 0.6 || top > H * 0.45) ins.bottom = Math.max(ins.bottom, mr.bottom - r.top + 12);
-    else if (cx < W / 2) ins.left = Math.max(ins.left, r.right - mr.left + 12);
-    else ins.right = Math.max(ins.right, mr.right - r.left + 12);
+    const top = r.top - mr.top, bottom = r.bottom - mr.top;
+    if (r.width > W * 0.6) {
+      if (top > H * 0.45) ins.bottom = Math.max(ins.bottom, mr.bottom - r.top + 12);
+      else if (bottom < H * 0.55) ins.top = Math.max(ins.top, bottom + 12);
+    }
+    _hudObstacles.push({ l: r.left - mr.left, t: top, r: r.right - mr.left, b: bottom });
   }
   const mm = rect('minimap'); // corner widget: widen the right inset so edge hints never sit under it
   if (mm && mm.left - mr.left > W * 0.5) ins.right = Math.max(ins.right, Math.min(mr.right - mm.left + 12, W * 0.3));
@@ -9743,13 +9756,45 @@ function hudSafeInsets() {
   ins.bottom = Math.min(ins.bottom, H * 0.5);
   return (_hudInsets = ins);
 }
-/** Clamp a screen vector from the centre to the HUD-safe rectangle. Returns {x,y,k,ang}. */
+/** Clamp a screen vector from the centre to the HUD-safe rectangle and steer it
+ *  clear of open popups. Returns {x,y,k,ang,covered}; k<1 = target off the safe
+ *  frame (chevron), covered = the target itself sits under a panel. */
 function edgePoint(tx, ty) {
   const ins = hudSafeInsets(), W = gc.width, H = gc.height;
   const cx = (ins.left + W - ins.right) / 2, cy = (ins.top + H - ins.bottom) / 2;
   const dx = tx - cx, dy = ty - cy;
   const k = Math.min(1, ((W - ins.right - ins.left) / 2 - 22) / Math.max(Math.abs(dx), 1e-9), ((H - ins.bottom - ins.top) / 2 - 22) / Math.max(Math.abs(dy), 1e-9));
-  return { x: cx + dx * k, y: cy + dy * k, k, ang: Math.atan2(dy, dx) };
+  return avoidObstacles({ x: cx + dx * k, y: cy + dy * k, k, ang: Math.atan2(dy, dx), covered: false }, tx, ty);
+}
+/** If a beacon point lands under a popup, slide it to the nearest free spot
+ *  along that popup's edge (inside the HUD-safe frame) and re-aim the chevron
+ *  at the real target. Popups therefore never hide a hint — the hint hugs them. */
+function avoidObstacles(p, tx, ty) {
+  const obs = _hudObstacles; if (!obs.length) return p;
+  const M = 48; // beacon radius incl. rune rings + labels
+  const ins = _hudInsets, W = gc.width, H = gc.height;
+  const minX = ins.left + 24, maxX = W - ins.right - 24, minY = ins.top + 24, maxY = H - ins.bottom - 28;
+  const hitAt = (x, y) => { for (const r of obs) if (x > r.l - M && x < r.r + M && y > r.t - M && y < r.b + M) return r; return null; };
+  const hit = hitAt(p.x, p.y);
+  if (!hit) return p;
+  const cands = [
+    { x: hit.l - M, y: p.y }, { x: hit.r + M, y: p.y }, { x: p.x, y: hit.t - M }, { x: p.x, y: hit.b + M },
+    { x: hit.l - M, y: hit.t - M }, { x: hit.r + M, y: hit.t - M }, { x: hit.l - M, y: hit.b + M }, { x: hit.r + M, y: hit.b + M },
+  ];
+  let best = null, bd = Infinity;
+  for (let pass = 0; pass < 2 && !best; pass++) {
+    for (const c of cands) {
+      let x = c.x, y = c.y;
+      if (pass) { x = Math.min(maxX, Math.max(minX, x)); y = Math.min(maxY, Math.max(minY, y)); } // 2nd pass: squeeze into the frame
+      else if (x < minX || x > maxX || y < minY || y > maxY) continue;
+      if (hitAt(x, y)) continue;
+      const d = Math.hypot(x - p.x, y - p.y);
+      if (d < bd) { bd = d; best = { x, y }; }
+    }
+  }
+  if (!best) return p;
+  const covered = p.k >= 1;
+  return { x: best.x, y: best.y, k: covered ? 0.999 : p.k, ang: Math.atan2(ty - best.y, tx - best.x), covered };
 }
 
 /** Pulsing pixel-art diamond markers for similar-parcel results + gold reference marker. */
@@ -9966,13 +10011,17 @@ window.openEZPopup = function openEZPopup(kgCode, ez) {
     // Reset to CSS defaults; on desktop only, position to the right of parcel popup
     popup.style.left = ''; popup.style.top = '';
     popup.style.right = ''; popup.style.bottom = '';
-    if (window.innerWidth >= 768) {
-      const ppEl = document.getElementById('parcel-popup');
+    popup.classList.remove('flip', 'peek');
+    const ppEl = document.getElementById('parcel-popup');
+    if (window.innerWidth >= 768 && ppEl.classList.contains('open')) {
+      // sit next to the parcel popup, on its map-facing side
       const ppRect = ppEl.getBoundingClientRect();
-      popup.style.left = (ppRect.right + 12) + 'px';
+      if (ppEl.classList.contains('flip')) popup.style.right = (window.innerWidth - ppRect.left + 12) + 'px';
+      else popup.style.left = (ppRect.right + 12) + 'px';
       popup.style.bottom = '16px';
     }
   }
+  invalidateHudInsets();
   render();
 }
 
@@ -10184,69 +10233,87 @@ document.getElementById('ez-popup-close').onclick = () => {
   G.ezHighlight=null; render();
 };
 
-// ---- Draggable popups ----
+// ---- Draggable popups (desktop) ----
+// Pointer events (mouse + pen + touch), kept inside the window with a 48 px
+// visible margin, and the HUD-safe insets are invalidated while dragging so
+// canvas hints step out of the way in the same frame.
 (function initDraggablePopups() {
-  const handles = document.querySelectorAll('.popup-drag-handle');
-  handles.forEach(handle => {
-    let startX, startY, startLeft, startTop;
-    function onMouseDown(e) {
-      const targetId = handle.dataset.dragTarget;
-      const popup = document.getElementById(targetId);
-      if (!popup) return;
+  document.querySelectorAll('.popup-drag-handle').forEach(handle => {
+    handle.addEventListener('pointerdown', e => {
+      const popup = document.getElementById(handle.dataset.dragTarget);
+      if (!popup || e.button > 0) return;
       e.preventDefault();
       const rect = popup.getBoundingClientRect();
-      startX = e.clientX; startY = e.clientY;
-      startLeft = rect.left; startTop = rect.top;
-      // Switch from bottom positioning to top positioning for dragging
-      popup.style.left = rect.left + 'px';
-      popup.style.top = rect.top + 'px';
-      popup.style.bottom = 'auto';
-      popup.style.right = 'auto';
-      popup.dataset.userMoved = '1';
+      const startX = e.clientX, startY = e.clientY, startLeft = rect.left, startTop = rect.top;
+      popup.style.left = rect.left + 'px'; popup.style.top = rect.top + 'px';
+      popup.style.bottom = 'auto'; popup.style.right = 'auto';
+      popup.classList.add('dragging'); popup.dataset.userMoved = '1';
+      handle.setPointerCapture(e.pointerId);
+      const move = ev => {
+        const maxL = window.innerWidth - 48, maxT = window.innerHeight - 48;
+        popup.style.left = Math.min(maxL, Math.max(48 - rect.width, startLeft + ev.clientX - startX)) + 'px';
+        popup.style.top = Math.min(maxT, Math.max(0, startTop + ev.clientY - startY)) + 'px';
+        invalidateHudInsets(); render();
+      };
+      const up = () => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+        popup.classList.remove('dragging'); invalidateHudInsets(); render();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+    });
+  });
+})();
 
-      function onMouseMove(e) {
-        const dx = e.clientX - startX, dy = e.clientY - startY;
-        popup.style.left = Math.max(0, startLeft + dx) + 'px';
-        popup.style.top = Math.max(0, startTop + dy) + 'px';
-      }
-      function onMouseUp() {
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-      }
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    }
-    handle.addEventListener('mousedown', onMouseDown);
+/** Desktop: mirror a corner-anchored popup to the other side when it would
+ *  cover the tapped spot (lon/lat) — the thing you tapped stays visible.
+ *  Respects a user-dragged position; no-op on phones (sheets). */
+function placePopupClear(id, lon, lat) {
+  const el = document.getElementById(id);
+  if (!el || window.innerWidth <= 768 || el.dataset.userMoved || lon == null) return;
+  const [x, y] = toScreen(lon, lat);
+  const mr = gc.getBoundingClientRect();
+  const covers = () => { const r = el.getBoundingClientRect(); return x > r.left - mr.left - 40 && x < r.right - mr.left + 40 && y > r.top - mr.top - 40 && y < r.bottom - mr.top + 40; };
+  if (!covers()) return;
+  el.classList.toggle('flip');
+  if (covers()) el.classList.toggle('flip'); // both sides cover it (huge zoom) — keep the default
+  invalidateHudInsets();
+}
 
-    // Touch support
-    handle.addEventListener('touchstart', e => {
-      const targetId = handle.dataset.dragTarget;
-      const popup = document.getElementById(targetId);
-      if (!popup || !e.touches[0]) return;
-      e.preventDefault();
-      const touch = e.touches[0];
-      const rect = popup.getBoundingClientRect();
-      startX = touch.clientX; startY = touch.clientY;
-      startLeft = rect.left; startTop = rect.top;
-      popup.style.left = rect.left + 'px';
-      popup.style.top = rect.top + 'px';
-      popup.style.bottom = 'auto';
-      popup.style.right = 'auto';
-      popup.dataset.userMoved = '1';
-
-      function onTouchMove(e) {
-        if (!e.touches[0]) return;
-        const dx = e.touches[0].clientX - startX, dy = e.touches[0].clientY - startY;
-        popup.style.left = Math.max(0, startLeft + dx) + 'px';
-        popup.style.top = Math.max(0, startTop + dy) + 'px';
-      }
-      function onTouchEnd() {
-        document.removeEventListener('touchmove', onTouchMove);
-        document.removeEventListener('touchend', onTouchEnd);
-      }
-      document.addEventListener('touchmove', onTouchMove, {passive:false});
-      document.addEventListener('touchend', onTouchEnd);
-    }, {passive:false});
+/** Phones: every popup is a sheet. Swipe its header down → peek (title only),
+ *  swipe again → close; tap or swipe up on a peeked sheet → expand. Peeking
+ *  frees the map and the canvas hints follow (hudSafeInsets). */
+(function initPopupSheets() {
+  const isPhone = () => window.innerWidth <= 768;
+  // any open/close/peek/flip → hints re-measure the HUD next frame
+  const mo = new MutationObserver(() => { invalidateHudInsets(); render(); });
+  document.querySelectorAll('.popup').forEach(el => {
+    mo.observe(el, { attributes: true, attributeFilter: ['class'] });
+    let sy = 0, sx = 0, armed = false;
+    el.addEventListener('touchstart', e => {
+      if (!isPhone() || !e.touches[0]) return;
+      const t = e.touches[0]; sy = t.clientY; sx = t.clientX;
+      const r = el.getBoundingClientRect();
+      // header band (grabber + title) or anything while peeked; never steal scrolls mid-list
+      armed = el.classList.contains('peek') || (t.clientY - r.top < 48 && el.scrollTop === 0);
+    }, { passive: true });
+    el.addEventListener('touchmove', e => {
+      if (!armed || !e.touches[0]) return;
+      const dy = e.touches[0].clientY - sy, dx = e.touches[0].clientX - sx;
+      if (Math.abs(dy) < 36 || Math.abs(dx) > Math.abs(dy)) return;
+      armed = false;
+      const peek = el.classList.contains('peek');
+      if (dy > 0) {
+        if (peek) { const c = el.querySelector('.popup-close'); if (c) c.click(); }
+        else el.classList.add('peek');
+      } else if (peek) el.classList.remove('peek');
+      invalidateHudInsets(); render();
+    }, { passive: true });
+    el.addEventListener('click', e => {
+      if (!el.classList.contains('peek') || e.target.closest('.popup-close')) return;
+      el.classList.remove('peek'); invalidateHudInsets(); render();
+    });
   });
 })();
 
@@ -10279,6 +10346,7 @@ function resetPopupPosition(id) {
   const el = document.getElementById(id);
   if (el) {
     delete el.dataset.userMoved;
+    el.classList.remove('flip', 'peek', 'dragging');
     el.style.left = '';
     el.style.top = '';
     el.style.bottom = '';
@@ -11310,7 +11378,7 @@ window.openDossier = async function(kg, tab) {
   G.dossierKG = kg;
   document.getElementById('kg-popup').classList.remove('open');
   document.getElementById('station-popup').classList.remove('open');
-  pop.classList.add('open');
+  pop.classList.remove('peek'); pop.classList.add('open'); invalidateHudInsets();
   if (innerWidth <= 768) { const sb = document.getElementById('sidebar'); if (sb) sb.classList.remove('expanded'); }
   renderDossierTabs();
   const cached = G.dossiers[kg];
@@ -11679,7 +11747,8 @@ window.openStation = async function(s) {
   const cat = GW_CAT[s.category] || { de: 'Messstelle', icon: '📏' };
   document.getElementById('station-title').textContent = cat.icon + ' ' + (s.name || s.id).replace(/\s+/g, ' ');
   document.getElementById('dossier-popup').classList.remove('open');
-  pop.classList.add('open');
+  pop.classList.remove('peek'); pop.classList.add('open'); invalidateHudInsets();
+  if (s.lon != null) placePopupClear('station-popup', s.lon, s.lat);
   const rows = [['🏷️ ' + tr('Art'), tr(cat.de)]].concat(stationMetricRows(s));
   if (s.parcel_id) rows.push(['📍 ' + tr('Parzelle'), '<span class="pp-ez-link" onclick="DEV.parcel(\'' + esc(s.parcel_id) + '\')">' + esc(s.parcel_id) + ' ▸</span>']);
   body.innerHTML = ppRows(rows) + '<div class="kg-loading" id="station-hist">' + tr('Lade Verlauf…') + '</div>';

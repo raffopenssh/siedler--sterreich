@@ -399,13 +399,16 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .popup.open { display:block; animation:popIn .22s cubic-bezier(.2,.8,.3,1) both; }
 .popup.open.closing { animation:popOut .2s ease-in both; pointer-events:none; }
-#tree-popup.open { animation-name:popInC; } #tree-popup.open.closing { animation-name:popOutC; }
 @keyframes popIn  { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:none; } }
 @keyframes popOut { from { opacity:1; transform:none; } to { opacity:0; transform:translateY(12px) scale(.97); } }
-@keyframes popInC  { from { opacity:0; transform:translateX(-50%) translateY(10px) scale(.98); } to { opacity:1; transform:translateX(-50%); } }
-@keyframes popOutC { from { opacity:1; transform:translateX(-50%); } to { opacity:0; transform:translateX(-50%) translateY(12px) scale(.97); } }
 @media (prefers-reduced-motion: reduce) { .popup.open, .popup.open.closing { animation-duration:.01s; } }
-.popup { max-height:calc(100vh - 32px); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.popup { max-height:calc(100vh - 120px); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+/* desktop: panels anchor to a corner; .flip mirrors them to the other side so
+   they never sit on the thing that was tapped (placePopupClear) */
+.popup.flip#parcel-popup, .popup.flip#tree-popup { left:auto; right:60px; } /* 60 = clear of the zoom column */
+.popup.flip#ez-popup { right:auto; left:16px; }
+.popup.flip#kg-popup, .popup.flip#dossier-popup, .popup.flip#station-popup { right:auto; left:16px; }
+.popup.dragging { transition:none; animation:none; user-select:none; }
 .draggable-popup { cursor:default; }
 .popup-drag-handle {
   position:absolute; top:4px; left:8px;
@@ -430,8 +433,8 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-grid b { color:var(--text); font-weight:normal; }
 .pp-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
 #parcel-popup { bottom:16px; left:16px; }
-#ez-popup { bottom:16px; right:16px; }
-#kg-popup { top:56px; right:16px; bottom:auto; max-height:calc(100vh - 120px); overflow-y:auto; }
+#ez-popup { bottom:16px; right:60px; }
+#kg-popup { top:56px; right:60px; bottom:auto; max-height:calc(100vh - 120px); overflow-y:auto; }
 .kg-popup h3 { color:var(--gold); }
 .kg-body .kg-loading { font:20px var(--font-game); color:var(--text-dim); }
 .kg-body .kg-dim { color:var(--text-dim); font-style:normal; font-size:16px; }
@@ -462,7 +465,7 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-ez-link:hover { color:#fff; }
 
 /* Giant tree popup + histogram */
-#tree-popup { bottom:16px; left:50%; transform:translateX(-50%); }
+#tree-popup { bottom:16px; left:16px; }
 .tree-popup h3 { color:var(--green-light); }
 .tp-hist-title {
   margin-top:10px; font:16px var(--font-game); color:var(--text-dim);
@@ -651,6 +654,14 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
     overflow-y:auto;
   }
   .popup-drag-handle { display:none; } /* no dragging on mobile */
+  /* bottom/top sheets: grabber bar; swipe the header away → peek (title only),
+     swipe again → close; tap the peeked header → expand (initPopupSheets) */
+  .popup::before { content:''; display:block; width:44px; height:4px; margin:-6px auto 8px; background:var(--panel-border); border-radius:2px; }
+  .popup.flip { left:8px; right:8px; }
+  .popup.peek { max-height:46px; overflow:hidden; padding-top:10px; padding-bottom:6px; }
+  .popup.peek::before { margin:-2px auto 6px; }
+  .popup.peek > *:not(h3):not(.popup-close):not(.popup-drag-handle) { visibility:hidden; }
+  .popup.peek h3 { margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:28px; }
   #parcel-popup {
     left:8px; right:8px; bottom:60px;
     max-height:calc(55vh - 60px); /* fit above 52px bottom bar with room */
@@ -664,8 +675,8 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
     max-height:calc(60vh - 60px);
   }
   #tree-popup {
-    left:8px; right:8px; bottom:60px; top:auto; transform:none;
-    max-height:calc(80vh - 60px);
+    left:8px; right:8px; bottom:60px; top:auto;
+    max-height:calc(60vh - 60px);
     /* room for the histogram x-axis labels (positioned below the bars) */
     padding-bottom:28px;
   }
@@ -1100,8 +1111,8 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .sb-chronik b.st-normal { color:#8ee89a; } .sb-chronik b.st-low { color:#ffcf70; } .sb-chronik b.st-very_low { color:#ff8a78; } .sb-chronik b.st-high { color:#8ac8ff; }
 
 /* Chronik panel */
-#dossier-popup { top:56px; right:16px; bottom:auto; width:380px; max-height:calc(100vh - 110px); }
-#station-popup { top:56px; right:16px; bottom:auto; width:360px; }
+#dossier-popup { top:56px; right:60px; bottom:auto; width:380px; max-height:calc(100vh - 110px); }
+#station-popup { top:56px; right:60px; bottom:auto; width:360px; }
 .station-popup h3 { color:#8ac8ff; }
 .dossier-tabs { display:flex; gap:4px; margin:-2px 0 10px; }
 .dossier-tabs button {
