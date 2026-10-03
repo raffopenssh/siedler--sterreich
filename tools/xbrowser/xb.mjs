@@ -41,6 +41,10 @@ const CHECKS = `(() => {
   const pathOf = el => { const p = []; for (let e = el; e && e !== document.body && p.length < 4; e = e.parentElement) p.unshift(e.tagName.toLowerCase() + (e.id ? '#' + e.id : e.classList.length ? '.' + [...e.classList].slice(0, 2).join('.') : '')); return p.join('>'); };
   const out = { clipped: [], offscreen: [], fonts: {}, screen: null };
   out.screen = [...document.querySelectorAll('.screen.active')].map(e => e.id).join(',');
+  // viewport sanity: a scrolled document / offset visual viewport shifts fixed chrome in screenshots
+  const vv = window.visualViewport; const sbt = document.getElementById('sb-toggle');
+  out.view = { ih: innerHeight, iw: innerWidth, vvh: vv ? Math.round(vv.height) : null, vvTop: vv ? Math.round(vv.offsetTop) : null, scrollY: Math.round(scrollY), docH: document.documentElement.scrollHeight,
+    toggle: sbt ? [Math.round(sbt.getBoundingClientRect().top), Math.round(sbt.getBoundingClientRect().height)] : null };
   for (const fam of ['VT323', '"Press Start 2P"']) out.fonts[fam] = document.fonts.check('12px ' + fam);
   const W = innerWidth, H = innerHeight;
   const all = [...document.querySelectorAll('body *')].filter(vis);
@@ -55,6 +59,10 @@ const CHECKS = `(() => {
     }
     if (/fixed|absolute/.test(cs.position) && (el.id || /popup|chip|hud|modal|toast|btn|sheet|herald|minimap|attrib/.test(el.className))) {
       const r = el.getBoundingClientRect();
+      // parked bottom sheet (translateY) and anything inside a scroll container are reachable by design
+      if (el.id === 'sidebar' && cs.transform !== 'none') continue;
+      let scroller = null; for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) { const o = getComputedStyle(a); if (/auto|scroll/.test(o.overflowY + o.overflowX)) { scroller = a; break; } }
+      if (scroller) continue;
       if (r.width > 20 && r.height > 10 && (r.left < -1 || r.top < -1 || r.right > W + 1 || r.bottom > H + 1) && !el.closest('.screen:not(.active)'))
         out.offscreen.push({ el: pathOf(el), rect: [r.left, r.top, r.right, r.bottom].map(Math.round) });
     }
@@ -91,9 +99,10 @@ for (const form of FORMS) for (const name of ENGINES) {
   const ctx = await browser.newContext(ctxOpts);
   const page = await ctx.newPage();
   let errors = [];
-  page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text().slice(0, 200)); });
+  page.on('console', m => { if (m.type() === 'error') { const u = (m.location() || {}).url || ''; errors.push('console: ' + m.text().slice(0, 200) + (u ? ' @ ' + u.replace(BASE, '').slice(0, 120) : '')); } });
   page.on('pageerror', e => errors.push('PAGEERROR: ' + String(e.message).slice(0, 300)));
-  page.on('requestfailed', r => { if (!/favicon|hillshade/.test(r.url())) errors.push('netfail: ' + r.url().replace(BASE, '').slice(0, 120) + ' ' + (r.failure()?.errorText || '')); });
+  // SSE streams are cancelled/reconnected on navigation and server restarts — not a page error
+  page.on('requestfailed', r => { if (!/favicon|hillshade|\/events(\?|$)/.test(r.url())) errors.push('netfail: ' + r.url().replace(BASE, '').slice(0, 120) + ' ' + (r.failure()?.errorText || '')); });
 
   const run = async (sc, list) => {
     if (ONLY && !ONLY.some(o => sc.id.includes(o))) return;

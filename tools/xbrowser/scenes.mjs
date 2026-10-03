@@ -1,6 +1,8 @@
 // Scene catalogue for xb.mjs. Every app state we know of, in walk order.
 // A scene is { id, title, anim?, forms?, run({page, S, BASE, form, engine, sleep}) → info }.
-// `anim: true` samples the canvas twice and flags a dead animation.
+// `anim: true` samples the canvas twice and flags a dead animation. The plain map
+// scenes are not anim probes: the rAF loop idles on purpose when no treasure,
+// reserve or hint is on screen.
 // Scenes must leave the game in a sane state (DEV.closeAll etc.) for the next one.
 
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
@@ -33,10 +35,10 @@ export const PRE_SCENES = [
 
 // ---------- in-game states (one session, sequential) ----------
 export const SCENES = [
-  { id: 'game-z16', title: 'Game · z16 spawn', anim: true, run: async ({ page, S }) => { await closeAll(page); return ev(page, s => DEV.goto(s.lon, s.lat, 16), S); } },
+  { id: 'game-z16', title: 'Game · z16 spawn', run: async ({ page, S }) => { await closeAll(page); return ev(page, s => DEV.goto(s.lon, s.lat, 16), S); } },
   { id: 'game-z13', title: 'Game · z13 overview', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 13), S) },
   { id: 'game-z14.5', title: 'Game · z14.5', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 14.5), S) },
-  { id: 'game-z18', title: 'Game · z18 detail', anim: true, run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 18), S) },
+  { id: 'game-z18', title: 'Game · z18 detail', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 18), S) },
   { id: 'game-z20', title: 'Game · z20 max', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 20), S) },
   { id: 'relief', title: 'Relief / hillshade on', run: async ({ page, S }) => { await ev(page, s => DEV.goto(s.lon, s.lat, 15), S); await ev(page, () => DEV.relief && DEV.relief(true)); await settle(page, 2500); } },
   { id: 'relief-off', title: 'Relief off, N2K off', run: async ({ page }) => { await ev(page, () => { DEV.relief && DEV.relief(false); DEV.n2k(false); }); await settle(page, 500); } },
@@ -69,7 +71,7 @@ export const SCENES = [
   { id: 'flow', title: 'Wassertropfen-Reise (flow animation)', anim: true, run: async ({ page, S }) => { await closeAll(page); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 16); const r = await DEV.flow(s.lon, s.lat); await new Promise(res => setTimeout(res, 4000)); return r; }, S); } },
   { id: 'similar', title: 'Similar parcels mode', run: async ({ page, S }) => { await ev(page, () => { DEV.flow(false); DEV.closeAll(); }); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 17); const c = DEV.parcelsNear(f => f.area_sqm > 1500, 1)[0]; if (!c) return 'none'; const id = c.parcel_id; const r = await DEV.similar(id); await new Promise(res => setTimeout(res, 2000)); return r && (r.length ?? r.count ?? true); }, S); } },
   { id: 'search', title: 'In-game search dropdown', run: async ({ page }) => { await ev(page, () => { DEV.closeAll(); const b = document.getElementById('btn-similar-clear'); b && b.click(); }); await page.fill('#game-search-input', 'Mautern'); await settle(page, 2000); } },
-  { id: 'chat', title: 'Chat message + toasts', run: async ({ page }) => { await ev(page, () => { document.getElementById('game-search-input').value = ''; document.getElementById('game-search-input').blur(); }); await ev(page, () => { const s = document.getElementById('sidebar'); s && s.classList.add('expanded'); }); await page.fill('#input-chat', 'Grüß Gott aus dem Prüfstand 🌲'); await page.keyboard.press('Enter'); await settle(page, 1200); await ev(page, () => { toast('Parzelle gekauft · +120 ⚡', 'ok'); toast('Nicht genug Münzen', 'err'); }); await settle(page, 400); } },
+  { id: 'chat', title: 'Chat message + toasts', run: async ({ page }) => { await ev(page, () => { document.getElementById('game-search-input').value = ''; document.getElementById('game-search-input').blur(); }); await ev(page, async () => { const s = document.getElementById('sidebar'); s && s.classList.add('expanded'); if (!G.player.chat_rules_accepted) { await POST('/api/chat/accept-rules', { player_id: G.player.id }); G.player.chat_rules_accepted = 1; } }); await page.fill('#input-chat', 'Grüß Gott aus dem Prüfstand 🌲'); await page.keyboard.press('Enter'); await settle(page, 1200); await ev(page, () => { toast('Parzelle gekauft · +120 ⚡', 'ok'); toast('Nicht genug Münzen', 'err'); }); await settle(page, 400); } },
   { id: 'chat-rules', title: 'Chat rules modal', run: async ({ page }) => { await ev(page, () => showChatRules(false)); await settle(page, 600); } },
   { id: 'chat-rules-closed', title: 'Rules closed, sidebar collapsed', run: async ({ page }) => { await ev(page, () => { document.getElementById('btn-rules-close')?.click(); const m = document.getElementById('chat-rules-modal'); if (m) m.style.display = 'none'; DEV.sheet(false); }); await settle(page, 400); } },
   { id: 'sheet', title: 'Mobile bottom sheet expanded', forms: ['mobile'], run: async ({ page }) => { await ev(page, () => DEV.sheet(true)); await settle(page, 800); } },
