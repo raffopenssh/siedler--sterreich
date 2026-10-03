@@ -51,50 +51,20 @@
 
   <h2 id="daten">Data sources and licences</h2>
   <p>The map display is based on open data. Every source is fetched <strong>server-side</strong>;
-  the browser never talks to the data providers. A machine-readable list with fetch location,
-  licence, attribution and maximum cache age per source is available at
-  <a href="/lizenzen">/lizenzen</a> and <a href="/api/licenses">/api/licenses</a>.</p>
-  <ul>
-    <li><strong>Cadastre (parcels, building footprints, land-use areas)</strong>: © BEV – Federal Office of
-    Metrology and Surveying, cadastral map as vector tiles from
-    <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
-    licensed <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener license">CC BY 4.0</a>.
-    Mandatory notice: <em>“© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet”</em>.
-    The tiles are assembled <strong>live</strong> for the visible 0.02° grid cell by <code>bevdirect-serve</code> on our
-    server (merged, coordinates rounded, area per land-use class measured) and cached for <strong>at most 24 hours</strong>.
-    We keep no cadastre database and do not use the Katasterservice (JSON API); nothing can be queried by parcel
-    number, folio (EZ) or owner. BEV does not endorse this project.</li>
-    <li><strong>Administrative boundaries (KG and municipality register)</strong>: BEV OGD Verwaltungsgrenzen (VGD)
-    1:50 000, reference date 2026-04-01, CC BY 4.0, modified (embedded table).</li>
-    <li><strong>Terrain, land cover, tree and building heights, relief</strong>: derived from the BEV ALS elevation
-    model (DTM/DSM 1 m) and orthophoto (CC BY 4.0, modified), Copernicus Sentinel-1/-2 (ESA), ESA WorldCover (CC BY 4.0),
-    Hansen/UMD Global Forest Change (CC BY 4.0) – served through the public tier of <em>srtm-lidar-at</em>
-    (bbox, point and KG-code queries only, no parcel data), 25 m grid, averaged per parcel; cached at most 24 h.</li>
-    <li><strong>Context data</strong> (point and bbox queries only, no cadastre) through the public tier of
-    <em>umfeld-at</em>, cached at most 24 h:
-    <strong>Municipalities and land-price model</strong>: Source STATISTIK AUSTRIA (CC BY 4.0) – model values, no offers.
-    <strong>Protected areas</strong>: Natura 2000, European Environment Agency (EEA); WDPA (UNEP-WCMC &amp; IUCN, non-commercial).
-    <strong>Roads, water, rail, transit stops, addresses</strong>: © OpenStreetMap contributors,
-    <a href="https://www.openstreetmap.org/copyright" rel="noopener">ODbL 1.0</a> (OSM-derived fields are kept separate).
-    <strong>Field and place names</strong>: BEV – Geographic Names (DLM), CC BY 4.0, modified.
-    <strong>Legal references</strong>: RIS, Federal Chancellery (CC BY 4.0).</li>
-    <li><strong>Field blocks (INVEKOS Schläge) and farmsteads</strong>: AMA / BML, INSPIRE INVEKOS via
-    <a href="https://www.data.gv.at" rel="noopener">data.gv.at</a>, CC BY 4.0 – aggregated, farmsteads as hashed
-    points without names. <strong>Subsidy profiles</strong> (municipal aggregates only, no recipient data):
-    AMA Transparenzdatenbank, CC BY 4.0.</li>
-    <li><strong>Forest loss and carbon flux</strong>: Hansen et al. Global Forest Change 2024 v1.12 and
-    Harris et al. Forest Carbon Flux (Global Forest Watch), CC BY 4.0. <strong>Timber harvest and prices</strong>:
-    Statistics Austria (CC BY 4.0), LK timber market reports (preise.agrarforschung.at) – model values, no offers.</li>
-    <li><strong>Groundwater, gauges, monitoring stations, nitrate, water protection areas</strong>: BML
-    <a href="https://ehyd.gv.at" rel="noopener">eHYD</a>, Wasserschatz Österreich 2021, WISE / EEA, CC BY 4.0.
-    <strong>Drought index</strong>: Copernicus European Drought Observatory. <strong>Water flow path</strong>:
-    MERIT Hydro / MERIT-Basins via mghydro.com, CC BY-NC-SA 4.0 (display only, non-commercial).</li>
-    <li><strong>National border</strong>: geoBoundaries gbOpen, CC BY-SA 4.0 (simplified). <strong>Red List</strong>:
-    IUCN European Red List / EEA.</li>
-  </ul>
-  <p>The in-game presentation is simplified and playfully altered; it is not an official
-  statement and has no legal effect whatsoever. No owner data is processed. This game is not
-  operated or endorsed by BEV, Statistics Austria, the EEA, ESA or OSM.</p>
+  the browser never talks to the data providers.
+  <strong>Cadastre</strong> (parcels, building footprints, land-use areas): © BEV – Federal Office of
+  Metrology and Surveying, cadastral map as vector tiles from
+  <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
+  licensed <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener license">CC BY 4.0</a>,
+  assembled live and cached for <strong>at most 24 hours</strong>.
+  Mandatory notice: <em>“© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet”</em>.</p>
+  <p>Further sources: BEV administrative boundaries and ALS elevation model, Copernicus/ESA, Statistics Austria,
+  EEA Natura 2000, WDPA, OpenStreetMap (ODbL), RIS, AMA INVEKOS, Hansen/GFW, BML eHYD, MERIT Hydro, geoBoundaries.
+  Every source with fetch location, licence, attribution, our modifications and maximum cache age:
+  <a href="/licenses"><strong>Data sources &amp; licences</strong></a> (machine-readable: <a href="/api/licenses">/api/licenses</a>).</p>
+  <p>The in-game display is simplified and playfully altered; it is not an official statement and has
+  no legal effect. No owner data is processed.
+  This game is not operated or endorsed by BEV, Statistics Austria, the EEA, ESA or OSM.</p>
 
   <h2>Disclaimer</h2>
   <p>The contents of this website were created with the greatest possible

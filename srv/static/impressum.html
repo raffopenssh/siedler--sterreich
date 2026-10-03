@@ -56,49 +56,17 @@
 
   <h2 id="daten">Datenquellen und Lizenzen</h2>
   <p>Die Kartendarstellung basiert auf offenen Daten. Alle Quellen werden <strong>server-seitig</strong>
-  abgerufen; der Browser spricht nie direkt mit den Datendiensten. Eine maschinenlesbare Liste mit
-  Abrufort, Lizenz, Attribution und maximaler Cache-Dauer je Quelle steht unter
-  <a href="/lizenzen">/lizenzen</a> bzw. <a href="/api/licenses">/api/licenses</a>.</p>
-  <ul>
-    <li><strong>Kataster (Grundstücke, Gebäudegrundrisse, Benützungsarten)</strong>: © BEV – Bundesamt für Eich- und
-    Vermessungswesen, Katastralmappe als Vektorkacheln von
-    <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
-    Lizenz <a href="https://creativecommons.org/licenses/by/4.0/deed.de" rel="noopener license">CC BY 4.0</a>.
-    Pflichthinweis: <em>„© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet“</em>.
-    Die Kacheln werden <strong>live</strong> für den gerade sichtbaren 0,02°-Rasterausschnitt durch <code>bevdirect-serve</code>
-    auf unserem Server zusammengesetzt (vereinigt, Koordinaten gerundet, Flächen je Benützungsart gemessen) und
-    <strong>höchstens 24 Stunden</strong> zwischengespeichert. Wir führen keine Katasterdatenbank und nutzen nicht das
-    Katasterservice (JSON-API); nichts ist nach Grundstücksnummer, Einlagezahl oder Eigentümer abfragbar.
-    Das BEV unterstützt oder billigt dieses Projekt nicht.</li>
-    <li><strong>Verwaltungsgrenzen (KG- und Gemeinde-Register)</strong>: BEV OGD Verwaltungsgrenzen (VGD) 1:50 000,
-    Stichtag 2026-04-01, CC BY 4.0, bearbeitet (eingebettete Tabelle).</li>
-    <li><strong>Gelände, Landbedeckung, Baum- und Gebäudehöhen, Relief</strong>: Ableitungen aus dem BEV ALS-Höhenmodell
-    (DTM/DSM 1 m) und Orthofoto (CC BY 4.0, bearbeitet), Copernicus Sentinel-1/-2 (ESA), ESA WorldCover (CC BY 4.0),
-    Hansen/UMD Global Forest Change (CC BY 4.0) – bereitgestellt über die öffentliche Schicht von
-    <em>srtm-lidar-at</em> (nur Ausschnitt-, Punkt- und KG-Abfragen, keine Grundstücksdaten), 25-m-Raster,
-    je Grundstück gemittelt; Cache höchstens 24 h.</li>
-    <li><strong>Umfeld-Daten</strong> (nur Punkt- und Ausschnittabfragen, kein Kataster) über die öffentliche Schicht von
-    <em>umfeld-at</em>, Cache höchstens 24 h:
-    <strong>Gemeinden und Bodenpreis-Modell</strong>: Datenquelle STATISTIK AUSTRIA (CC BY 4.0) – Modellwerte, keine Angebote.
-    <strong>Schutzgebiete</strong>: Natura 2000, Europäische Umweltagentur (EEA); WDPA (UNEP-WCMC &amp; IUCN, nicht-kommerziell).
-    <strong>Straßen, Gewässer, Bahn, Haltestellen, Adressen</strong>: © OpenStreetMap-Mitwirkende,
-    <a href="https://www.openstreetmap.org/copyright" rel="noopener">ODbL 1.0</a> (OSM-abgeleitete Felder werden getrennt gehalten).
-    <strong>Ried- und Ortsnamen</strong>: BEV – Geographische Namen (DLM), CC BY 4.0, bearbeitet.
-    <strong>Rechtsbezüge</strong>: RIS, Bundeskanzleramt (CC BY 4.0).</li>
-    <li><strong>Feldstücke (INVEKOS-Schläge) und Hofstellen</strong>: AMA / BML, INSPIRE-INVEKOS über
-    <a href="https://www.data.gv.at" rel="noopener">data.gv.at</a>, CC BY 4.0 – aggregiert, Hofstellen nur als
-    gehashte Punkte ohne Namen. <strong>Förderprofile</strong> (nur Gemeinde-Aggregate, keine Empfängerdaten):
-    AMA Transparenzdatenbank, CC BY 4.0.</li>
-    <li><strong>Waldverlust und Kohlenstoffbilanz</strong>: Hansen et al. Global Forest Change 2024 v1.12 und
-    Harris et al. Forest Carbon Flux (Global Forest Watch), CC BY 4.0. <strong>Holzeinschlag und Holzpreise</strong>:
-    Statistik Austria (CC BY 4.0), LK-Holzmarktberichte (preise.agrarforschung.at) – Modellwerte, keine Angebote.</li>
-    <li><strong>Grundwasser, Pegel, Messstellen, Nitrat, Wasserschutzgebiete</strong>: BML
-    <a href="https://ehyd.gv.at" rel="noopener">eHYD</a>, Wasserschatz Österreich 2021, WISE / EEA, CC BY 4.0.
-    <strong>Dürreindex</strong>: Copernicus European Drought Observatory. <strong>Fließweg des Wassers</strong>:
-    MERIT Hydro / MERIT-Basins via mghydro.com, CC BY-NC-SA 4.0 (nur Darstellung, nicht kommerziell).</li>
-    <li><strong>Staatsgrenze</strong>: geoBoundaries gbOpen, CC BY-SA 4.0 (vereinfacht). <strong>Rote Liste</strong>:
-    IUCN European Red List / EEA.</li>
-  </ul>
+  abgerufen; der Browser spricht nie direkt mit den Datendiensten.
+  <strong>Kataster</strong> (Grundstücke, Gebäudegrundrisse, Benützungsarten): © BEV – Bundesamt für Eich- und
+  Vermessungswesen, Katastralmappe als Vektorkacheln von
+  <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
+  Lizenz <a href="https://creativecommons.org/licenses/by/4.0/deed.de" rel="noopener license">CC BY 4.0</a>,
+  live zusammengesetzt und <strong>höchstens 24 Stunden</strong> zwischengespeichert.
+  Pflichthinweis: <em>„© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet“</em>.</p>
+  <p>Weitere Quellen: BEV Verwaltungsgrenzen und ALS-Höhenmodell, Copernicus/ESA, Statistik Austria, EEA Natura 2000,
+  WDPA, OpenStreetMap (ODbL), RIS, AMA INVEKOS, Hansen/GFW, BML eHYD, MERIT Hydro, geoBoundaries.
+  Jede Quelle mit Abrufort, Lizenz, Attribution, Bearbeitung und maximaler Cache-Dauer:
+  <a href="/lizenzen"><strong>Datenquellen &amp; Lizenzen</strong></a> (maschinenlesbar: <a href="/api/licenses">/api/licenses</a>).</p>
   <p>Die Darstellung im Spiel ist vereinfacht und spielerisch verfremdet; sie ist keine
   amtliche Auskunft und hat keinerlei Rechtswirkung. Eigentümerdaten werden nicht verarbeitet.
   Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.</p>
