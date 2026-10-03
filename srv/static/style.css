@@ -281,7 +281,7 @@ input[type=text]:focus { border-color:var(--gold); }
 /* Sidebar */
 #sidebar {
   width:300px; display:flex; flex-direction:column; background:var(--panel);
-  border-right:4px solid var(--panel-border); overflow:hidden;
+  border-right:4px solid var(--panel-border); overflow:hidden auto; /* short windows: the column scrolls instead of clipping the chat input */
   background-image:
     linear-gradient(180deg, rgba(60,50,30,.2) 0%, transparent 50%),
     url("data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='20' height='20' fill='none'/%3E%3Crect x='0' y='0' width='1' height='1' fill='rgba(100,80,40,.08)'/%3E%3C/svg%3E");
@@ -296,8 +296,14 @@ input[type=text]:focus { border-color:var(--gold); }
   padding:10px 12px; border-bottom:2px solid rgba(100,80,40,.3);
 }
 .sb-section h3 { font:8px var(--font-pixel); color:var(--gold); margin-bottom:6px; }
-.stat { display:flex; justify-content:space-between; font:20px var(--font-game); padding:1px 0; }
-.stat b { color:var(--gold-light); }
+.stat { display:flex; justify-content:space-between; align-items:center; gap:8px; font:20px var(--font-game); padding:1px 0; line-height:1.2; }
+.stat b { color:var(--gold-light); font-variant-numeric:tabular-nums; }
+.stat .ic { font-style:normal; display:inline-block; width:28px; text-align:center; margin-right:4px; }
+.pl-row .pl-name { display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pl-row .pl-sw { font-style:normal; font-size:16px; line-height:1; }
+.pl-row em { font-style:normal; color:var(--text-dim); }
+.sb-empty { font:16px var(--font-game); color:var(--text-dim); line-height:1.3; }
+.chat-empty { padding:10px 2px; text-align:center; }
 
 /* Biodiversity bar */
 .bio-wrap {
@@ -317,7 +323,9 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 
 /* Quests */
-.sb-scroll { max-height:180px; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.sb-scroll { max-height:180px; min-height:96px; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+/* more cards below the fold → soft fade at the bottom edge (cleared at the end) */
+.sb-scroll.more { -webkit-mask-image:linear-gradient(#000 calc(100% - 30px), transparent); mask-image:linear-gradient(#000 calc(100% - 30px), transparent); }
 .sb-scroll h3 { position:sticky; top:-10px; margin:-10px -12px 6px; padding:10px 12px 4px; background:var(--panel); z-index:1; }
 .quest-item {
   background:rgba(0,0,0,.25); border:1px solid var(--panel-light); padding:6px 8px;
@@ -329,12 +337,12 @@ input[type=text]:focus { border-color:var(--gold); }
 .quest-item .qr { font:16px var(--font-game); color:var(--green-light); }
 
 /* Chat */
-.sb-chat { flex:1; display:flex; flex-direction:column; min-height:0; }
+.sb-chat { flex:1 1 auto; display:flex; flex-direction:column; min-height:156px; }
 .chat-title {
-  font:8px var(--font-pixel); color:var(--gold); padding:6px 12px;
+  font:8px var(--font-pixel); color:var(--gold); padding:6px 12px; white-space:nowrap;
   border-bottom:2px solid rgba(100,80,40,.3); border-top:2px solid rgba(100,80,40,.3);
 }
-.chat-log { flex:1; overflow-y:auto; padding:6px 10px; min-height:0; overscroll-behavior:contain; }
+.chat-log { flex:1; overflow-y:auto; padding:6px 10px; min-height:64px; overscroll-behavior:contain; }
 .chat-msg { font:18px var(--font-game); padding:1px 0; }
 .chat-msg .cn { color:var(--gold); }
 .chat-msg .sys { color:var(--green-light); font-style:italic; }
@@ -352,11 +360,16 @@ input[type=text]:focus { border-color:var(--gold); }
 .chat-input-row button:hover { background:#5a9e4a; }
 .chat-input-row button:active { transform:translate(1px,1px); }
 
-/* In-game rejoin / invite links */
-.rejoin-ingame { font:16px var(--font-game); display:flex; align-items:center; gap:6px; }
-.rejoin-ingame + .rejoin-ingame { margin-top:4px; }
-.rejoin-ingame a { color:var(--gold); text-decoration:underline dotted; word-break:break-all; }
-.rejoin-ingame a:hover { color:var(--text-bright); text-decoration-style:solid; }
+/* In-game rejoin / invite links: two quiet chips */
+#sec-rejoin { padding-top:7px; padding-bottom:4px; }
+.rejoin-ingame { font:16px var(--font-game); display:inline-flex; align-items:center; margin:0 6px 3px 0; }
+.rejoin-ingame a {
+  display:inline-flex; align-items:center; gap:6px; color:var(--text); text-decoration:none;
+  background:rgba(0,0,0,.25); border:1px solid var(--panel-light); padding:3px 8px; line-height:1.2;
+  transition:border-color .15s, color .15s;
+}
+.rejoin-ingame a:hover { border-color:var(--gold); color:var(--gold); }
+.rejoin-ingame a:active { transform:translate(1px,1px); }
 
 /* Game main area */
 #game-main { flex:1; position:relative; overflow:hidden; }
@@ -448,7 +461,7 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-sec-h {
   display:flex; align-items:center; justify-content:space-between; gap:8px;
   width:100%; padding:6px 0 4px; background:none; border:none; cursor:pointer;
-  font:8px var(--font-pixel); color:var(--gold); text-align:left;
+  font:8px var(--font-pixel); color:var(--gold); text-align:left; overflow:hidden; /* rotated chevron must not widen the row */
 }
 .pp-sec-h:hover { color:#fff; }
 .pp-sec-h i { font-style:normal; transition:transform .15s; color:var(--text-dim); }
@@ -540,7 +553,7 @@ input[type=text]:focus { border-color:var(--gold); }
 .zoom-controls {
   position:absolute; top:12px; right:12px; display:flex; flex-direction:column; gap:4px; z-index:50;
 }
-.zoom-controls .btn { width:36px; height:36px; padding:0; text-align:center; line-height:36px; font-size:16px; display:grid; place-content:center; }
+.zoom-controls .btn { width:36px; height:36px; padding:0; text-align:center; line-height:1; font-size:16px; display:grid; place-content:center; overflow:hidden; } /* line-height:1 + overflow: Firefox otherwise reports a 6 px taller line box than the button */
 .zoom-controls .btn.active { background:var(--green); border-color:#5a9; color:#fff; }
 
 /* ===== Bottom sheet toggle (hidden on desktop) ===== */
@@ -551,6 +564,11 @@ input[type=text]:focus { border-color:var(--gold); }
   box-shadow:none; padding:0 16px;
 }
 .sb-toggle:active { transform:none; }
+/* Inline emoji icons: pin the font stack so every engine draws the same colour
+   glyphs (Linux Chromium otherwise falls back to a monochrome Symbola bolt
+   while WebKit/iOS use colour emoji), and tame the ⚡ which fills its em box. */
+.emo { font-style:normal; font-family:'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif; font-size:.9em; line-height:1; }
+.emo-xp { font-size:.72em; }
 .sb-toggle-icon { transition:transform .3s; font-size:14px; }
 #sidebar.expanded .sb-toggle-icon { transform:rotate(180deg); }
 
@@ -646,7 +664,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 
   /* Zoom controls */
   .zoom-controls { top:8px; right:8px; }
-  .zoom-controls .btn { width:48px; height:48px; font-size:20px; line-height:48px; }
+  .zoom-controls .btn { width:48px; height:48px; font-size:20px; }
 
   /* Popup */
   .popup {
@@ -756,12 +774,13 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   transition: opacity 0.3s;
 }
 .loading-steps {
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; flex-direction: column; gap: 0;
   min-width: 320px; text-align: left;
 }
 .load-step {
   font: 20px 'VT323', monospace; color: #665;
   display: flex; align-items: center; gap: 8px;
+  padding: 3px 0; overflow: hidden; /* the spinning icon's corners stay inside the row */
   transition: color 0.3s;
 }
 .load-step.active { color: var(--gold); }
@@ -984,7 +1003,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .chat-tool:hover { border-color:var(--gold); }
 .chat-tool.on { border-color:var(--gold); background:rgba(212,168,67,.15); }
 .chat-tool:active { transform:translate(1px,1px); }
-#chat-mode { height:26px; padding:0 22px 0 7px; font-size:15px; max-width:150px; }
+#chat-mode { height:26px; padding:0 22px 0 7px; font-size:15px; max-width:118px; min-width:0; text-overflow:ellipsis; }
 .chat-msg { position:relative; padding-right:34px; }
 .chat-msg .cm-act { position:absolute; right:0; top:0; display:none; gap:2px; }
 .chat-msg:hover .cm-act, .chat-msg.touch .cm-act, .chat-msg:focus-within .cm-act { display:inline-flex; }
@@ -1106,8 +1125,12 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .water-chip.st-very_low.pulse { animation:wcPulse 1.6s ease-in-out infinite; }
 .water-chip.st-high { border-color:#4aa8e8; color:#c8e8ff; }
 @keyframes wcPulse { 0%,100% { box-shadow:2px 2px 0 #000, 0 0 0 rgba(224,80,64,0); } 50% { box-shadow:2px 2px 0 #000, 0 0 10px rgba(224,80,64,.7); } }
-.sb-chronik { cursor:pointer; margin-top:6px; padding:3px 4px; border:1px dashed var(--panel-border); border-radius:3px; }
+.sb-chronik { cursor:pointer; margin-top:8px; padding:4px 6px; align-items:center; background:rgba(0,0,0,.25); border:1px solid var(--panel-light); transition:border-color .15s; }
 .sb-chronik:hover { border-color:var(--gold); }
+.sb-chronik span { white-space:nowrap; }
+.sb-chronik b { text-align:right; line-height:1.1; }
+.sb-chronik b::after { content:' ▸'; color:var(--gold); font:9px var(--font-pixel); opacity:.55; }
+.sb-chronik:hover b::after { opacity:1; }
 .sb-chronik b.st-normal { color:#8ee89a; } .sb-chronik b.st-low { color:#ffcf70; } .sb-chronik b.st-very_low { color:#ff8a78; } .sb-chronik b.st-high { color:#8ac8ff; }
 
 /* Chronik panel */
