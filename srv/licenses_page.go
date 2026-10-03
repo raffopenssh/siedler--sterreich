@@ -91,15 +91,18 @@ func licCards(lang string, t licPageStrings) []licCard {
 			License: src.License, LicenseURL: src.LicenseURL, Attribution: src.Attribution, Modified: src.Modified, Notes: src.Notes, UsedFor: src.UsedFor}
 		if lang == "en" {
 			c.Name, c.Fetched, c.Via, c.Modified, c.Notes, c.UsedFor = src.NameEN, src.FetchedEN, src.ViaEN, src.ModifiedEN, src.NotesEN, src.UsedForEN
-			if c.License == "je Quelle (siehe attribution)" {
+			switch c.License {
+			case "je Quelle (siehe attribution)":
 				c.License = "per source (see attribution)"
+			case "Faktendaten (Artname, europäische Gefährdungskategorie); EU-Weiterverwendung / IUCN-Nutzungsbedingungen":
+				c.License = "factual data (species name, European threat category); EU re-use / IUCN terms of use"
 			}
-			c.Provider = strings.NewReplacer("nicht-kommerziell", "non-commercial", "nur Darstellung", "display only", "bearbeitet", "modified").Replace(c.Provider)
+			c.Provider = strings.NewReplacer("nicht-kommerziell", "non-commercial", "nur Darstellung", "display only", "bearbeitet", "modified", "Dürreindex", "drought index", "Mitwirkende", "contributors", "Geographische Namen", "Geographic Names", "Bundeskanzleramt", "Federal Chancellery", "Fließweg", "flow path", "IUCN im Auftrag der Europäischen Kommission, veröffentlicht über die EEA", "IUCN on behalf of the European Commission, published via the EEA").Replace(c.Provider)
 		}
 		switch {
 		case src.MaxCacheH > 0:
 			c.Cache = fmt.Sprintf("%g h", src.MaxCacheH)
-		case src.Via == "statisch" || src.Via == "eingebettete Tabelle":
+		case src.Via == "statisch" || src.Via == "eingebettete Tabelle" || src.Via == "eingebettet":
 			c.Cache = t.Static
 		default:
 			c.Cache = t.CacheNone

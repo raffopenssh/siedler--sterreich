@@ -37,14 +37,19 @@ var agentAttribution = map[string]any{
 	"notice":     bevNotice,
 	"disclaimer": "Game data. Simplified and playfully altered; not an official register extract, no legal effect. Ownership in the game is fictional — real owner data is never processed.",
 	"sources": []string{
-		"Kataster (DKM), Grundstücksverzeichnis, Nutzungsflächen, ALS-Höhenmodell: © BEV – Bundesamt für Eich- und Vermessungswesen, data.bev.gv.at, CC BY 4.0 (bearbeitet; BEV does not endorse this project)",
-		"Roads, water, rail, addresses: © OpenStreetMap contributors, ODbL 1.0",
-		"Protected areas: Natura 2000 (EEA); Red List: IUCN European Red List / EEA",
-		"Fields (INVEKOS) and farmsteads: AMA / BML via data.gv.at, CC BY 4.0 (aggregated, hashed points)",
-		"Groundwater, gauges, water protection: BML eHYD, WISE / EEA, CC BY 4.0; drought: Copernicus EDO",
-		"Timber prices: Statistik Austria (CC BY 4.0), LK-Holzmarktberichte — model values, not offers",
+		"Cadastre (parcels, footprints, land use): © BEV – Bundesamt für Eich- und Vermessungswesen, Katastralmappe vector tiles (kataster.bev.gv.at), CC BY 4.0, assembled live, cached ≤ 24 h (modified; BEV does not endorse this project)",
+		"Administrative boundaries, terrain, tree/building heights: BEV VGD & ALS DTM/DSM, CC BY 4.0 (modified); Copernicus Sentinel (ESA); ESA WorldCover; Hansen/UMD GFC",
+		"Municipalities & land-price model: Statistik Austria, CC BY 4.0 (model values)",
+		"Roads, water, rail, transit stops, addresses: © OpenStreetMap contributors, ODbL 1.0",
+		"Protected areas: Natura 2000 (EEA); WDPA (UNEP-WCMC & IUCN, non-commercial); species treasures: IUCN European Red List (European Commission / EEA)",
+		"Field & place names: BEV DLM, CC BY 4.0; legal references: RIS, CC BY 4.0",
+		"Fields (INVEKOS) and farmsteads: AMA / BML via data.gv.at, CC BY 4.0 (aggregated, hashed points); subsidy profiles: AMA transparency database, municipal aggregates",
+		"Timber prices & forest history: Statistik Austria, LK-Holzmarktberichte, Hansen/GFW, Harris et al. — model values, not offers",
+		"Groundwater, gauges, nitrate, water protection: BML eHYD, Wasserschatz 2021, WISE / EEA, CC BY 4.0; drought: Copernicus EDO; flow paths: MERIT Hydro, CC BY-NC-SA 4.0 (display only)",
+		"National border: geoBoundaries gbOpen, CC BY-SA 4.0",
 	},
-	"more": siteURL + "/impressum",
+	"licenses": siteURL + "/licenses",
+	"more":     siteURL + "/impressum",
 }
 
 // agentParcel is the text-edition view of one cadastre parcel.
