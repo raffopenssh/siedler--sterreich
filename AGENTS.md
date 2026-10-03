@@ -34,7 +34,7 @@ srv/siblings.go          farm/holz layer proxies (bboxProxy, hostSlots), prewarm
 srv/water.go, dossier.go groundwater mechanics, Gemeinde-Chronik dossiers
 srv/timber.go            forest value / harvest; similar.go similar parcels; treasures.go
 srv/agent.go, agent_inspect.go, discover.go, leaderboard.go, llmahead.go  agent surface
-srv/breaker.go, upstream_pending.go, metrics.go, parcelhash.go, licenses.go, tiles.go
+srv/breaker.go, upstream_pending.go, metrics.go, parcelhash.go, licenses.go, tiles.go, cachestore.go
 srv/static/game.js       entire frontend (~11k lines); index.html all screens; style.css theme
 db/migrations/NNN-*.sql  auto-applied on startup; db/queries/game.sql → sqlc → db/dbgen/
 ```
@@ -235,6 +235,14 @@ SQLite, WAL, busy_timeout 5 s, `SetMaxOpenConns(8)`. Tables: `players`
 converted_to, purchase_price, harvested_at, harvests, well_at, well_depth_m),
 `treasures`, `challenges`, `chat_messages`, `offers`, `api_cache` (hourly
 `cacheJanitor` prunes expired rows), `kg_warm`.
+
+`s.Q` is `Store` (`srv/cachestore.go`) wrapping sqlc: api_cache bodies > 2 KB
+are stored gzipped (gzip magic detected on read, transparent to callers) —
+never read `api_cache.data` with raw SQL expecting JSON. 200 bodies from
+`cachedFetch` get `Cache-Control: private, max-age=3600` (`browserCache`,
+skipped for `ready:false`) so reloads don't re-download cells/layers.
+Disk hygiene: `bevcache-prune.timer` deletes bevdirect tiles > 24 h, journald
+capped at 100 M (`/etc/systemd/journald.conf.d/size.conf`).
 
 Migration: `db/migrations/NNN-name.sql` ending with `INSERT OR IGNORE INTO
 migrations (migration_number, migration_name) VALUES (NNN, 'NNN-name');`.
