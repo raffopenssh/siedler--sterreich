@@ -545,7 +545,7 @@ input[type=text]:focus { border-color:var(--gold); }
 
 /* ===== Bottom sheet toggle (hidden on desktop) ===== */
 .sb-toggle {
-  display:none; width:100%; height:52px; border:none; border-bottom:2px solid var(--panel-border);
+  display:none; width:100%; height:52px; flex:0 0 52px; border:none; border-bottom:2px solid var(--panel-border);
   background:var(--panel-light); cursor:pointer; font:18px var(--font-game); color:var(--gold);
   align-items:center; justify-content:center; gap:10px; position:sticky; top:0; z-index:10;
   box-shadow:none; padding:0 16px;
@@ -658,7 +658,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
      swipe again → close; tap the peeked header → expand (initPopupSheets) */
   .popup::before { content:''; display:block; width:44px; height:4px; margin:-6px auto 8px; background:var(--panel-border); border-radius:2px; }
   .popup.flip { left:8px; right:8px; }
-  .popup.peek { max-height:46px; overflow:hidden; padding-top:10px; padding-bottom:6px; }
+  #screen-game .popup.peek { max-height:46px; overflow:hidden; padding-top:10px; padding-bottom:6px; }
   .popup.peek::before { margin:-2px auto 6px; }
   .popup.peek > *:not(h3):not(.popup-close):not(.popup-drag-handle) { visibility:hidden; }
   .popup.peek h3 { margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:28px; }

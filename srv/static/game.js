@@ -9763,7 +9763,8 @@ function edgePoint(tx, ty) {
   const ins = hudSafeInsets(), W = gc.width, H = gc.height;
   const cx = (ins.left + W - ins.right) / 2, cy = (ins.top + H - ins.bottom) / 2;
   const dx = tx - cx, dy = ty - cy;
-  const k = Math.min(1, ((W - ins.right - ins.left) / 2 - 22) / Math.max(Math.abs(dx), 1e-9), ((H - ins.bottom - ins.top) / 2 - 22) / Math.max(Math.abs(dy), 1e-9));
+  // 50 px side margin keeps the centred title/distance labels on screen
+  const k = Math.min(1, ((W - ins.right - ins.left) / 2 - 50) / Math.max(Math.abs(dx), 1e-9), ((H - ins.bottom - ins.top) / 2 - 22) / Math.max(Math.abs(dy), 1e-9));
   return avoidObstacles({ x: cx + dx * k, y: cy + dy * k, k, ang: Math.atan2(dy, dx), covered: false }, tx, ty);
 }
 /** If a beacon point lands under a popup, slide it to the nearest free spot
@@ -9773,7 +9774,7 @@ function avoidObstacles(p, tx, ty) {
   const obs = _hudObstacles; if (!obs.length) return p;
   const M = 48; // beacon radius incl. rune rings + labels
   const ins = _hudInsets, W = gc.width, H = gc.height;
-  const minX = ins.left + 24, maxX = W - ins.right - 24, minY = ins.top + 24, maxY = H - ins.bottom - 28;
+  const minX = ins.left + 50, maxX = W - ins.right - 50, minY = ins.top + 24, maxY = H - ins.bottom - 28;
   const hitAt = (x, y) => { for (const r of obs) if (x > r.l - M && x < r.r + M && y > r.t - M && y < r.b + M) return r; return null; };
   const hit = hitAt(p.x, p.y);
   if (!hit) return p;
