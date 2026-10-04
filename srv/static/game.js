@@ -7102,15 +7102,8 @@ function drawNEApices(ctx) {
     ctx.drawImage(sp.cv, Math.round(x - sp.ax), Math.round(y - sp.ay));
     drawn++;
   }
-  // Height tags for the giants only (≥ 30 m) at street level.
-  if (G.cam.zoom >= 17.5) {
-    ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    for (const i of idx) {
-      const t = rows[i]; if (t.h < 30) continue;
-      const x = rows[i + 1], y = rows[i + 2], lbl = fmtNum(t.h, 0) + ' m';
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 1, y + 3); ctx.fillStyle = '#d8f0c0'; ctx.fillText(lbl, x, y + 2);
-    }
-  }
+  // No height tags on NE apex sprites: they are not tappable, and the giants
+  // (≥ 32 m) already carry interactive labels via the giant-tree layer.
   NE_APEX.drawn = drawn;
   NE_APEX.lastMs = performance.now() - t0;
   // Self-tune: a build that spends > 14 ms on trees halves the budget next time;
