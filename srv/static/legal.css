@@ -105,3 +105,8 @@ body.legal {
   .lic-rows dd { margin-bottom: 8px; }
   .lic-legal-row { grid-template-columns: 1fr; gap: 4px; }
 }
+
+.legal code, .legal pre {
+  font-family: var(--font-game); font-size: inherit; line-height: inherit;
+  color: var(--gold-light); word-break: break-all; overflow-wrap: anywhere;
+}
