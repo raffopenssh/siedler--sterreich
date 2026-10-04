@@ -1,0 +1,11 @@
+# ne-report.timer — run ne-report.service daily around 03:30 (local), after the bevdirect tile-cache sweep.
+[Unit]
+Description=Daily NE epoch reports (siedler → umfeld-at)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

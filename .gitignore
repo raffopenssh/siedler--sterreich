@@ -10,3 +10,10 @@ tools/soakload/soakload
 parcel.key
 srv/srv
 redlist.csv
+tools/ne-report/.venv
+tools/ne-report/*.egg-info
+tools/ne-report/build
+data/ne-reports
+ne-peer.key
+__pycache__/
+tools/ne-report/ne-report.env

@@ -1,0 +1,20 @@
+# ne-report.service — NE epoch reports (siedler → umfeld-at) from our local bevdirect-serve cells.
+# Installed by: INSTALL_UNITS=1 tools/ne-report/setup.sh   (copies to /etc/systemd/system/)
+# Runs tools/ne-report/run.sh once; triggered daily by ne-report.timer.
+[Unit]
+Description=NE epoch reports from bevdirect cells → umfeld-at (siedler observer)
+After=network-online.target bevdirect-serve.service
+Wants=network-online.target
+Requires=bevdirect-serve.service
+
+[Service]
+Type=oneshot
+User=exedev
+WorkingDirectory=/home/exedev/siedler
+# Peer token (optional): either /home/exedev/siedler/ne-peer.key or NE_PEER_TOKEN in this env file.
+EnvironmentFile=-/home/exedev/siedler/tools/ne-report/ne-report.env
+ExecStart=/home/exedev/siedler/tools/ne-report/run.sh
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=4h
+MemoryMax=2G
