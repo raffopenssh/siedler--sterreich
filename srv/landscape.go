@@ -21,10 +21,15 @@ import (
 	"srv.exe.dev/db/dbgen"
 )
 
-const enhancedKGsKey = "enhanced-kgs:v4"
+const enhancedKGsKey = "enhanced-kgs:v5"
 
 // ---------------------------------------------------------------------------
-// GET /api/enhanced-kgs — srtm-processed KGs (v2 = grid25 terrain available)
+// GET /api/enhanced-kgs — "enhanced" KGs. Since v5 this means **srtm product
+// v2.4 only, full coverage** (`v2.4-partial`, v2.3, grid25-only rows are not
+// enhanced): the picker glow, the "Enhanced Gelände" chip, /api/lucky and the
+// daily warm plan all key on this list, and we only want to send players where
+// the observed layer (NE cells: every tree, every structure) is actually there.
+// Other processed KGs are listed in `other[]` (counts only) for diagnostics.
 
 func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
 	s.cachedFetchX(w, enhancedKGsKey, func() ([]byte, int) { return s.buildEnhancedKGs(enhancedKGsKey) }, func(b []byte) []byte {
@@ -68,8 +73,8 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		Product      string  `json:"product_version,omitempty"`
 	}
 	// One list of the whole KG universe (srtm /kgs, mirrored to
-	// data/srtm-kgs.json.gz) — kgs[] below keeps only the processed rows,
-	// which is what the picker glow and the warm planner key on.
+	// data/srtm-kgs.json.gz) — kgs[] below keeps only the full v2.4 rows,
+	// which is what the picker glow, the chip and the warm planner key on.
 	uni, source, err := loadSrtmKGUniverse()
 	if err != nil {
 		return jsonErrBody("data service error"), 502
@@ -78,6 +83,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	var all []kgEntry
 	gen := map[string]string{}
 	adm := admin()
+	nProcessed, nv2, nPartial := 0, 0, 0
 	for _, k := range uni.KGs {
 		if !k.Processed || k.ProductVer == "" {
 			continue
@@ -91,21 +97,22 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		if a := adm.KGs[k.KgCode]; a != nil && e.GemeindeCode == "" {
 			e.GemeindeCode, e.GemeindeName = a.Gemeinde, a.GemName
 		}
-		e.V2 = (k.Grid25 != nil && *k.Grid25) || isV2Product(k.ProductVer)
-		e.V24 = isV24Product(k.ProductVer)
 		e.Product = k.ProductVer
-		all = append(all, e)
 		gen[k.KgCode] = k.UpdatedAt
-	}
-	nv2, nv24 := 0, 0
-	for _, e := range all {
-		if e.V2 {
+		nProcessed++
+		if isV2Product(k.ProductVer) {
 			nv2++
 		}
-		if e.V24 {
-			nv24++
+		if strings.Contains(k.ProductVer, "partial") {
+			nPartial++
 		}
+		if !isV24Product(k.ProductVer) {
+			continue // not enhanced: v1, v2.3, v2.4-partial …
+		}
+		e.V2, e.V24 = true, true
+		all = append(all, e)
 	}
+	nv24 := len(all)
 	ttl := 30 * time.Minute
 	if source == "local-copy" {
 		ttl = 5 * time.Minute // retry srtm soon
@@ -115,7 +122,8 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		s.invalidateRegeneratedKGs(gen)
 	}
 	out, _ := json.Marshal(map[string]any{
-		"count": len(all), "v2_count": nv2, "v24_count": nv24,
+		"count": len(all), "v24_count": nv24, "enhanced": "v2.4 full only",
+		"other": map[string]int{"processed": nProcessed, "v2_any": nv2, "partial": nPartial},
 		"kg_count": uni.KGsTotal, "kg_universe": kgUniverseCount,
 		"universe_hash": uni.UniverseHash, "registry_hash": uni.RegistryHash,
 		"source": source, "fetched_at": uni.FetchedAt, "upstream_etag": uni.ETag,

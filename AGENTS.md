@@ -57,7 +57,7 @@ timeout, per-host circuit breaker). Never `http.Get`; never set
 | **landscape** | **srtm-lidar-at** `https://srtm-lidar-at.exe.xyz/api/v1` (`lidarAPI`, public tier: bbox/point/KG-code keyed only) | `/landscape?bbox`, `/trees/bbox`, `/buildings/bbox`, `/landmarks/bbox`, `/heightfield?bbox&cell=25&landcover=1` (404 where no grid25), `/kgs`, `/kg/{code}`, `/tiles/hillshade/{z}/{x}/{y}.png`. **No parcel or footprint ids** — the client assigns by point-in-parcel / centroid grid. |
 | **admin table** | `srv/data/admin.json.gz` (embedded; BEV VGD 1:50 000, CC BY 4.0) | all 7 850 KGs: code, name, Gemeinde, district, state, bbox, area. Drives `/api/kg-geo/{kg}`, KG neighbours, the warm plan, `/api/lucky`, `kgsAlongPath`. |
 | **KG universe check** (`srv/kguniverse.go`) | umfeld `GET /api/v1/kgs` (one gzipped list, ETag/`X-KG-Universe-Hash`, 304 on If-None-Match) | **Contract: `kg_count = 7850`, `universe_hash = sha256(join(sorted(kg_code),"\n"))` hex.** `kgUniverseBoot()` (sync in `Serve`) computes our hash from the admin table + loads the mirror `data/kg-universe.json.gz` (seed `data/kg-universe.seed.json.gz` committed); `kgUniverseInit` fetches at startup and revalidates hourly. umfeld ↔ ours ↔ srtm (`noteSrtmUniverseHash`) must agree, else `slog.Error`, one e-mail to the owner per fingerprint (`sendOwnerMail`, `SIEDLER_ALERT_MAIL`), `kg_universe.alert` in `/api/metrics` + `/api/warm/status`, and `kgUniverseOK()` pauses the daily warm plan + `neAdoptKGs`. KG codes are always 5-digit strings with leading zero. |
-| **srtm KG registry** (`srv/kgregistry.go`) | srtm `/api/v1/kgs?processed_only=0&limit=5000` (2 pages = all 7 850) | mirrored to `data/srtm-kgs.json.gz` (seed `data/srtm-kgs.seed.json.gz`), used when srtm is down (`source:"local-copy"`, 5 min TTL instead of 30). `/api/enhanced-kgs` (`enhanced-kgs:v4`) keeps `kgs[]` = processed rows (what the picker glows on) and adds `kg_count, universe_hash, registry_hash, source, fetched_at, upstream_etag`; weak `ETag` = registry_hash, `X-Registry-Source`. Hashes are recomputed on read, never trusted from disk. Only a live answer purges derived caches / adopts v2.4. |
+| **srtm KG registry** (`srv/kgregistry.go`) | srtm `/api/v1/kgs?processed_only=0&limit=5000` (2 pages = all 7 850) | mirrored to `data/srtm-kgs.json.gz` (seed `data/srtm-kgs.seed.json.gz`), used when srtm is down (`source:"local-copy"`, 5 min TTL instead of 30). `/api/enhanced-kgs` (`enhanced-kgs:v5`) keeps `kgs[]` = **full v2.4 rows only** (`v2.4-partial`/v2.3/grid25-only are *not* enhanced; counts of those in `other{}`) — this is what the picker glows on, the "Enhanced Gelände" chip, `/api/lucky` and the daily warm plan key on and adds `kg_count, universe_hash, registry_hash, source, fetched_at, upstream_etag`; weak `ETag` = registry_hash, `X-Registry-Source`. Hashes are recomputed on read, never trusted from disk. Only a live answer purges derived caches / adopts v2.4. |
 | unchanged siblings | holzeinschlag-at, farm-subsidies-austria, groundwater-at | timber prices/history, INVEKOS Schläge/Hofstellen, water. farm host has a 3-slot semaphore (`hostSlots`; busy → 503 `status:"busy"` + `X-Upstream: busy`). |
 
 Privacy: the DB stores **no cadastre ids** — claims/offers/harvests/quest targets
@@ -334,9 +334,9 @@ whenever game.js/style.css change.** Gzip middleware level 5.
 
 ## Landscape, trees, buildings (srtm public tier)
 
-- `/api/enhanced-kgs` → `{kgs:[{kg_code,kg_name,gemeinde_code,gemeinde_name,lon,lat,v2}]}`
-  from srtm `/kgs` (v2 = grid25). Picker glows cyan on enhanced municipalities;
-  lucky prefers them.
+- `/api/enhanced-kgs` → `{kgs:[{kg_code,kg_name,gemeinde_code,gemeinde_name,lon,lat,v2,v24,product_version}]}`
+  from srtm `/kgs`, **full v2.4 only** (v2 and v24 always true). Picker glows on enhanced municipalities;
+  lucky picks only them.
 - `/api/lidar/kg/{code}` ("lidar slim") → `terrain, buildings[], top_trees[],
   top_objects[], product_version` built from `/kg/{code}`, `/buildings/bbox`,
   `/trees/bbox?min_height=25`, `/landmarks/bbox` (`splitBBox` for big KGs).
