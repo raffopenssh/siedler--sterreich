@@ -3037,7 +3037,7 @@ function renderNow() {
   if (G.ezHighlight) drawEZHighlight(ctx);
 
   // ---- Selected parcel highlight ----
-  if (G.sel) drawSelection(ctx, G.sel);
+  if (G.sel) { drawNEParcelDetail(ctx, G.sel); drawSelection(ctx, G.sel); }
 
   // ---- Tapped building highlight ----
   if (G.selFp) drawFpHighlight(ctx, G.selFp);
@@ -12408,6 +12408,10 @@ function neRows(ne, rows, moreRows, o) {
   if (ne.verdict === 'forest_loss' && ne.forest_loss_year) vt += ' <span style="color:var(--text-dim)">(' + ne.forest_loss_year + ')</span>';
   if (o && o.unclaimed && neDiscrepant(ne.verdict)) vt += ' · <span style="color:var(--gold)">+60⚡ ' + tr('Spurenleser') + (ne.verdict === 'forest_loss' ? ' · ' + tr('Naturschutz') + ' ×2' : '') + '</span>';
   if (ne.verdict !== 'unknown' || ne.cells > 1) rows.push(['👁 Beobachtet', vt]);
+  if (ne.consistency && ne.cells >= 2 && neDiscrepant(ne.verdict)) {
+    const parts = Object.entries(ne.consistency).sort((a, b) => b[1] - a[1]).map(([k, f]) => ({ f, name: k === 'consistent' ? 'stimmig' : (NE_VERDICT[k] || NE_VERDICT.unknown).de.replace(/ \(.*\)$/, ''), color: NE_HEAT_COL[k] ? 'rgb(' + NE_HEAT_COL[k].join(',') + ')' : 'rgba(255,245,210,0.35)' }));
+    rows.push(['📐 Abweichung', segBar(parts) + '<div class="fracs-legend"><em style="color:var(--text-dim)">' + ne.cells + ' Zellen · ' + tr('Raster auf der Karte') + '</em></div>']);
+  }
   if (ne.tree_n > 0) {
     let t = ne.tree_n + ' Baum' + (ne.tree_n > 1 ? 'kronen' : 'krone');
     if (ne.tree_h_max_m) t += ' · max ' + Math.round(ne.tree_h_max_m) + ' m';
@@ -12775,7 +12779,7 @@ function setNEHeat(mode) {
   if (G.neHeatMode) {
     for (const c of tilesInAustria(gridTiles(viewBounds(), 12))) loadNEHeat(c);
     if (!(G.neCells > 0)) toast('👁 ' + tr('In dieser Gegend gibt es noch keine Beobachtungsdaten (srtm v2.4).'), '');
-    else toast(G.neHeatMode === 'canopy' ? '🌳 ' + tr('Kronendach (LiDAR) eingeblendet') : '👁 ' + tr('Beobachtung vs. Kataster: orange Waldverlust · rot neu versiegelt · grün nachgewachsen'), '');
+    else toast(G.neHeatMode === 'canopy' ? '🌳 ' + tr('Kronendach (LiDAR) eingeblendet') : '👁 ' + tr('Beobachtung vs. Kataster als Schleier: orange Waldverlust · rot neu versiegelt · grün nachgewachsen — Details beim Antippen einer Parzelle'), '');
   } else toast('👁 ' + tr('Beobachtung ausgeblendet'), '');
   invalidateBase(); render();
 }
@@ -12823,44 +12827,103 @@ function drawMiniNEHeat(mctx, w) {
   const rankCol = ['', NE_HEAT_COL.green_new, NE_HEAT_COL.forest_gain, NE_HEAT_COL.sealed_new, NE_HEAT_COL.structure_new, NE_HEAT_COL.forest_loss];
   for (let k = 0; k < cols * rows; k++) {
     if (!cnt[k]) continue;
-    if (mode === 'canopy') { const c = acc[k] / cnt[k]; if (c < 0.05) continue; mctx.fillStyle = 'rgba(70,210,150,' + (0.65 * c).toFixed(2) + ')'; }
-    else { if (!code[k]) continue; mctx.fillStyle = 'rgba(' + rankCol[code[k]].join(',') + ',0.85)'; }
+    if (mode === 'canopy') { const c = acc[k] / cnt[k]; if (c < 0.05) continue; mctx.fillStyle = 'rgba(70,210,150,' + (0.45 * c).toFixed(2) + ')'; }
+    else { if (!code[k]) continue; mctx.fillStyle = 'rgba(' + rankCol[code[k]].join(',') + ',0.5)'; }
     mctx.fillRect((k % cols) * px, ((k / cols) | 0) * px, px, px);
   }
 }
 
+/** Soft observed-layer field. The H3 cells are splatted into a low-resolution
+ *  offscreen canvas (one texel ≈ one cell) and drawn back bilinearly upscaled,
+ *  so the layer reads as a gentle wash — like the relief — instead of a hex
+ *  grid duplicating the parcels. Cell-level detail is reserved for the
+ *  selected parcel (drawNEParcelDetail). */
+let _neOff = null;
 function drawNEHeat(ctx) {
   const mode = G.neHeatMode; if (!mode) return;
-  const z = G.cam.zoom;
-  const r = Math.max(1.5, 10.5 * mapScale() / 111320 * 1.4); // ~10 m hex radius in px (y is ×1.35, x ×1/cos φ ≈ 1.49)
   const W = gc.width, H = gc.height;
-  const hex = r >= 3.5, a = z >= 16 ? 0.55 : 0.42;
-  ctx.save();
+  const cellPx = 10.5 * mapScale() / 111320 * 1.4 * 2; // ≈ one H3 cell in px
+  const k = Math.max(1, Math.min(10, cellPx / 1.15));  // texel size: ~1 texel per cell, ≥ 1 px
+  const ow = Math.ceil(W / k) + 2, oh = Math.ceil(H / k) + 2;
+  if (!_neOff) _neOff = document.createElement('canvas');
+  if (_neOff.width !== ow || _neOff.height !== oh) { _neOff.width = ow; _neOff.height = oh; }
+  const oc = _neOff.getContext('2d');
+  oc.clearRect(0, 0, ow, oh);
+  const span = 0.02 * mapScale() * 1.2;
+  let drew = 0, lastCol = null;
   for (const key in G.neHeat) {
     const h = G.neHeat[key]; if (!h.n) continue;
     const [x0, y0] = toScreen(h.lon[0], h.lat[0]); // cheap cell cull via its first centre + cell size
-    const span = 0.02 * mapScale() * 1.2;
     if (x0 < -span - W || y0 < -span - H || x0 > W + span || y0 > H + span) continue;
-    let lastCol = null;
     for (let i = 0; i < h.n; i++) {
-      let col, al;
+      let fs;
       if (mode === 'canopy') {
-        const c = h.can[i]; if (c === 255 || c < 13) continue; // null or < 5 %
-        col = '70,210,150'; al = a * 0.9 * Math.min(1, c / 200);
+        const c = h.can[i]; if (c === 255 || c < 25) continue; // null or < 10 %
+        fs = 'rgba(60,190,140,' + Math.min(1, c / 220).toFixed(2) + ')';
       } else {
-        const code = h.codes[h.cons[i]]; const rgb = NE_HEAT_COL[code]; if (!rgb) continue;
-        col = rgb.join(','); al = a;
+        const rgb = NE_HEAT_COL[h.codes[h.cons[i]]]; if (!rgb) continue;
+        fs = 'rgb(' + rgb.join(',') + ')';
       }
       const [x, y] = toScreen(h.lon[i], h.lat[i]);
-      if (x < -r || y < -r || x > W + r || y > H + r) continue;
-      const fs = 'rgba(' + col + ',' + al.toFixed(2) + ')';
-      if (fs !== lastCol) { ctx.fillStyle = fs; lastCol = fs; }
-      if (hex) {
-        ctx.beginPath();
-        for (let k = 0; k < 6; k++) { const t = Math.PI / 6 + k * Math.PI / 3; const px = x + r * 1.08 * Math.cos(t), py = y + r * 1.08 * Math.sin(t); k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
-        ctx.closePath(); ctx.fill();
-      } else ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      if (x < -k || y < -k || x > W + k || y > H + k) continue;
+      if (fs !== lastCol) { oc.fillStyle = fs; lastCol = fs; }
+      oc.fillRect(x / k + 0.5, y / k + 0.5, 1, 1); drew++;
     }
+  }
+  if (!drew) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.globalAlpha = mode === 'canopy' ? 0.22 : (G.cam.zoom >= 16 ? 0.30 : 0.36);
+  ctx.drawImage(_neOff, 0, 0, ow, oh, 0, 0, ow * k, oh * k);
+  ctx.restore();
+}
+/** Observation detail on demand: while a parcel with NE data is selected, its
+ *  own H3 cells are drawn as small hexes clipped to the parcel — discrepant
+ *  cells filled in the verdict colour, consistent ones as a faint grid — so the
+ *  popup verdict ("36 % Abweichung") is visible on the ground without the whole
+ *  map wearing hexagons. Lives in the live overlay (not the cached base). */
+function neParcelCells(f) {
+  const pid = f.properties.parcel_id, keys = Object.keys(G.neHeat).length;
+  const c = G._neSel;
+  if (c && c.pid === pid && c.keys === keys) return c.items;
+  const b = featureBBox(f); if (!b) return [];
+  const items = [];
+  for (const key in G.neHeat) {
+    const h = G.neHeat[key]; if (!h.n) continue;
+    for (let i = 0; i < h.n; i++) {
+      const lon = h.lon[i], lat = h.lat[i];
+      if (lon < b[0] || lon > b[2] || lat < b[1] || lat > b[3]) continue;
+      if (!pipGeom(lon, lat, f.geometry)) continue;
+      items.push({ lon, lat, code: h.codes[h.cons[i]], can: h.can[i] });
+    }
+  }
+  G._neSel = { pid, keys, items };
+  return items;
+}
+function featureBBox(f) {
+  if (f._bbox) return f._bbox;
+  if (!isAreaGeom(f.geometry)) return null;
+  let b = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const ring of geomAllRings(f.geometry)) for (const c of ring) { if (c[0] < b[0]) b[0] = c[0]; if (c[1] < b[1]) b[1] = c[1]; if (c[0] > b[2]) b[2] = c[0]; if (c[1] > b[3]) b[3] = c[1]; }
+  return (f._bbox = b);
+}
+function drawNEParcelDetail(ctx, f) {
+  const p = f.properties; if (!p.ne || !isAreaGeom(f.geometry)) return;
+  const r = 10.5 * mapScale() / 111320 * 1.4; if (r < 3) return; // zoom ≳ 15.7
+  const cell = cellOf(p.lon, p.lat); if (!G.neHeat[cell.key]) { loadNEHeat(cell); return; }
+  const items = neParcelCells(f); if (!items.length) return;
+  ctx.save();
+  ctx.beginPath();
+  for (const ring of geomAllRings(f.geometry)) { ring.forEach((c, i) => { const q = toScreen(c[0], c[1]); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath(); }
+  ctx.clip('evenodd');
+  const hexPath = (x, y, rr) => { ctx.beginPath(); for (let k = 0; k < 6; k++) { const t = Math.PI / 6 + k * Math.PI / 3; const px = x + rr * Math.cos(t), py = y + rr * Math.sin(t); k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); } ctx.closePath(); };
+  ctx.lineWidth = 1;
+  for (const it of items) {
+    const [x, y] = toScreen(it.lon, it.lat);
+    if (x < -r || y < -r || x > gc.width + r || y > gc.height + r) continue;
+    const rgb = NE_HEAT_COL[it.code];
+    if (rgb) { hexPath(x, y, r * 0.92); ctx.fillStyle = 'rgba(' + rgb.join(',') + ',0.42)'; ctx.fill(); ctx.strokeStyle = 'rgba(' + rgb.join(',') + ',0.8)'; ctx.stroke(); }
+    else { hexPath(x, y, r * 0.86); ctx.strokeStyle = 'rgba(255,245,210,0.22)'; ctx.stroke(); }
   }
   ctx.restore();
 }
