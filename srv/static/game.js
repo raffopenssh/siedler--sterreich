@@ -6647,6 +6647,11 @@ function drawForestSprites(ctx, claimMap) {
   }
 
   const treePolys = G.parcelPolys.map(f => ({ f, style: getTreeStyle(f) })).filter(x => x.style);
+  // NE mode: in cells where srtm v2.4 gave us every apex, the measured stand
+  // replaces the procedural filler on natural stands (z ≥ 15; below that the
+  // sprites are symbols anyway and the filler keeps the forest readable).
+  const neMode = neApexMode();
+  const NE_REAL = { forest: 1, plantation: 1, krummholz: 1 };
 
   ctx.save();
   for (const { f, style } of treePolys) {
@@ -6656,6 +6661,7 @@ function drawForestSprites(ctx, claimMap) {
     const [sx1,sy1] = toScreen(b.w, b.n);
     const [sx2,sy2] = toScreen(b.e, b.s);
     if (sx2 < 0 || sx1 > gc.width || sy2 < 0 || sy1 > gc.height) continue;
+    if (neMode && NE_REAL[style] && parcelInNECell(f)) continue;   // drawn by drawNEApices()
 
     const area = f.properties.area_sqm || 1000;
     const hash = simpleHash(f.properties.parcel_id||'');
@@ -6711,7 +6717,8 @@ function drawForestSprites(ctx, claimMap) {
     }
     // LID-2: the parcel's measured dominant trees stand where they really are;
     // the procedural filler makes room for them.
-    const apex = (style === 'forest' || style === 'plantation') ? apexTreesOf(f.properties.parcel_id) : null;
+    let apex = (style === 'forest' || style === 'plantation') ? apexTreesOf(f.properties.parcel_id) : null;
+    if (apex && apex.length > 5) apex = apex.slice(0, 5);   // NE parcels hold every apex; below z15 only the 5 dominant ones are symbols
     if (apex) treeCount = Math.max(0, treeCount - apex.length);
 
     // Draw bright green underglow for reforested parcels
@@ -6744,7 +6751,7 @@ function drawForestSprites(ctx, claimMap) {
       const [tx, ty] = toScreen(lon, lat);
       drawTree(ctx, tx, ty, variantFn(i), hash + i);
     }
-    if (apex) for (let i = apex.length - 1; i >= 0; i--) drawApexTree(ctx, apex[i], hash, i === 0);
+    if (apex) for (let i = apex.length - 1; i >= 0; i--) { if (neMode && apex[i].ne) continue; drawApexTree(ctx, apex[i], hash, i === 0); }
 
     // Draw growth indicators on reforested parcels (small sprouts between trees)
     if (style === 'reforested') {
@@ -6761,6 +6768,118 @@ function drawForestSprites(ctx, claimMap) {
     }
   }
   ctx.restore();
+  if (neMode) drawNEApices(ctx);
+}
+
+// ---- NE apices: the whole measured stand, real position, real crown size ----
+/** NE apex rendering is on at z ≥ 15 once any NE tree cell has arrived. */
+function neApexMode() { return G.cam.zoom >= 15 && G.neTreeCells.size > 0; }
+/** Does this parcel lie in a cell whose apices we hold? (centroid cell; cached on the feature) */
+function parcelInNECell(f) {
+  if (f._neCell === undefined) { const [lon, lat] = featureLonLat(f); f._neCell = cellOf(lon, lat).key; }
+  return G.neTreeCells.has(f._neCell);
+}
+/** Device pixels per metre (N–S) at the current zoom. */
+function pxPerMetre() { return mapScale() * 1.35 / 111320; }
+/** Sprite budget per base build: phones and slow builds get fewer, tallest-first. */
+function neApexBudget() {
+  if (_coarsePointer == null) { try { _coarsePointer = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches); } catch (e) { _coarsePointer = false; } }
+  const hw = navigator.hardwareConcurrency || 4;
+  let b = _coarsePointer ? 1800 : 6000;
+  if (hw <= 4 || (navigator.deviceMemory || 8) <= 4) b = Math.round(b * 0.6);
+  if (NE_APEX.slow) b = Math.round(b * 0.5);   // last build overran — halve until it recovers
+  return b;
+}
+const NE_APEX = { slow: false, lastMs: 0, drawn: 0, visible: 0, sprites: new Map() };
+/** Pre-rendered tree sprite (variant × size step). drawTree() paints ~8 paths per
+ *  tree — with thousands of apices per view we blit one cached bitmap instead. */
+function neTreeSprite(variant, k) {
+  const kq = Math.max(0.5, Math.min(3.2, Math.round(k * 10) / 10));
+  const key = variant + ':' + kq;
+  let sp = NE_APEX.sprites.get(key);
+  if (sp) return sp;
+  const W = Math.ceil(34 * kq) + 2, H = Math.ceil(46 * kq) + 2;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const c2 = cv.getContext('2d');
+  const ax = W / 2, ay = H - Math.ceil(6 * kq) - 1;
+  const z = G.cam.zoom; G.cam.zoom = 17;   // drawTree picks its 1.2 base scale above z16
+  c2.translate(ax, ay); c2.scale(kq, kq);
+  drawTree(c2, 0, 0, variant, 11 * variant);
+  G.cam.zoom = z;
+  sp = { cv, ax, ay };
+  NE_APEX.sprites.set(key, sp);
+  return sp;
+}
+/** Sprite scale for one apex: real crown diameter in px at z ≥ 16 (a 1.2-scale
+ *  oak sprite is ~19 px wide), height-driven symbol scale below. */
+function neApexScale(t) {
+  if (G.cam.zoom >= 16) {
+    const crown = t.crown > 0 ? t.crown : Math.max(3, t.h * 0.45);
+    return Math.max(0.6, Math.min(3.2, crown * pxPerMetre() / 19));
+  }
+  return Math.max(0.6, Math.min(1.4, 0.45 + t.h / 30));
+}
+/** Every NE apex ≥ 8 m in view, tallest first, under a per-build sprite budget.
+ *  Trees sit on their measured position; at z ≥ 16 the crown is to scale. */
+function drawNEApices(ctx) {
+  const t0 = performance.now();
+  const W = gc.width, H = gc.height;
+  const v = viewBounds();
+  const cells = gridTiles(v, 16);
+  const lists = [];
+  let total = 0;
+  for (const c of cells) {
+    const arr = G.neTreeCells.get(c.key);
+    if (arr && arr.length) { lists.push(arr); total += arr.length; }
+  }
+  NE_APEX.visible = total;
+  if (!total) { NE_APEX.drawn = 0; return; }
+  // Phone / low zoom: skip the small stuff first (lists are tallest-first, so a
+  // per-list prefix keeps the stand's dominant trees and drops the understorey).
+  const budget = neApexBudget();
+  const frac = Math.min(1, budget / total);
+  // Density floor: never more than one sprite per ~90 px² — under that the
+  // sprites overlap into a green blob and the extra work is invisible.
+  const pxArea = W * H;
+  const densCap = Math.floor(pxArea / 90);
+  const keepFrac = Math.min(frac, densCap / total);
+  let drawn = 0;
+  const minH = G.cam.zoom < 16 ? 10 : 8;
+  // Draw back-to-front (north first) so southern canopies overlap northern trunks.
+  const rows = [];
+  for (const arr of lists) {
+    const n = Math.ceil(arr.length * keepFrac);
+    for (let i = 0; i < n; i++) {
+      const t = arr[i];
+      if (t.drop || t.h < minH) continue;
+      const [x, y] = toScreen(t.lon, t.lat);
+      if (x < -40 || y < -60 || x > W + 40 || y > H + 20) continue;
+      rows.push(t, x, y);
+    }
+  }
+  const idx = []; for (let i = 0; i < rows.length; i += 3) idx.push(i);
+  idx.sort((a, b) => rows[a + 2] - rows[b + 2]);
+  for (const i of idx) {
+    const t = rows[i], x = rows[i + 1], y = rows[i + 2];
+    const hash = ((t.lon * 1e5) | 0) ^ ((t.lat * 1e5) | 0);
+    const sp = neTreeSprite(apexVariant(t, hash), neApexScale(t));
+    ctx.drawImage(sp.cv, Math.round(x - sp.ax), Math.round(y - sp.ay));
+    drawn++;
+  }
+  // Height tags for the giants only (≥ 30 m) at street level.
+  if (G.cam.zoom >= 17.5) {
+    ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (const i of idx) {
+      const t = rows[i]; if (t.h < 30) continue;
+      const x = rows[i + 1], y = rows[i + 2], lbl = fmtNum(t.h, 0) + ' m';
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 1, y + 3); ctx.fillStyle = '#d8f0c0'; ctx.fillText(lbl, x, y + 2);
+    }
+  }
+  NE_APEX.drawn = drawn;
+  NE_APEX.lastMs = performance.now() - t0;
+  // Self-tune: a build that spends > 14 ms on trees halves the budget next time;
+  // a quick one (< 5 ms) lifts the cap again.
+  if (NE_APEX.lastMs > 14) NE_APEX.slow = true; else if (NE_APEX.lastMs < 5) NE_APEX.slow = false;
 }
 
 function drawSprout(ctx, x, y, seed) {
@@ -12238,7 +12357,8 @@ function loadLandmarks(b) {
     done: () => render(),
   });
 }
-G.apexByParcel = {};      // parcel_id → [{lon,lat,h,crown,broad}] (≤5 tallest measured trees)
+G.apexByParcel = {};      // parcel_id → [{lon,lat,h,crown,broad}] (≤5 tallest measured trees; unbounded for NE cells)
+G.neTreeCells = new Map(); // cell key → every NE apex ≥ 8 m of that 0.02° cell, tallest first
 G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts = {};
 G.reliefOn = localStorage.getItem('reliefOn') !== '0';
 
@@ -12327,6 +12447,7 @@ let _reliefActive = false, _reliefLastDrew = false;
 
 // ---- LID-2 tree apices ----
 function loadTrees(b) {
+  const batch = [];
   loadPointLayer(b, {
     url: '/api/trees', key: 'trees', tiles: G.apexTiles, ids: G.apexIds, attempts: G.apexAttempts,
     idOf: it => it.lon.toFixed(6) + ',' + it.lat.toFixed(6),
@@ -12337,9 +12458,20 @@ function loadTrees(b) {
       const t = { lon: it.lon, lat: it.lat, h, crown, pid: '', broad: crown > 0 && crown < 40 && crown / h > 0.62 };
       if (it.species) { t.species = it.species; if (NE_BROADLEAF.has(it.species)) t.broad = true; else if (NE_CONIFER.has(it.species)) t.broad = false; }
       if (it.vitality) t.vitality = it.vitality;
-      G.apexTrees.push(t); G.apexUnassigned.push(t);
+      G.apexTrees.push(t); G.apexUnassigned.push(t); batch.push(t);
     },
-    done: () => {
+    done: (added, data) => {
+      // NE cell (srtm v2.4): the answer is *every* apex ≥ 8 m of the 0.02° cell,
+      // tallest first. Keep them per cell so drawNEApices() can draw the whole
+      // measured stand at its real position/size instead of the procedural filler.
+      if (data && data.source === 'ne-cells') {
+        const c = cellOf((b.w + b.e) / 2, (b.s + b.n) / 2);
+        const arr = G.neTreeCells.get(c.key) || [];
+        for (const t of batch) { t.ne = true; arr.push(t); }
+        arr.sort((a, b2) => b2.h - a.h);
+        G.neTreeCells.set(c.key, arr);
+        noteNE({ epoch: data.epoch });
+      }
       assignApexTrees();
       // giants ≥ 25 m join the giant-tree pool; tallIndex() dedupes against lidar-slim trees by distance
       const g = G.topTrees['apex'] = G.topTrees['apex'] || [];
@@ -12373,7 +12505,9 @@ function assignApexTrees() {
     }
     t.pid = f.properties.parcel_id;
     const arr = G.apexByParcel[t.pid] = G.apexByParcel[t.pid] || [];
-    arr.push(t); arr.sort((a, b) => b.h - a.h); if (arr.length > 5) arr.length = 5;
+    arr.push(t); arr.sort((a, b) => b.h - a.h);
+    // Legacy (lidar-slim) KGs: ≤ 5 dominant trees per parcel; NE cells keep every apex
+    if (!t.ne && arr.length > 5) arr.length = 5;
   }
   G.apexUnassigned = rest;
 }
@@ -12699,7 +12833,7 @@ Object.assign(window.DEV, {
   apex(pid) {
     if (pid) return apexTreesOf(pid);
     const hs = G.apexTrees.map(t => t.h).sort((a, b) => b - a);
-    return { trees: G.apexTrees.length, parcels: Object.keys(G.apexByParcel).length, giants: hs.filter(h => h >= 25).length, tallest: hs[0] || null, broad: G.apexTrees.filter(t => t.broad).length, tiles: G.apexTiles.size };
+    return { trees: G.apexTrees.length, neCells: G.neTreeCells.size, neTrees: [...G.neTreeCells.values()].reduce((a, b) => a + b.length, 0), neDrawn: NE_APEX.drawn, neVisible: NE_APEX.visible, neMs: +NE_APEX.lastMs.toFixed(1), neSlow: NE_APEX.slow, neSprites: NE_APEX.sprites.size, parcels: Object.keys(G.apexByParcel).length, giants: hs.filter(h => h >= 25).length, tallest: hs[0] || null, broad: G.apexTrees.filter(t => t.broad).length, tiles: G.apexTiles.size };
   },
   /** Farmsteads in view + which parcels they sit on. */
   /** LID-3 buildings: stats, or the measured record for one footprint_id. */

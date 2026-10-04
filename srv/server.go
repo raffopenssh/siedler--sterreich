@@ -2585,8 +2585,11 @@ func landmarkLetter(typ string) string {
 // the KG JSON carries "2.1"/"2.3". Anything ≥ 2 counts as the v2 product line.
 // isV24Product: srtm product v2.4 = NE cells published (observed layer).
 // "v2.4-partial" counts too — cells exist for the processed part.
+// isV24Product: NE cells are published for this KG. "v2.4-partial" means the
+// fleet is still processing — srtm /cells answers 404 not_processed for it, so
+// adopting/warming it would only burn cycles; it flips when the suffix drops.
 func isV24Product(pv string) bool {
-	return strings.HasPrefix(pv, "v2.4") || strings.HasPrefix(pv, "2.4")
+	return (strings.HasPrefix(pv, "v2.4") || strings.HasPrefix(pv, "2.4")) && !strings.Contains(pv, "partial")
 }
 
 func isV2Product(pv string) bool {
