@@ -3106,6 +3106,52 @@ const BASE_PAD = 1.5, BASE_SLICE_MS = 6;
 let _base = null, _baseA = null, _baseAt = 0, _baseSig = '';   // displayed canvas + its anchor + data signature
 let _bb = null, _spare = null, _bbReal = null;                 // build in progress, recycled canvas, real camera while pumping
 let _camMovedAt = 0, _camLast = '';
+// Labels requested while the cached base layer is built. The base canvas is
+// blitted *under* buildings, treasures and every live overlay, so text drawn
+// into it ended up as a blurred, half-covered watermark ("Conservation area"
+// behind a row of houses) and could not be smashed. Base draws therefore only
+// *request* a label (baseLabel) with its geo anchor; drawBaseLabels() paints the
+// current set live in renderNow, on top, through smashDraw.
+let _bbLabels = null, _baseLabels = [];
+function baseLabel(lon, lat, text, opts) { if (_bbLabels) _bbLabels.push(Object.assign({ lon, lat, text }, opts || {})); }
+function drawBaseLabels(ctx) {
+  if (!_baseLabels.length) return;
+  const W = gc.width, H = gc.height, v = viewBounds(), z = G.cam.zoom;
+  ctx.save();
+  for (const l of _baseLabels) {
+    if (l.minZoom && z < l.minZoom) continue;
+    let x, y;
+    if (l.box) {
+      // area label: centre of the zone's part that is on screen (never off-screen for big zones)
+      const b = l.box; if (b.e < v.w || b.w > v.e || b.n < v.s || b.s > v.n) continue;
+      const [x1, y1] = toScreen(Math.max(b.w, v.w), Math.min(b.n, v.n)), [x2, y2] = toScreen(Math.min(b.e, v.e), Math.max(b.s, v.s));
+      if (x2 - x1 < 60 || y2 - y1 < 30) continue;
+      x = (x1 + x2) / 2; y = (y1 + y2) / 2;
+    } else { [x, y] = toScreen(l.lon, l.lat); x += l.dx || 0; y += l.dy || 0; }
+    if (x < -40 || y < -20 || x > W + 40 || y > H + 20) continue;
+    const chip = l.kind === 'chip';
+    ctx.font = chip ? MAP_FONT.pixel : MAP_FONT.small;
+    const tw = Math.ceil(ctx.measureText(l.text).width), pw = chip ? tw + 16 : tw + 4, ph = chip ? 18 : 13;
+    const bx = Math.round(x - pw / 2), by = Math.round(chip ? y - ph / 2 : y);
+    if (!labelSlotFree(bx, by, pw, ph)) continue;
+    const col = l.color || '#ffe9a8', text = l.text;
+    const paint = (c) => {
+      c.save();
+      c.font = chip ? MAP_FONT.pixel : MAP_FONT.small; c.textAlign = 'center'; c.textBaseline = chip ? 'middle' : 'top';
+      if (chip) {
+        c.fillStyle = 'rgba(10,30,50,0.78)'; c.strokeStyle = 'rgba(120,190,255,0.8)'; c.lineWidth = 1;
+        c.beginPath(); c.roundRect(bx, by, pw, ph, 5); c.fill(); c.stroke();
+        c.fillStyle = col; c.fillText(text, bx + pw / 2, by + ph / 2 + 1);
+      } else {
+        c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillText(text, bx + pw / 2 + 1, by + 1);
+        c.fillStyle = col; c.fillText(text, bx + pw / 2, by);
+      }
+      c.restore();
+    };
+    smashDraw(ctx, 'base:' + l.id, bx, by, pw, ph, paint);
+  }
+  ctx.restore();
+}
 function baseSignature(W, H) {
   let conv = 0; for (const c of G.claimed) { if (c.converted_to) conv++; if (c.well_at) conv += 1000; }
   return [W, H,
@@ -3244,6 +3290,8 @@ function renderNow() {
 
   // ---- Official place names (BEV DLM Riednamen, Almen, Gipfel, Bäche…) ----
   drawToponyms(ctx);
+  // ---- Labels requested by the base layer (Wasserschutz chip, tree heights, Hofstellen) — live + smashable ----
+  drawBaseLabels(ctx);
 
   // ---- Similar-parcels overlay (below treasures, above parcels) ----
   if (G.similar) drawSimilarParcels(ctx);
@@ -3296,7 +3344,7 @@ function startBaseBuild(claimMap, W, H, sig, aheadLon, aheadLat) {
   _spare = null;
   canvas.width = bw; canvas.height = bh;   // also clears
   const anchor = { lon: aheadLon != null ? aheadLon : G.cam.lon, lat: aheadLat != null ? aheadLat : G.cam.lat, zoom: G.cam.zoom, W, H, bw, bh };
-  _bb = { canvas, anchor, sig, gen: baseLayerSteps(canvas.getContext('2d'), bw, bh, claimMap) };
+  _bb = { canvas, anchor, sig, labels: [], gen: baseLayerSteps(canvas.getContext('2d'), bw, bh, claimMap) };
 }
 /** Run the in-progress build for ≤ budget ms with the viewport/camera swapped to the anchor. */
 function pumpBaseBuild(budgetMs) {
@@ -3306,11 +3354,12 @@ function pumpBaseBuild(budgetMs) {
   _bbReal = { lon: cam.lon, lat: cam.lat, zoom: cam.zoom, W: realGc.width, H: realGc.height };   // the real viewport, for loaders that must not fetch for the padding
   gc = { width: a.bw, height: a.bh, getBoundingClientRect: () => realGc.getBoundingClientRect(), classList: realGc.classList, style: realGc.style };
   G.cam.lon = a.lon; G.cam.lat = a.lat; G.cam.zoom = a.zoom;
+  _bbLabels = _bb.labels;
   const t0 = performance.now(); let done = false;
   try { do { if (_bb.gen.next().done) { done = true; break; } } while (performance.now() - t0 < budgetMs); }
   catch (e) { console.error('base build failed', e); done = true; }
-  finally { gc = realGc; G.cam.lon = cam.lon; G.cam.lat = cam.lat; G.cam.zoom = cam.zoom; _bbReal = null; }
-  if (done) { _spare = _base; _base = _bb.canvas; _baseA = _bb.anchor; _baseSig = _bb.sig; _baseAt = performance.now(); _bb = null; }
+  finally { gc = realGc; G.cam.lon = cam.lon; G.cam.lat = cam.lat; G.cam.zoom = cam.zoom; _bbReal = null; _bbLabels = null; }
+  if (done) { _spare = _base; _base = _bb.canvas; _baseA = _bb.anchor; _baseSig = _bb.sig; _baseAt = performance.now(); _baseLabels = _bb.labels; _bb = null; }
   return done;
 }
 function drawCachedBase(ctx, W, H, claimMap) {
@@ -12756,11 +12805,10 @@ function drawWaterProtection(ctx) {
     // quiet blue wash + thin dashed edge — no hatch, the colour is the signal
     ctx.fillStyle = 'rgba(60,140,220,0.10)'; ctx.fill('evenodd');
     ctx.strokeStyle = 'rgba(80,160,240,0.55)'; ctx.lineWidth = 1; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
+    // Label: requested only — drawn live on top (smashable) by drawBaseLabels, clipped to the real view.
     if (G.cam.zoom >= 16 && maxX - minX > 60 && maxY - minY > 30) {
-      const cx = (Math.max(minX, 0) + Math.min(maxX, W)) / 2, cy = (Math.max(minY, 0) + Math.min(maxY, H)) / 2;
-      ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      const lbl = '💧 ' + tr(z.properties.type === 'schongebiet' ? 'Schongebiet' : 'Wasserschutz');
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, cx + 1, cy + 1); ctx.fillStyle = '#c8e8ff'; ctx.fillText(lbl, cx, cy);
+      baseLabel((b.w + b.e) / 2, (b.s + b.n) / 2, '💧 ' + tr(z.properties.type === 'schongebiet' ? 'Schongebiet' : 'Wasserschutz'),
+        { id: 'wp:' + (z.properties.id || z.properties.name || b.w + ',' + b.s), kind: 'chip', color: '#c8e8ff', box: b, minZoom: 16 });
     }
   }
   ctx.restore();
@@ -13403,9 +13451,7 @@ function drawApexTree(ctx, t, hash, tallest) {
   drawTree(ctx, 0, 0, apexVariant(t, hash), hash + Math.round(t.h * 7));
   ctx.restore();
   if (tallest && G.cam.zoom >= 17.5) {
-    ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    const lbl = fmtNum(t.h, 0) + ' m';
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 1, y + 3); ctx.fillStyle = '#d8f0c0'; ctx.fillText(lbl, x, y + 2);
+    baseLabel(t.lon, t.lat, fmtNum(t.h, 0) + ' m', { id: 'apex:' + t.lon + ',' + t.lat, dy: 2, color: '#d8f0c0', minZoom: 17.5 });
   }
 }
 
@@ -13488,13 +13534,8 @@ function drawHofstellen(ctx) {
     const seed = simpleHash(h.id);
     drawHofSprite(ctx, x + 10 * u, y + 8 * u, u, seed);
     if (G.cam.zoom >= 18.5) {
-      ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      const lbl = (h.organic ? '🌿 ' : '🚜 ') + tr('Hofstelle');
-      // several farmsteads in one yard (wine villages) → one label per slot
-      const tw = Math.ceil(ctx.measureText(lbl).width) + 4;
-      if (labelSlotFree(Math.round(x + 10 * u - tw / 2), Math.round(y + 10 * u), tw, 13)) {
-        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 10 * u + 1, y + 10 * u + 1); ctx.fillStyle = '#ffe9a8'; ctx.fillText(lbl, x + 10 * u, y + 10 * u);
-      }
+      // several farmsteads in one yard (wine villages) → one label per slot (drawBaseLabels)
+      baseLabel(h.lon, h.lat, (h.organic ? '🌿 ' : '🚜 ') + tr('Hofstelle'), { id: 'hof:' + h.id, dx: 10 * u, dy: 10 * u, color: '#ffe9a8', minZoom: 18.5 });
     }
   }
   ctx.textBaseline = 'alphabetic';
