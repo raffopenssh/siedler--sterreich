@@ -1218,7 +1218,4 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .pick-legend { margin-left:auto; font:15px var(--font-game); color:var(--text-dim); white-space:nowrap; display:inline-flex; align-items:center; gap:4px; }
 .pick-legend i { display:inline-block; width:12px; height:12px; border:1px solid #1a1408; }
 .pick-legend .lg-watch { background:rgba(200,120,40,0.6); } .pick-legend .lg-stressed { background:rgba(240,50,40,0.7); }
-.pick-legend .lg-enh { background:rgba(80,230,255,0.55); border-radius:50%; } .pick-legend .lg-ne { background:rgba(80,230,255,0.55); border-radius:50%; box-shadow:0 0 0 2px #0d0b06, 0 0 0 3.5px #8ff0b0; }
-.pick-legend b { color:#8ff0b0; font-weight:normal; }
-#pick-ne-legend { margin-left:auto; margin-right:14px; gap:5px; } #pick-ne-legend .lg-ne { margin-left:8px; } #pick-ne-legend + .pick-legend { margin-left:0; }
 @media (max-width:768px) { .pick-legend { display:none !important; } }

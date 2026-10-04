@@ -885,8 +885,6 @@ function drawPick() {
     pickData.enhancedCodes = new Set(G.enhancedGemeinden.map(g => String(g.gemeinde_code)));
     pickData.neCodes = new Set(G.enhancedGemeinden.filter(g => g.ne).map(g => String(g.gemeinde_code)));
     pickData.enhancedCount = G.enhancedGemeinden.length;
-    const lg = document.getElementById('pick-ne-legend');
-    if (lg) { lg.style.display = pickData.enhancedCodes.size ? '' : 'none'; const n = document.getElementById('pick-ne-n'); if (n) n.textContent = pickData.neCodes.size ? '(' + pickData.neCodes.size + ')' : ''; }
   }
   const glowPulse = 0.55 + Math.sin(Date.now()/600) * 0.25;
 
@@ -906,13 +904,7 @@ function drawPick() {
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
       }
-      const isNE = isEnh && pickData.neCodes.has(String(m.gemeinde_code || m.code));
-      if (isNE) { // 👁 observed layer: a pulsing green ring around the cyan halo
-        ctx.strokeStyle = 'rgba(143,240,176,' + (0.6 + 0.4*glowPulse).toFixed(3) + ')';
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(x, y, 9 + glowPulse * 1.5, 0, Math.PI*2); ctx.stroke();
-      }
-      ctx.fillStyle = isHover ? '#ffd700' : (isNE ? '#c8ffdc' : isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
+      ctx.fillStyle = isHover ? '#ffd700' : (isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
       const sz = isHover ? 5 : (isEnh ? 4 : 3);
       ctx.fillRect(x-sz/2, y-sz/2, sz, sz);
     }
@@ -934,8 +926,7 @@ function drawPick() {
     if (pickData.hoverMuni && pickData.hoverPos) {
       const m = pickData.hoverMuni;
       const hx = pickData.hoverPos[0], hy = pickData.hoverPos[1];
-      let label = m.name + (m.district_name ? ' · ' + m.district_name : '');
-      if (pickData.neCodes && pickData.neCodes.has(String(m.gemeinde_code || m.code))) label += ' · 👁 ' + tr('beobachtet');
+      const label = m.name + (m.district_name ? ' · ' + m.district_name : '');
       ctx.font = '16px VT323';
       const tw = ctx.measureText(label).width;
       const px = Math.min(hx + 12, W - tw - 16);
@@ -955,7 +946,7 @@ function drawPick() {
     for (const f of G.pick.munis) {
       const code = String(f.properties.gemeinde_code || f.properties.code);
       const isEnh = pickData.enhancedCodes.has(code);
-      drawMuniPoly(ctx, f, f === pickData.hover, isEnh, glowPulse, pickData.neCodes.has(code));
+      drawMuniPoly(ctx, f, f === pickData.hover, isEnh, glowPulse);
     }
   }
 
@@ -965,7 +956,7 @@ function drawPick() {
   }
 }
 
-function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse, isNE) {
+function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
   const geom = feature.geometry;
   const rings = geom.type === 'MultiPolygon' ? geom.coordinates.map(p=>p[0]) : [geom.coordinates[0]];
 
@@ -999,12 +990,6 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse, isNE) {
       ctx.restore();
       ctx.fillStyle = 'rgba(80,230,255,' + (0.05 + 0.05*(glowPulse||0.5)).toFixed(3) + ')';
       ctx.fill();
-      if (isNE) { // observed layer: green inner rim
-        ctx.save(); ctx.clip();
-        ctx.strokeStyle = 'rgba(120,240,170,' + (0.35 + 0.35*(glowPulse||0.5)).toFixed(2) + ')';
-        ctx.lineWidth = 6; ctx.stroke();
-        ctx.restore();
-      }
     }
     ctx.strokeStyle = isHover ? '#ffd700' : '#2a4020';
     ctx.lineWidth = isHover ? 2.5 : 1;
@@ -1021,19 +1006,6 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse, isNE) {
     ctx.fillText(feature.properties.name, cx+1, cy+1);
     ctx.fillStyle = isHover ? '#ffd700' : '#e8dbb5';
     ctx.fillText(feature.properties.name, cx, cy);
-    if (isNE) { // observed layer badge under the name (WebKit-safe: measured, left-aligned)
-      const tag = '👁 ' + tr('beobachtet');
-      ctx.font = MAP_FONT.small;
-      const tw = ctx.measureText(tag).width;
-      ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(10,20,10,0.75)';
-      ctx.fillRect(cx - tw/2 - 4, cy + 5, tw + 8, 14);
-      ctx.strokeStyle = 'rgba(143,240,176,' + (0.5 + 0.4*(glowPulse||0.5)).toFixed(2) + ')';
-      ctx.lineWidth = 1; ctx.strokeRect(cx - tw/2 - 4 + 0.5, cy + 5.5, tw + 8, 14);
-      ctx.fillStyle = '#8ff0b0';
-      ctx.fillText(tag, cx - tw/2, cy + 16);
-      ctx.textAlign = 'center';
-    }
   }
 }
 
