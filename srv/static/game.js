@@ -1608,6 +1608,12 @@ async function startGameWithLoading() {
   initGameInput();
   render();
   renderMini();
+  // Toponyms (BEV DLM names) need the live canvas (viewBounds) and the session,
+  // so they can only start now — the loading screen fetched cadastre + fast
+  // layers directly without loadMoreParcels(). Without this the initial viewport
+  // (incl. a camera from #v=) stayed nameless until the first pan. G.topoTiles
+  // dedups, so later pans don't refetch.
+  loadToponyms().catch(e => console.error(e));
 
   document.getElementById('btn-invite').onclick = () => {
     navigator.clipboard.writeText(inviteUrl(G.session.invite_code));
@@ -3173,6 +3179,7 @@ function renderNow() {
   syncViewHash();
   const ctx = gctx;
   const W = gc.width, H = gc.height;
+  smashFrameBegin();
 
   // Build claim lookup
   const claimMap = {};
@@ -3204,6 +3211,7 @@ function renderNow() {
   drawRipeMarkers(ctx, claimMap);
   drawCollectFX(ctx);
   if (G.n2kVisible) drawN2KOverlay(ctx, true);
+  drawSmashFX(ctx);
 
   // ---- GPS position marker ----
   if (G.geo.watching) drawGeoMarker(ctx);
@@ -3685,14 +3693,21 @@ function drawN2KOverlay(ctx, labelsOnly) {
     let py = hudShown ? 102 : 72;
     if (hudShown && hudEl) { const hr = hudEl.getBoundingClientRect(), mr = gc.getBoundingClientRect(); if (hr.height > 0) py = Math.max(py, hr.bottom - mr.top + 16); }
     const px = narrow ? (W - 72) / 2 : W / 2;   // same axis as search bar + badges
-    ctx.fillStyle = 'rgba(10,40,20,0.82)';
-    ctx.strokeStyle = 'rgba(125,255,160,0.85)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.roundRect(px - pw/2, py - ph/2, pw, ph, 6); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#c8ffd8';
-    ctx.fillText(label, px, py + 1);
+    const paint = (c) => {
+      c.save();
+      c.globalAlpha = 1; c.setLineDash([]);
+      c.font = MAP_FONT.pixel; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = 'rgba(10,40,20,0.82)';
+      c.strokeStyle = 'rgba(125,255,160,0.85)';
+      c.lineWidth = 1.5;
+      c.beginPath(); c.roundRect(px - pw/2, py - ph/2, pw, ph, 6); c.fill(); c.stroke();
+      c.fillStyle = '#c8ffd8';
+      c.fillText(label, px, py + 1);
+      c.restore();
+    };
+    const drawn = smashDraw(ctx, 'n2k:' + names.join('|'), px - pw / 2, py - ph / 2, pw, ph, paint);
     ctx.restore();
-    G._n2kBannerBottom = py + ph / 2;
+    G._n2kBannerBottom = drawn ? py + ph / 2 : 0;
   } else G._n2kBannerBottom = 0;
 }
 
@@ -3932,19 +3947,22 @@ const _labelSlots = [];
 const _treeLabelQueue = [];
 function flushTreeLabels(ctx) {
   if (!_treeLabelQueue.length) return;
-  ctx.save();
-  ctx.font = MAP_FONT.label; ctx.textAlign = 'center';
   for (const q of _treeLabelQueue) {
-    ctx.fillStyle = 'rgba(20,16,10,0.72)';
-    ctx.fillRect(q.bx, q.by, q.tw, 15);
-    ctx.fillStyle = q.isHint ? 'rgba(255,215,0,0.9)' : 'rgba(120,200,90,0.9)';
-    ctx.fillRect(q.bx, q.by, q.tw, 1);
-    ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillText(q.label, q.x + 1, q.ly + 1);
-    ctx.fillStyle = q.isHint ? 'rgba(255,215,0,' + q.lp.toFixed(2) + ')' : 'rgba(210,255,190,' + q.lp.toFixed(2) + ')';
-    ctx.fillText(q.label, q.x, q.ly);
+    const paint = (c) => {
+      c.save();
+      c.font = MAP_FONT.label; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      c.fillStyle = 'rgba(20,16,10,0.72)';
+      c.fillRect(q.bx, q.by, q.tw, 15);
+      c.fillStyle = q.isHint ? 'rgba(255,215,0,0.9)' : 'rgba(120,200,90,0.9)';
+      c.fillRect(q.bx, q.by, q.tw, 1);
+      c.fillStyle = 'rgba(0,0,0,0.65)';
+      c.fillText(q.label, q.x + 1, q.ly + 1);
+      c.fillStyle = q.isHint ? 'rgba(255,215,0,' + q.lp.toFixed(2) + ')' : 'rgba(210,255,190,' + q.lp.toFixed(2) + ')';
+      c.fillText(q.label, q.x, q.ly);
+      c.restore();
+    };
+    smashDraw(ctx, 'tree:' + (q.id || q.label), q.bx, q.by, q.tw, 15, paint);
   }
-  ctx.restore();
   _treeLabelQueue.length = 0;
 }
 function labelSlotFree(x, y, w, h) {
@@ -4198,7 +4216,7 @@ function drawGiantTree(ctx, t, zoom, sway, pop, isHint, animate, maxH, tier) {
     if (t._lbl !== true && !labelSlotFree(bx, by, tw, 15)) { ctx.textAlign = 'left'; return true; }   // glitch #6: dense stands (pre-pass decided for revealed giants)
     // Queued: labels are flushed above every sprite (a taller neighbour drawn
     // later must not cover a shorter tree's tag) — see flushTreeLabels().
-    _treeLabelQueue.push({ label, x, ly, bx, by, tw, isHint, lp });
+    _treeLabelQueue.push({ label, x, ly, bx, by, tw, isHint, lp, id: t.id || (t.lon + ',' + t.lat) });
     ctx.textAlign = 'left';
   }
   return true;
@@ -7486,18 +7504,23 @@ function drawTreasure(ctx, t) {
     const label = isSpecies ? t.species_german : (rar.name + (t.value ? ' +' + t.value : ''));
     const sub = isSpecies && t.species_category ? (t.treasure_type === 'roaming' ? '🐾 ' + rar.name + ' · ' + tr('zieht weiter') : t.species_category + ' · ' + rar.name) : '';
     ctx.font = MAP_FONT.label;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     const ty = Math.round(y + 8 * s);
-    const tw = Math.ceil(ctx.measureText(label).width) + 8;
-    ctx.fillStyle = 'rgba(20,16,10,0.78)';
-    ctx.fillRect(xi - Math.ceil(tw / 2), ty, tw, sub ? 26 : 15);
-    ctx.fillStyle = rar.rim; ctx.fillRect(xi - Math.ceil(tw / 2), ty, tw, 1);
-    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillText(label, xi + 1, ty + 2);
-    ctx.fillStyle = '#fff4d0'; ctx.fillText(label, xi, ty + 1);
-    if (sub) {
-      ctx.font = MAP_FONT.small;
-      ctx.fillStyle = rar.rim; ctx.fillText(sub, xi, ty + 14);
-    }
+    const tw = Math.ceil(ctx.measureText(label).width) + 8, th = sub ? 26 : 15;
+    const paint = (c) => {
+      c.save();
+      c.font = MAP_FONT.label; c.textAlign = 'center'; c.textBaseline = 'top';
+      c.fillStyle = 'rgba(20,16,10,0.78)';
+      c.fillRect(xi - Math.ceil(tw / 2), ty, tw, th);
+      c.fillStyle = rar.rim; c.fillRect(xi - Math.ceil(tw / 2), ty, tw, 1);
+      c.fillStyle = 'rgba(0,0,0,0.65)'; c.fillText(label, xi + 1, ty + 2);
+      c.fillStyle = '#fff4d0'; c.fillText(label, xi, ty + 1);
+      if (sub) {
+        c.font = MAP_FONT.small;
+        c.fillStyle = rar.rim; c.fillText(sub, xi, ty + 14);
+      }
+      c.restore();
+    };
+    smashDraw(ctx, 'treasure:' + t.id, xi - Math.ceil(tw / 2), ty, tw, th, paint);
   }
   ctx.restore();
 }
@@ -7595,6 +7618,177 @@ function drawCollectFX(ctx) {
     ctx.fillStyle = f.color; ctx.fillText(f.text, Math.round(x), fy);
     ctx.globalAlpha = 1;
   }
+}
+
+// ================= SCHILDERSTURM — smashable map labels (hidden feature) =================
+// Canvas labels (place names, tree/treasure tags, the Natura-2000 chip …) are
+// pure decoration: they can't be tapped, yet they cover the land. A precise
+// tap on one shatters it Super-Mario-brick style, a coin pops out, and the
+// label regrows after a while — or as soon as the camera pans/zooms away.
+// The fresher the label (shorter on screen), the more coins. Every label
+// draw site goes through smashDraw(): it registers the exact hit box for the
+// frame and paints only while the label is not shattered. Hit testing runs
+// AFTER every real tappable (treasures, markers, trees …) so nothing that
+// used to be clickable is ever stolen by a sign.
+const SMASH = {
+  reg: [],              // this frame: {id,x,y,w,h,paint}
+  gone: new Map(),      // id → {until, cam:{lon,lat,zoom}}
+  seen: new Map(),      // id → {first,last} — how long the label has been in view
+  fx: [],               // flying debris + coin pops
+  n: 0, streak: 0, lastAt: 0, pruneAt: 0, busy: false,
+};
+const SMASH_REGEN_MS = 45000;
+/** Client mirror of smashCoins() in srv/smash.go — keep in sync. */
+function smashCoinsFor(ms) { return Math.max(1, Math.round(12 * Math.exp(-ms / 6000))); }
+function smashFrameBegin() {
+  SMASH.reg.length = 0;
+  const now = performance.now();
+  // regrow eagerly: once the camera has left the spot (or time is up) the sign
+  // is back, even if the player pans away and straight back again
+  for (const [id, g] of SMASH.gone) if (now > g.until || smashCamMoved(g.cam)) SMASH.gone.delete(id);
+  if (now - SMASH.pruneAt > 5000) {
+    SMASH.pruneAt = now;
+    for (const [id, s] of SMASH.seen) if (now - s.last > 60000) SMASH.seen.delete(id);
+  }
+}
+/** Has the camera left the spot where this label was smashed? (pan ≥ 55 % of the screen or zoom ≥ ½ level) */
+function smashCamMoved(c) {
+  if (Math.abs(G.cam.zoom - c.zoom) >= 0.5) return true;
+  const s = mapScale();
+  const dx = (G.cam.lon - c.lon) * s, dy = (G.cam.lat - c.lat) * s * 1.35;
+  return Math.hypot(dx, dy) >= 0.55 * Math.min(gc.width, gc.height);
+}
+/** Register a label's exact box and paint it unless it is currently shattered.
+ *  paint(ctx) must draw the label in screen coordinates. Returns true if drawn. */
+function smashDraw(ctx, id, bx, by, w, h, paint) {
+  const now = performance.now();
+  if (SMASH.gone.has(id)) return false;
+  let s = SMASH.seen.get(id);
+  if (!s || now - s.last > 1500) { s = { first: now, last: now }; SMASH.seen.set(id, s); } else s.last = now;
+  SMASH.reg.push({ id, x: bx, y: by, w, h, paint });
+  paint(ctx);
+  return true;
+}
+/** Precise hit: the point must lie inside the label box (no slop); smallest box wins. */
+function hitSmashLabel(x, y) {
+  let best = null;
+  for (const r of SMASH.reg) {
+    if (x < r.x || y < r.y || x > r.x + r.w || y > r.y + r.h) continue;
+    if (!best || r.w * r.h < best.w * best.h) best = r;
+  }
+  return best;
+}
+function smashHit(r, tx, ty) {
+  const now = performance.now();
+  const s = SMASH.seen.get(r.id);
+  const visibleMs = Math.max(0, Math.round(now - (s ? s.first : now)));
+  SMASH.gone.set(r.id, { until: now + SMASH_REGEN_MS + Math.random() * 15000, cam: { lon: G.cam.lon, lat: G.cam.lat, zoom: G.cam.zoom } });
+  SMASH.seen.delete(r.id);
+  SMASH.streak = now - SMASH.lastAt < 2500 ? SMASH.streak + 1 : 1;
+  SMASH.lastAt = now; SMASH.n++;
+  // --- debris: render the label once off-screen, cut it into brick-sized chunks
+  const pad = 3, w = Math.ceil(r.w) + pad * 2, h = Math.ceil(r.h) + pad * 2;
+  const oc = document.createElement('canvas');
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  oc.width = Math.max(1, Math.ceil(w * dpr)); oc.height = Math.max(1, Math.ceil(h * dpr));
+  const octx = oc.getContext('2d');
+  octx.scale(dpr, dpr); octx.translate(-r.x + pad, -r.y + pad);
+  try { r.paint(octx); } catch (e) {}
+  const pw = Math.max(6, Math.min(14, Math.round(h / 2))), cols = Math.max(2, Math.min(14, Math.round(w / pw))), rows = h > 20 ? 2 : 1;
+  const cw = w / cols, ch = h / rows, pieces = [];
+  const cx0 = r.x + r.w / 2, cy0 = r.y + r.h / 2;
+  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+    const px = r.x - pad + (i + 0.5) * cw, py = r.y - pad + (j + 0.5) * ch;
+    // burst away from the finger, Mario-style: up first, then gravity
+    const ax = px - tx, ay = py - ty;
+    pieces.push({ sx: i * cw, sy: j * ch, cw, ch, x: px, y: py,
+      vx: ax * 5 + (Math.random() - 0.5) * 90, vy: -170 - Math.random() * 160 + ay * 3,
+      rot: 0, vr: (Math.random() - 0.5) * 14, delay: Math.random() * 60 });
+  }
+  const coins = smashCoinsFor(visibleMs);
+  // gold sparks from the point of impact (the "POW" of the brick)
+  const sparks = [];
+  for (let i = 0; i < 10; i++) { const a = -Math.PI * (0.15 + 0.7 * Math.random()), v = 120 + Math.random() * 160; sparks.push({ vx: Math.cos(a) * v, vy: Math.sin(a) * v, sz: 2 + Math.round(Math.random() * 2) }); }
+  SMASH.fx.push({ t0: now, dur: 1100, img: oc, dpr, pieces, sparks, tx, ty, coin: { x: cx0, y: r.y, coins, streak: SMASH.streak }, text: '+' + coins });
+  if (navigator.vibrate && isCoarsePointer()) { try { navigator.vibrate(12); } catch (e) {} }
+  render();
+  smashReward(r.id, visibleMs, coins);
+  if (SMASH.n === 1) setTimeout(() => toast('🪧 ' + tr('Geheimnis entdeckt: Schilder zerschlagen bringt Münzen — je frischer das Schild, desto mehr!'), 'ok'), 500);
+  else if (SMASH.n === 25) setTimeout(() => toast('🪧 ' + tr('Schilderstürmer! 25 Schilder zerlegt.'), 'ok'), 300);
+}
+async function smashReward(id, visibleMs, expected) {
+  if (!G.player || !G.session) return;
+  try {
+    const res = await POST('/api/smash-label', { player_id: G.player.id, session_id: G.session.id, visible_ms: visibleMs, label: String(id).slice(0, 64) });
+    if (res && res.player) { G.player = res.player; updateStats(); }
+    else if (res && res.capped) { const f = SMASH.fx[SMASH.fx.length - 1]; if (f) f.text = tr('Tageslimit'); }
+  } catch (e) { /* purely cosmetic if the reward fails */ }
+}
+/** Debris with gravity + a spinning coin that pops up, then "+N" floats away. */
+function drawSmashFX(ctx) {
+  if (!SMASH.fx.length) return;
+  const now = performance.now();
+  SMASH.fx = SMASH.fx.filter(f => now - f.t0 < f.dur + 500);
+  ctx.save();
+  for (const f of SMASH.fx) {
+    const tms = now - f.t0, k = Math.min(1, tms / f.dur);
+    // impact flash: a hard pixel ring that snaps open and is gone in 180 ms
+    if (tms < 180) {
+      const fk = tms / 180, rr = Math.round(6 + fk * 22);
+      ctx.globalAlpha = 1 - fk; ctx.strokeStyle = '#fff8d0'; ctx.lineWidth = 3;
+      ctx.strokeRect(Math.round(f.tx) - rr, Math.round(f.ty) - rr * 0.6, rr * 2, rr * 1.2);
+    }
+    // sparks with gravity
+    for (const p of f.sparks) {
+      const t = tms / 1000, x = f.tx + p.vx * t, y = f.ty + p.vy * t + 480 * t * t;
+      if (k > 0.7) break;
+      ctx.globalAlpha = 1 - k / 0.7;
+      ctx.fillStyle = (p.sz > 3) ? '#fff4c0' : '#ffd24a';
+      ctx.fillRect(Math.round(x) - p.sz / 2, Math.round(y) - p.sz / 2, p.sz, p.sz);
+    }
+    // debris: chunks of the sign itself, slightly enlarged so thin text reads as rubble
+    const alpha = k < 0.6 ? 1 : 1 - (k - 0.6) / 0.4;
+    ctx.imageSmoothingEnabled = false;
+    for (const p of f.pieces) {
+      const t = Math.max(0, (tms - p.delay) / 1000);
+      const x = p.x + p.vx * t, y = p.y + p.vy * t + 520 * t * t;
+      if (alpha <= 0 || y > gc.height + 20) continue;
+      ctx.globalAlpha = alpha;
+      ctx.save(); ctx.translate(Math.round(x), Math.round(y)); ctx.rotate(p.vr * t); ctx.scale(1.5, 1.5);
+      ctx.drawImage(f.img, p.sx * f.dpr, p.sy * f.dpr, p.cw * f.dpr, p.ch * f.dpr, -p.cw / 2, -p.ch / 2, p.cw, p.ch);
+      ctx.restore();
+    }
+    ctx.imageSmoothingEnabled = true;
+    // coin: hops up out of the sign (0–450 ms), spinning
+    const c = f.coin, ct = tms / 450;
+    if (ct < 1) {
+      const cy = c.y - 6 - (1 - Math.pow(1 - ct, 2)) * 44, spin = Math.abs(Math.cos(tms / 55));
+      const rw = Math.max(1.5, 7 * spin), rh = 8;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#5a3a08'; ctx.beginPath(); ctx.ellipse(c.x, cy, rw + 1.5, rh + 1.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = spin > 0.5 ? '#ffd24a' : '#e0a820'; ctx.beginPath(); ctx.ellipse(c.x, cy, rw, rh, 0, 0, Math.PI * 2); ctx.fill();
+      if (spin > 0.6) { ctx.fillStyle = '#fff4c0'; ctx.fillRect(c.x - 1, cy - 4, 2, 8); }
+    }
+    // reward text floats and fades
+    const tk = Math.min(1, Math.max(0, (tms - 300) / (f.dur + 200 - 300)));
+    if (tk > 0) {
+      const ease = 1 - Math.pow(1 - tk, 3);
+      ctx.globalAlpha = 1 - tk * tk;
+      ctx.font = MAP_FONT.pixel; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      const label = f.text + (c.streak >= 3 && c.coins > 0 ? ' x' + c.streak : '');
+      const tw = ctx.measureText(label).width, coinW = c.coins > 0 ? 14 : 0;
+      const fx0 = Math.round(c.x - (tw + coinW) / 2), fy = Math.round(c.y - 50 - ease * 34);
+      ctx.fillStyle = '#000'; ctx.fillText(label, fx0 + 1, fy + 1);
+      ctx.fillStyle = '#ffd700'; ctx.fillText(label, fx0, fy);
+      if (coinW) {   // pixel coin instead of an emoji (emoji glyphs mis-anchor on WebKit)
+        const cx2 = fx0 + tw + 8;
+        ctx.fillStyle = '#5a3a08'; ctx.beginPath(); ctx.ellipse(cx2, fy, 6, 6, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffd24a'; ctx.beginPath(); ctx.ellipse(cx2, fy, 4.5, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff4c0'; ctx.fillRect(cx2 - 1, fy - 3, 2, 6);
+      }
+    }
+  }
+  ctx.restore();
 }
 
 // Map species names to sprite drawing groups
@@ -9414,6 +9608,12 @@ function onGameClick(e) {
     if (Math.abs(tx-x) < hb.hw && ty-y > -hb.down && ty-y < hb.up) { showTreePopup(G.devTree); return; }
   }
 
+  // Decorative labels (place names, tags, chips): a precise tap shatters them
+  // for coins. Checked only after every real tappable above, so signs never
+  // steal a treasure, marker or tree tap.
+  const sign = hitSmashLabel(x, y);
+  if (sign) { smashHit(sign, x, y); return; }
+
   // Building footprint under the tap? (buildings only render at zoom>=15)
   // IMPORTANT: a building tap still selects the underlying PARCEL — the
   // building details render as an extra section inside the parcel popup, so
@@ -10914,11 +11114,11 @@ function resetPopupPosition(id) {
   requestAnimationFrame(treasureAnimLoop);
   if (!document.getElementById('screen-game').classList.contains('active')) return;
   const natureLive = NATURE.onScreen > 0 && natureAnimLevel() > 0;
-  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length || natureLive || (treasureHintSince > 0 && unfoundTreasures().length))) return;
+  if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length || SMASH.fx.length || natureLive || (treasureHintSince > 0 && unfoundTreasures().length))) return;
   const now = performance.now();
-  const step = natureAnimLevel() === 1 ? 66 : isCoarsePointer() ? 50 : 40;
+  const step = SMASH.fx.length ? 16 : natureAnimLevel() === 1 ? 66 : isCoarsePointer() ? 50 : 40;   // debris runs at full frame rate
   if (now - (treasureAnimLoop._last || 0) < step) return;
-  if (giantAnimBudget() === 1 && !G.fx.length) return; // reduced motion → static (800ms tick below)
+  if (giantAnimBudget() === 1 && !G.fx.length && !SMASH.fx.length) return; // reduced motion → static (800ms tick below)
   treasureAnimLoop._last = now;
   render();
 })();
@@ -11752,31 +11952,39 @@ function drawToponyms(ctx) {
     if (!t._t0) t._t0 = now;
     const k = Math.min(1, (now - t._t0) / 420);
     if (k < 1) fading = true;
-    shown.push({ t, kind, text, x: cx, y: cy, alpha: k, dx: cx - cd.x, dy: cy - cd.y });
+    shown.push({ t, kind, text, x: cx, y: cy, w, h, alpha: k, dx: cx - cd.x, dy: cy - cd.y });
   }
   // Draw in two passes so outlines never cut through neighbouring glyphs.
   for (const s of shown) {
-    ctx.font = _topoFont(s.kind, s.t._cls.size || 0);
-    if ('letterSpacing' in ctx) ctx.letterSpacing = (s.kind === 'town') ? '1px' : (s.kind === 'area' || s.kind === 'range' || s.kind === 'ried') ? '2px' : '0px';
-    ctx.textAlign = 'center';
-    ctx.globalAlpha = s.alpha * (s.kind === 'ried' ? 0.9 : 1);
-    // Pixel-art style: hard offset shadow + dark outline, no blur
-    ctx.strokeStyle = s.kind === 'water' ? 'rgba(10,30,60,0.85)' : 'rgba(30,18,6,0.85)';
-    ctx.lineWidth = s.kind === 'town' ? 3 : 2.5;
-    ctx.strokeText(s.text, s.x, s.y);
-    ctx.fillStyle = _topoColor(s.kind);
-    ctx.fillText(s.text, s.x, s.y);
-    if (s.kind !== 'town' && s.kind !== 'ried' && s.kind !== 'area' && s.kind !== 'valley' && s.kind !== 'water' && Math.abs(s.dx) > 4) {
-      // Label pushed sideways: tiny pixel leader dot at the true position
-      ctx.fillStyle = 'rgba(30,18,6,0.85)'; ctx.fillRect(s.x - s.dx - 2, s.y - s.dy - 2, 4, 4);
-      ctx.fillStyle = _topoColor(s.kind); ctx.fillRect(s.x - s.dx - 1, s.y - s.dy - 1, 2, 2);
-    }
-    if (s.kind === 'town') {
-      // Small pennant tick under settlement names — the Settlers "town sign"
-      const tw = ctx.measureText(s.text).width;
-      ctx.fillStyle = 'rgba(30,18,6,0.85)'; ctx.fillRect(s.x - tw / 2, s.y + (s.t._cls.size || 8) * 0.8 + 1, tw, 2);
-      ctx.fillStyle = '#d8b040'; ctx.fillRect(s.x - tw / 2, s.y + (s.t._cls.size || 8) * 0.8, tw, 1);
-    }
+    const font = _topoFont(s.kind, s.t._cls.size || 0);
+    const ls = (s.kind === 'town') ? '1px' : (s.kind === 'area' || s.kind === 'range' || s.kind === 'ried') ? '2px' : '0px';
+    const paint = (c) => {
+      c.save();
+      c.font = font; c.textBaseline = 'middle'; c.lineJoin = 'round';
+      if ('letterSpacing' in c) c.letterSpacing = ls;
+      c.textAlign = 'center';
+      c.globalAlpha = s.alpha * (s.kind === 'ried' ? 0.9 : 1);
+      // Pixel-art style: hard offset shadow + dark outline, no blur
+      c.strokeStyle = s.kind === 'water' ? 'rgba(10,30,60,0.85)' : 'rgba(30,18,6,0.85)';
+      c.lineWidth = s.kind === 'town' ? 3 : 2.5;
+      c.strokeText(s.text, s.x, s.y);
+      c.fillStyle = _topoColor(s.kind);
+      c.fillText(s.text, s.x, s.y);
+      if (s.kind !== 'town' && s.kind !== 'ried' && s.kind !== 'area' && s.kind !== 'valley' && s.kind !== 'water' && Math.abs(s.dx) > 4) {
+        // Label pushed sideways: tiny pixel leader dot at the true position
+        c.fillStyle = 'rgba(30,18,6,0.85)'; c.fillRect(s.x - s.dx - 2, s.y - s.dy - 2, 4, 4);
+        c.fillStyle = _topoColor(s.kind); c.fillRect(s.x - s.dx - 1, s.y - s.dy - 1, 2, 2);
+      }
+      if (s.kind === 'town') {
+        // Small pennant tick under settlement names — the Settlers "town sign"
+        const tw = c.measureText(s.text).width;
+        c.fillStyle = 'rgba(30,18,6,0.85)'; c.fillRect(s.x - tw / 2, s.y + (s.t._cls.size || 8) * 0.8 + 1, tw, 2);
+        c.fillStyle = '#d8b040'; c.fillRect(s.x - tw / 2, s.y + (s.t._cls.size || 8) * 0.8, tw, 1);
+      }
+      c.restore();
+    };
+    // exact text box (the slot keeps its reservation while shattered, so no neighbour pops in)
+    if (!smashDraw(ctx, 'topo:' + (s.t.id || s.t.name + '@' + s.t.lon + ',' + s.t.lat), s.x - s.w / 2, s.y - s.h / 2, s.w, s.h, paint)) s.t._t0 = 0;
   }
   ctx.restore();
   if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
@@ -12345,10 +12553,15 @@ function drawGwStations(ctx) {
     drawStationSprite(ctx, x, y, s.category, u, t + n);
     _drawnStations.push({ s, x, y, r: 10 * u });
     if (G.cam.zoom >= 17 && n === 1) {
-      ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.font = MAP_FONT.small;
       const lbl = (GW_CAT[s.category] || {}).icon + ' ' + String(s.name || '').replace(/\s+/g, ' ').slice(0, 22);
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillText(lbl, x + 1, y + 4);
-      ctx.fillStyle = '#cfe8ff'; ctx.fillText(lbl, x, y + 3);
+      const tw = Math.ceil(ctx.measureText(lbl).width) + 2, lx = x, ly = y;
+      smashDraw(ctx, 'gw:' + (s.id || s.name), lx - tw / 2, ly + 3, tw, 12, (c) => {
+        c.save(); c.font = MAP_FONT.small; c.textAlign = 'center'; c.textBaseline = 'top';
+        c.fillStyle = 'rgba(0,0,0,0.6)'; c.fillText(lbl, lx + 1, ly + 4);
+        c.fillStyle = '#cfe8ff'; c.fillText(lbl, lx, ly + 3);
+        c.restore();
+      });
     }
   }
   ctx.restore();
@@ -12575,9 +12788,14 @@ function drawFlowPath(ctx) {
     const [x, y] = toScreen(gp.pt[0], gp.pt[1]);
     if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
     drawStationSprite(ctx, x, y, 'groundwater_station', 1.5, 0);
-    ctx.font = MAP_FONT.small; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.font = MAP_FONT.small;
     const lbl = '📏 ' + gp.g.name + (gp.g.flow_mean_m3s != null ? ' · ' + fmtNum(gp.g.flow_mean_m3s, gp.g.flow_mean_m3s < 10 ? 1 : 0) + ' m³/s' : '');
-    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillText(lbl, x + 1, y + 5); ctx.fillStyle = '#cfe8ff'; ctx.fillText(lbl, x, y + 4);
+    const tw = Math.ceil(ctx.measureText(lbl).width) + 2;
+    smashDraw(ctx, 'gauge:' + gp.g.name, x - tw / 2, y + 4, tw, 12, (c) => {
+      c.save(); c.font = MAP_FONT.small; c.textAlign = 'center'; c.textBaseline = 'top';
+      c.fillStyle = 'rgba(0,0,0,0.65)'; c.fillText(lbl, x + 1, y + 5); c.fillStyle = '#cfe8ff'; c.fillText(lbl, x, y + 4);
+      c.restore();
+    });
   }
   // travelling droplet — one journey of F.dur ms, then loops
   const ph = F._arrived ? (((performance.now() - F.t0) % F.dur) / F.dur) : flowPhase(F);
