@@ -442,9 +442,9 @@ func (s *Server) handleParcelContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pid := q.Get("pid")
-	key := "pctx:v1:" + parcelHash(pid)
+	key := "pctx:v2:" + parcelHash(pid)
 	if pid == "" {
-		key = fmt.Sprintf("pctx:v1:%.5f,%.5f,%s", lon, lat, q.Get("area_sqm"))
+		key = fmt.Sprintf("pctx:v2:%.5f,%.5f,%s", lon, lat, q.Get("area_sqm"))
 	}
 	vals := url.Values{}
 	vals.Set("lon", strconv.FormatFloat(lon, 'f', 6, 64))
@@ -453,6 +453,9 @@ func (s *Server) handleParcelContext(w http.ResponseWriter, r *http.Request) {
 		if v := q.Get(k); v != "" {
 			vals.Set(k, v)
 		}
+	}
+	if vals.Get("include") == "" {
+		vals.Set("include", neContextInclude) // + declared NE fabric (nefabric.go)
 	}
 	body, st := s.llmGet(key, umfeldAPI+"/context?"+vals.Encode(), 24*time.Hour)
 	w.Header().Set("Content-Type", "application/json")

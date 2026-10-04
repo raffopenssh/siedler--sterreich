@@ -275,7 +275,8 @@ func (s *Server) inspectContext(pid string, p *bevParcel, fps []bevFootprint) ma
 	if p.KG != "" {
 		vals.Set("kg", p.KG)
 	}
-	b, st := s.llmGet("pctx:v1:"+parcelHash(pid), umfeldAPI+"/context?"+vals.Encode(), 24*time.Hour)
+	vals.Set("include", neContextInclude)
+	b, st := s.llmGet("pctx:v2:"+parcelHash(pid), umfeldAPI+"/context?"+vals.Encode(), 24*time.Hour)
 	if st == 202 {
 		return map[string]any{"pending": true}
 	}
@@ -325,6 +326,9 @@ func inspectCadastreBlock(p *bevParcel, fps []bevFootprint, cx map[string]any) m
 		if sites := arr(n2k, "sites"); len(sites) > 0 {
 			out["natura2000_sites"] = sites
 		}
+	}
+	if f := fabricOf(cx); f != nil {
+		out["fabric"] = f
 	}
 	if pa := sub(cx, "protected_area"); pa != nil {
 		out["in_protected_area"] = pa["in_protected_area"]
@@ -1079,6 +1083,9 @@ func inspectNarrate(p agentParcel, o map[string]any) string {
 			fmt.Fprintf(&b, "; the KG lost forest most recently in %s (Hansen, KG level)", str(fl, "last_loss_year"))
 		}
 		b.WriteString(". ")
+	}
+	if fb, ok := cad["fabric"].(map[string]any); ok {
+		b.WriteString(fabricSentence(fb))
 	}
 	if f, ok := o["field"].(map[string]any); ok {
 		if sc, ok := f["schlag"].(map[string]any); ok {

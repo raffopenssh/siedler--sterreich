@@ -9540,6 +9540,7 @@ function renderEnhancedPopupRows(pid, gamePrice) {
   }
 
   if (lp && lp.ne) neRows(lp.ne, rows, moreRows, { unclaimed: !G.claimed.some(c => c.parcel_id === pid) });
+  fabricRow(G.parcelCtx[pid] && G.parcelCtx[pid].ne, moreRows);
 
   // Giant-tree bonus (only after reveal)
   if (G.tallRevealed && G.sel) {
@@ -12456,6 +12457,19 @@ function neRows(ne, rows, moreRows, o) {
   if (ne.dh_m != null && Math.abs(ne.dh_m) >= 0.5) {
     moreRows.push(['📡 Veränderung', (ne.dh_m > 0 ? '+' : '') + ne.dh_m.toFixed(1) + ' m Oberfläche' + (ne.als_years && ne.als_years.length ? ' <span style="color:var(--text-dim)">(ALS ' + ne.als_years.join('/') + ')</span>' : '')]);
   }
+}
+/** Declared-layer complement to neRows (umfeld NE cells via /context include=ne):
+ *  the fabric of the surrounding ~1.5 ha — parcel sizes, parcels per folio,
+ *  Grenzkataster share. One dim row; nothing when the KG is not built yet. */
+function fabricRow(ne, moreRows) {
+  if (!ne) return;
+  const k = ne.k, lu = ne.lu;
+  const parts = [];
+  if (k && k.unit_p50 > 0) parts.push('Median ' + (k.unit_p50 >= 10000 ? (k.unit_p50 / 10000).toFixed(1).replace('.', ',') + ' ha' : fmtNum(k.unit_p50, 0) + ' m²') + (k.n_units ? ' <span style="color:var(--text-dim)">(' + k.n_units + ' Gst.)</span>' : ''));
+  if (k && k.units_per_reg >= 1.5) parts.push(k.units_per_reg.toFixed(1).replace('.', ',') + ' Gst. je Einlage');
+  if (lu && lu.gk >= 51) parts.push('<span title="Anteil rechtsverbindlich vermessener Grenzen">Grenzkataster ' + Math.round(lu.gk / 255 * 100) + ' %</span>');
+  if (lu && lu.flags && lu.flags.declared_unknown) parts.push('<span style="color:var(--text-dim)">Kataster hier lückenhaft</span>');
+  if (parts.length) moreRows.push(['📜 Gefüge', parts.join(' · ')]);
 }
 /** Draw one measured tree at its real position, scaled by its lidar height
  *  (15 m → 1.0, 30 m → ~1.6). Height tag for the parcel's tallest at zoom ≥ 17.5. */
