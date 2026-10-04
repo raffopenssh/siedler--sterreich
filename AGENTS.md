@@ -160,6 +160,12 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
 - **v2.4 first**: `neReadyKGSet()` (registry `v24` flag = srtm `product_version` v2.4) — the daily plan seeds Gemeinden with NE KGs first (no state quota), `neAdoptKGs` (on every registry refresh, once per KG generation `ne-adopt:v1:<kg>`) purges their `vp:v1`/`ne:`/`trees:ne`/`buildings:ne`/`neheat` caches + `kg_warm` and enqueues them (`reason v24`, prio 1); `warmPlanner` re-queues non-fresh v2.4 KGs every 2 h. `/api/warm/status` → `v24_kgs[]`, `v24_warm`. `/api/lucky` picks a v2.4 destination ~2 of 3 times (`ne:true`).
 - **Session**: `POST /api/session/create` → `warmGemeinde` (medium prio);
   `prewarmKGs` (siblings.go) adds KGs along a water flowpath.
+- **Interest** (`srv/luckyinterest.go`): the spawn point inside a chosen cluster/Gemeinde is nudged to the most
+  *visually interesting* spot — `luckyInterest(lon,lat)` scores the ~350 m around a point 0..1 from cached cells only
+  (land-use variety entropy, forest edge, water, roofs, Δh/slope, NE tall trees; ≥ 85 % one group = monotony ×0.4);
+  `luckySpot` scans a 7×7 grid (~270 m steps) keeping the KG playable and the cluster ≥ n−1. Cluster draws
+  < `interestGood` 0.45 are redrawn (≤ 6), per-Gemeinde picks < 0.25; the best dull one is the fallback.
+  Answer carries `interest`, `interest_why`; `GET /api/lucky?lon&lat` scores any spot (QA). Flat field ≈ 0.1, village edge + brook + wood ≈ 0.8.
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
   only Gemeinden whose KGs are warm (not expiring within 2 h) **and** srtm
   grid25 (`enhancedKGSet`); the spawn KG itself must be enhanced. Picks are
