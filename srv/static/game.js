@@ -8849,10 +8849,28 @@ function initGameInput() {
   document.getElementById('btn-zoomin').onclick = () => smoothZoomBy(1, gc.width/2, gc.height/2, true);
   document.getElementById('btn-zoomout').onclick = () => smoothZoomBy(-1, gc.width/2, gc.height/2, true);
   document.getElementById('btn-gearth').onclick = () => {
-    // Open Google Maps satellite view at current camera position
-    // Map game zoom (13-20) to Google Maps zoom: game z13→GM z13, game z20→GM z18
-    const gmZoom = Math.round(13 + (G.cam.zoom - 13) * 5/7);
-    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+gmZoom+'z/data=!3m1!1e3';
+    // Open Google Maps satellite view on exactly this viewport.
+    // Our scale: mapScale() CSS px per degree lon; Google (Web Mercator):
+    // 256·2^z/360 CSS px per degree lon. Equate → z = zoom − 14 + log2(25000·360/256).
+    // The new tab spans the whole window while our canvas excludes the sidebar,
+    // so widen by innerWidth/canvas width to keep the same lon span on screen.
+    // Google's lat scale is Mercator (1/cos φ ≈ 1.49 at 48°) while ours is a
+    // fixed 1.35, so width and height can't both match: on landscape screens
+    // (desktop, map beside the sidebar) match the lon span of the full window;
+    // on portrait phones (the Maps app / mobile web fill the screen) match the
+    // lat span, which is what dominates there.
+    const W = window.innerWidth, H = window.innerHeight;
+    const cosLat = Math.cos(G.cam.lat * Math.PI / 180);
+    let gmZoom;
+    if (W >= H) {
+      const pxPerDegLon = mapScale() * (W / Math.max(1, gc.width));
+      gmZoom = Math.log2(pxPerDegLon * 360 / 256);
+    } else {
+      const pxPerDegLat = mapScale() * 1.35 * (H / Math.max(1, gc.height));
+      gmZoom = Math.log2(pxPerDegLat * cosLat * 360 / 256);
+    }
+    gmZoom = Math.max(3, Math.min(21, gmZoom));
+    const url = 'https://www.google.com/maps/@'+G.cam.lat.toFixed(6)+','+G.cam.lon.toFixed(6)+','+gmZoom.toFixed(2)+'z/data=!3m1!1e3';
     window.open(url, '_blank');
   };
 
