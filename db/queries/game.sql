@@ -49,8 +49,8 @@ JOIN session_players sp ON sp.session_id = gs.id
 WHERE sp.player_id = ? AND gs.status = 'active';
 
 -- name: ClaimParcel :exec
-INSERT INTO parcel_claims (session_id, player_id, parcel_hash, kg_code, gnr, ez_hash, area_sqm, landuse, purchase_price, tall_trees)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO parcel_claims (session_id, player_id, parcel_hash, kg_code, gnr, ez_hash, area_sqm, landuse, purchase_price, tall_trees, ne_verdict)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetParcelClaim :one
 SELECT * FROM parcel_claims WHERE session_id = ? AND parcel_hash = ?;

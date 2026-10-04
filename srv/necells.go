@@ -918,14 +918,19 @@ func (s *Server) handleNE(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	key := fmt.Sprintf("neheat:v1:%d:%d", c.I, c.J)
+	key := fmt.Sprintf("neheat:v2:%d:%d", c.I, c.J)
 	s.cachedFetch(w, key, func() ([]byte, int) {
 		n := len(ne.Cells)
-		pick8 := func(a []uint8) []uint8 {
-			if len(a) >= n {
-				return a[:n]
+		// []uint8 would be base64 in JSON — emit plain integer arrays.
+		pick8 := func(a []uint8) []int {
+			if len(a) > n {
+				a = a[:n]
 			}
-			return a
+			out := make([]int, len(a))
+			for i, v := range a {
+				out[i] = int(v)
+			}
+			return out
 		}
 		out := map[string]any{
 			"ready": true, "epoch": ne.Meta.Epoch, "partial": ne.Meta.Partial, "kgs": ne.Meta.KGs, "kgs_missing": ne.Meta.KGsMissing,
@@ -1005,7 +1010,7 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 		}
 		for _, c := range cellsForBBox(a.MinLon, a.MinLat, a.MaxLon, a.MaxLat) {
 			for _, k := range []string{fmt.Sprintf("vp:v1:%d:%d", c.I, c.J), neKey(c), fmt.Sprintf("trees:ne:v1:%d:%d", c.I, c.J),
-				fmt.Sprintf("buildings:ne:v1:%d:%d", c.I, c.J), fmt.Sprintf("neheat:v1:%d:%d", c.I, c.J)} {
+				fmt.Sprintf("buildings:ne:v1:%d:%d", c.I, c.J), fmt.Sprintf("neheat:v2:%d:%d", c.I, c.J)} {
 				s.Q.DeleteCacheLike(ctx, k)
 				hotCellDrop(k)
 			}
@@ -1022,4 +1027,20 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 	if adopted > 0 {
 		slog.Info("ne: adopted v2.4 KGs (cells purged, warm enqueued)", "kgs", adopted)
 	}
+}
+
+// neDiscrepant reports whether an NE verdict means "observation disagrees with
+// the cadastre" (forest_loss, forest_gain, sealed_new, structure_new, green_new).
+func neDiscrepant(verdict string) bool {
+	return verdict != "" && verdict != "consistent" && verdict != "unknown"
+}
+
+// neVerdictOf returns the NE consistency verdict of a parcel from our cached
+// cell ("" when unknown / KG not observed). Never fetches — the claim path
+// must stay instant; the client has just loaded this cell anyway.
+func (s *Server) neVerdictOf(pid string, lon, lat float64) string {
+	if p, ok := s.lookupParcelCached(pid, lon, lat); ok && p != nil && p.NE != nil {
+		return p.NE.Verdict
+	}
+	return ""
 }

@@ -966,8 +966,17 @@ func (s *Server) inspectGame(ctx context.Context, sess dbgen.GameSession, p agen
 	water, _ := blocks["water"].(map[string]any)
 	inWP := water != nil && water["water_protection"] != nil
 	bioXP := 100
+	verdict := ""
+	if t, ok := blocks["terrain"].(map[string]any); ok {
+		if ne, ok := t["observed"].(*neParcel); ok && ne != nil {
+			verdict = ne.Verdict
+		}
+	}
+	if verdict == "forest_loss" {
+		bioXP = 200 // Wiederbewaldung (NE verdict at claim time; here: the live verdict)
+	}
 	if inWP {
-		bioXP = 150
+		bioXP = bioXP * 3 / 2
 	}
 	switch {
 	case p.Owner == nil:
@@ -984,6 +993,10 @@ func (s *Server) inspectGame(ctx context.Context, sess dbgen.GameSession, p agen
 			if pts, ok := water["stations_on_parcel"].([]map[string]any); ok && len(pts) > 0 {
 				a["bonus_pegelwart_xp"] = 80
 			}
+		}
+		if neDiscrepant(verdict) {
+			a["bonus_spurenleser_xp"] = 60
+			a["ne_verdict"] = verdict
 		}
 		acts = append(acts, a)
 		if ez, ok := blocks["ez"].(map[string]any); ok && toFloat(ez["unclaimed_count"]) > 1 {

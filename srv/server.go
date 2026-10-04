@@ -1068,6 +1068,17 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 		}
 	}
 
+	// NE cells (observed layer): the consistency verdict of the parcel from our
+	// cached cell — "" when the KG has no v2.4 observation. A discrepancy
+	// (observation ≠ cadastre) pays a small Spurenleser bonus and counts for
+	// the quest of the same name; forest_loss unlocks the Wiederbewaldung bonus
+	// on Naturschutz conversion (handleConvertParcel).
+	verdict := s.neVerdictOf(req.ParcelID, req.Lon, req.Lat)
+	neBonus := 0
+	if neDiscrepant(verdict) {
+		neBonus = 60
+	}
+
 	landuse := req.Landuse
 	err := s.Q.ClaimParcel(r.Context(), dbgen.ClaimParcelParams{
 		SessionID:     req.SessionID,
@@ -1080,6 +1091,7 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 		Landuse:       &landuse,
 		PurchasePrice: int64(price),
 		TallTrees:     int64(tallTrees),
+		NeVerdict:     verdict,
 	})
 	if err != nil {
 		slog.Error("claim parcel", "error", err)
@@ -1102,7 +1114,7 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 		}
 	}
 	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
-		Xp: int64(10 + tallBonus + stationBonus),
+		Xp: int64(10 + tallBonus + stationBonus + neBonus),
 		ID: req.PlayerID,
 	})
 
@@ -1122,6 +1134,8 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 		"tall_bonus_xp":    tallBonus,
 		"station_bonus_xp": stationBonus,
 		"station_category": stationCat,
+		"ne_verdict":       verdict,
+		"ne_bonus_xp":      neBonus,
 		"quests":           quests,
 		"notice":           bevNotice,
 	})
@@ -1289,6 +1303,13 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 	switch req.ConvertTo {
 	case "biodiversity":
 		xpReward = 100
+		// Wiederbewaldung: the observed layer saw this forest disappear
+		// (NE verdict forest_loss at claim time) — protecting it now is
+		// worth double, and shows up as the Spurenleser's follow-through.
+		if claim.NeVerdict == "forest_loss" {
+			xpReward = 200
+			resp["ne_restore"] = "forest_loss"
+		}
 	case "wildforest":
 		// Naturwald / Außernutzungstellung: only on forest, only on a grown
 		// stand; XP scales with the standing stock given up (timber.go).
@@ -2511,6 +2532,7 @@ func (s *Server) backfillChallenges(ctx context.Context, sessionID, playerID str
 		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
 		{"timber", "Holzknecht", "Schlägere 2 Waldparzellen", 250, 100},
 		{"restore", "Waldhüter", "Stelle einen Wald außer Nutzung (Naturwald)", 350, 200},
+		{"observe", "Spurenleser", "Kaufe eine Parzelle, bei der die Beobachtung vom Kataster abweicht", 300, 150},
 	}
 	for _, c := range add {
 		var have int64
@@ -2541,6 +2563,8 @@ func (s *Server) generateChallenges(ctx context.Context, sessionID, playerID str
 		{"restore", "Waldhüter", "Stelle einen Wald außer Nutzung (Naturwald)", 350, 200},
 		// Only achievable in lidar-enhanced KGs; the client hides it until one is loaded.
 		{"tree", "Baumriese", "Kaufe eine Parzelle mit einem Riesenbaum", 400, 300},
+		// Only achievable in NE-observed KGs (srtm v2.4); the client hides it until one is loaded.
+		{"observe", "Spurenleser", "Kaufe eine Parzelle, bei der die Beobachtung vom Kataster abweicht", 300, 150},
 	}
 
 	for _, c := range challenges {
@@ -3136,7 +3160,7 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 type questCounters struct {
-	claims, converted, treasures, species, tallTrees, harvests, timber, wildforest int64
+	claims, converted, treasures, species, tallTrees, harvests, timber, wildforest, neDiscrepant int64
 }
 
 func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) (q questCounters) {
@@ -3148,6 +3172,7 @@ func (s *Server) questProgress(ctx context.Context, sessionID, playerID string) 
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM treasures WHERE session_id=? AND found_by=? AND treasure_type IN ('species','n2k_species')", sessionID, playerID).Scan(&q.species)
 	s.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(harvests),0) FROM parcel_claims WHERE session_id=? AND player_id=? AND landuse='56'", sessionID, playerID).Scan(&q.timber)
 	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND converted_to='wildforest'", sessionID, playerID).Scan(&q.wildforest)
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM parcel_claims WHERE session_id=? AND player_id=? AND ne_verdict NOT IN ('', 'consistent', 'unknown')", sessionID, playerID).Scan(&q.neDiscrepant)
 	// Erntedank counts field harvests only
 	q.harvests -= q.timber
 	return
@@ -3178,6 +3203,8 @@ func questProgressFor(title string, q questCounters) (int64, int64) {
 		have, goal = q.timber, 2
 	case "Waldhüter":
 		have, goal = q.wildforest, 1
+	case "Spurenleser":
+		have, goal = q.neDiscrepant, 1
 	default:
 		return 0, 1
 	}
@@ -3211,6 +3238,8 @@ func questSatisfied(title string, q questCounters) bool {
 		return q.timber >= 2
 	case "Waldhüter":
 		return q.wildforest >= 1
+	case "Spurenleser":
+		return q.neDiscrepant >= 1
 	}
 	return false
 }

@@ -1800,6 +1800,7 @@ function loadFastLayers(c) {
   loadHofstellen(c);        // farmsteads
   loadGwPoints(c);          // GW-2 Messstellen
   loadWaterProtection(c);   // GW-5 Wasserschutzgebiete
+  if (G.neHeatMode) loadNEHeat(c); // observed-layer heat columns (only while the 👁 overlay is on)
 }
 
 /** Retry pacing for tile layers: still assembling → retry_after×attempt (≤30 s);
@@ -2455,7 +2456,7 @@ function renderPlayerList() {
     return `<div class="stat pl-row"><span class="pl-name"><i class="pl-sw" style="color:${G.pcolors[p.id]}">■</i>${esc(p.name)}${p.id===G.player.id?' <em>('+tr('du')+')</em>':''}</span><b>${coins}🪙</b></div>`;
   }).join('');
 }
-const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲',harvest:'🌾',timber:'🪓'};
+const QUEST_ICONS = {explore:'🗺️',restore:'🌿',treasure:'💎',species:'🦎',tree:'🌲',harvest:'🌾',timber:'🪓',observe:'👁'};
 /** Any lidar-enhanced KG among the loaded ones? (giant trees only exist there) */
 function enhancedLoaded() {
   for (const kg of G.kgsLoaded) if (G.enhancedKGs.has(kg)) return true;
@@ -2464,7 +2465,8 @@ function enhancedLoaded() {
 /** Open quests the player can actually pursue here (Baumriese needs an enhanced KG). */
 function visibleQuests() {
   const enh = enhancedLoaded();
-  return (G.challenges||[]).filter(c => c.challenge_type !== 'tree' || enh);
+  const ne = (G.neCells || 0) > 0;
+  return (G.challenges||[]).filter(c => (c.challenge_type !== 'tree' || enh) && (c.challenge_type !== 'observe' || ne));
 }
 function renderQuests() {
   document.getElementById('quest-list').innerHTML = visibleQuests().map(c => {
@@ -2622,6 +2624,20 @@ function questBriefing(c) {
       const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
       const f = DEV.parcelsNear(p => !owned.has(p.parcel_id) && extractLuCode('', p) === '56' && (p.area_sqm||0) > 1500, 60)[0];
       if (f) brief.act = { label: tr('Wald zeigen'), run: async () => { const ff = DEV.find(f.parcel_id); if (!ff) return; const [lon, lat] = featureLonLat(ff); questPing(lon, lat, Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(ff), 850); } };
+    }
+  } else if (t === 'Spurenleser') {
+    const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
+    const cands = DEV.parcelsNear(p => !owned.has(p.parcel_id) && neDiscrepant(((G.lidarParcels[p.parcel_id] || {}).ne || {}).verdict), 40)
+      .map(p => { const f = DEV.find(p.parcel_id); const ll = f ? featureLonLat(f) : null; return ll ? { p, f, ll, d: geoDist(ll, [G.cam.lon, G.cam.lat]), v: G.lidarParcels[p.parcel_id].ne.verdict } : null; })
+      .filter(Boolean).sort((a, b) => a.d - b.d);
+    const n = cands[0];
+    if (n) {
+      const v = NE_VERDICT[n.v] || NE_VERDICT.unknown;
+      L('👁', tr('Wo?'), tr('Hier weicht die Beobachtung (LiDAR & Satellit) vom Kataster ab:') + ` ${v.ico} <b>${esc(tr(v.de))}</b>, <b>${fmtDist(n.d)}</b> ` + tr('entfernt. Kauf die Parzelle — Naturschutz auf einer Waldverlust-Fläche zählt doppelt.'));
+      brief.act = { label: `${tr('Zeigen')} · ${fmtDist(n.d)}`, run: () => { questPing(n.ll[0], n.ll[1], Math.max(G.cam.zoom, 17)); setTimeout(() => showParcelPopup(n.f), 850); } };
+    } else {
+      L('👁', tr('So geht’s'), tr('Schalte die Beobachtungs-Karte 👁 ein: orange = Waldverlust, rot = neu versiegelt oder Bauwerk nicht im Kataster. Kauf so eine Parzelle.'));
+      brief.act = { label: tr('Beobachtung einblenden'), run: () => setNEHeat('consistency') };
     }
   } else if (t === 'Baumriese') {
     if (!G.tallUnlocked) {
@@ -2882,7 +2898,7 @@ function baseSignature(W, H) {
     G.parcelPolys.length, G.parcels.length, G.buildingFootprints.length, G.landusePolys.length,
     G.claimed.length, conv, G.lidarGen, G.n2kVisible ? 1 : 0, Object.keys(G.n2kSites).length, G.wpZones.length,
     Object.keys(G.osmLines).length, Object.keys(G.waterAreas || {}).length,
-    G.atBorder ? 1 : 0, G.baseGen || 0].join('|');
+    G.atBorder ? 1 : 0, G.baseGen || 0, G.neHeatMode || '', Object.keys(G.neHeat || {}).length].join('|');
 }
 /** Synchronous full base render (first frame / resize only). */
 function drawBaseLayers(ctx, W, H, claimMap) { for (const _ of baseLayerSteps(ctx, W, H, claimMap)) { /* run to completion */ } }
@@ -2935,6 +2951,9 @@ function* baseLayerSteps(ctx, W, H, claimMap) {
   // ---- Real relief: 25 m DTM hillshade tiles under sprites/buildings (LID-4) ----
   _reliefLastDrew = drawRelief(ctx);
   yield;
+
+  // ---- NE heat overlay (observed layer: consistency / canopy), toggle 👁 ----
+  if (G.neHeatMode) { drawNEHeat(ctx); yield; }
 
   // ---- OSM roads + rail on top of parcels (enhanced mode) ----
   drawOSMLines(ctx, 'road');
@@ -8571,6 +8590,10 @@ function initGameInput() {
     };
   }
 
+  // NE observed-layer heat toggle: off → Abweichungen (consistency) → Kronendach (canopy) → off
+  const neBtn = document.getElementById('btn-ne');
+  if (neBtn) neBtn.onclick = () => setNEHeat(!G.neHeatMode ? 'consistency' : G.neHeatMode === 'consistency' ? 'canopy' : null);
+
   // Data attribution chip (CC BY 4.0 / ODbL): tap to expand, tap outside / Esc to close
   const attrib = document.getElementById('map-attrib');
   const attribBtn = document.getElementById('map-attrib-toggle');
@@ -9445,7 +9468,7 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     }
   }
 
-  if (lp && lp.ne) neRows(lp.ne, rows, moreRows);
+  if (lp && lp.ne) neRows(lp.ne, rows, moreRows, { unclaimed: !G.claimed.some(c => c.parcel_id === pid) });
 
   // Giant-tree bonus (only after reveal)
   if (G.tallRevealed && G.sel) {
@@ -10109,8 +10132,10 @@ window.doClaim = async function() {
     building_count:p.building_count||0, total_building_area:p.total_building_area_sqm||0,
     tall_tree_count:tt.count, tall_tree_max_h:tt.maxH,
     gw_station: !!stationOnParcel(p.parcel_id),
+    lon: featureLonLat(G.sel)[0], lat: featureLonLat(G.sel)[1],
   });
   if (res.error) { toast(res.error,'err'); return; }
+  if (res.ne_bonus_xp > 0) { const v = NE_VERDICT[res.ne_verdict] || NE_VERDICT.unknown; setTimeout(() => toast('👁 ' + tr('Spurenleser') + ': +' + res.ne_bonus_xp + '⚡ · ' + v.ico + ' ' + tr(v.de), 'ok'), 1400); }
   if (res.station_bonus_xp > 0) setTimeout(() => toast('📏 ' + tr('Pegelwart') + ': +' + res.station_bonus_xp + '⚡ ' + tr('für die Messstelle'), 'ok'), 900);
   if (res.tall_bonus_xp > 0) {
     toast('🏴 Gekauft für '+res.price+'🪙! 🌲 Riesenbaum-Bonus: +'+res.tall_bonus_xp+'⚡','ok');
@@ -10148,6 +10173,7 @@ window.doConvert = async function(to) {
   if (res.error) { toast(res.error,'err'); return; }
   if (res.water_protection) setTimeout(() => toast('💧 ' + tr('Wasserschutzgebiet') + ': ' + tr('Trinkwasser-Bonus') + ' ×1,5⚡', 'ok'), 900);
   if (to === 'wildforest') { FOREST.scenes.delete(G.sel.properties.parcel_id + ':wild'); toast('🌳 ' + tr('Naturwald') + '! ~' + Math.round(res.co2_t || 0) + ' t CO₂ ' + tr('bleiben im Wald') + ' · +' + res.xp_reward + '⚡', 'ok'); }
+  else if (res.ne_restore) toast('🌿 ' + tr('Wiederbewaldung!') + ' 🪓→🌱 ' + tr('Beobachteter Waldverlust unter Schutz') + ' · +' + res.xp_reward + '⚡', 'ok');
   else toast('🌿 Umgewandelt! +'+res.xp_reward+'⚡','ok');
   G.player = res.player; updateStats();
   await loadClaimed(); await loadBio(); render(); showParcelPopup(G.sel); loadChallenges();
@@ -10765,6 +10791,7 @@ window.DEV = {
     el.classList.toggle('expanded', !!open);
   },
   /** Toggle the N2K overlay. */
+  neHeat(mode) { setNEHeat(mode === undefined ? (G.neHeatMode ? null : 'consistency') : mode); return { mode: G.neHeatMode, cells: Object.keys(G.neHeat).length, hex: Object.values(G.neHeat).reduce((a, h) => a + h.n, 0) }; },
   n2k(on) { G.n2kVisible = !!on; const b = document.getElementById('btn-n2k'); if (b) b.classList.toggle('off', !on); render(); },
   /** Compact state snapshot. */
   state() {
@@ -12323,11 +12350,12 @@ const NE_VERDICT = {
   unknown:      { de:'kein Befund',                   ico:'❔', col:'var(--text-dim)' },
 };
 /** Popup rows for the observed layer (NE cells) of a parcel. */
-function neRows(ne, rows, moreRows) {
+function neRows(ne, rows, moreRows, o) {
   if (!ne) return;
   const v = NE_VERDICT[ne.verdict] || NE_VERDICT.unknown;
-  let vt = v.ico + ' <span style="color:' + v.col + '">' + v.de + '</span>';
+  let vt = v.ico + ' <span style="color:' + v.col + '">' + tr(v.de) + '</span>';
   if (ne.verdict === 'forest_loss' && ne.forest_loss_year) vt += ' <span style="color:var(--text-dim)">(' + ne.forest_loss_year + ')</span>';
+  if (o && o.unclaimed && neDiscrepant(ne.verdict)) vt += ' · <span style="color:var(--gold)">+60⚡ ' + tr('Spurenleser') + (ne.verdict === 'forest_loss' ? ' · ' + tr('Naturschutz') + ' ×2' : '') + '</span>';
   if (ne.verdict !== 'unknown' || ne.cells > 1) rows.push(['👁 Beobachtet', vt]);
   if (ne.tree_n > 0) {
     let t = ne.tree_n + ' Baum' + (ne.tree_n > 1 ? 'kronen' : 'krone');
@@ -12679,3 +12707,79 @@ Object.assign(window.DEV, {
     return out;
   },
 });
+
+// ---- NE heat overlay (srtm v2.4 observed layer, GET /api/ne per cell) ----
+// Two modes: 'consistency' paints only cells where the observation disagrees
+// with the cadastre (orange forest loss, red new sealing / structure, green
+// regrowth); 'canopy' paints the measured crown cover. Hexes are drawn as
+// H3-res-12-sized (~10 m) pointy hexagons at the cell centres, in the cached
+// base layer, so panning stays free; toggling re-renders the base once.
+G.neHeat = {}; G.neHeatMode = null; G.neHeatTiles = new Set(); G.neHeatAttempts = {};
+const NE_HEAT_COL = { forest_loss: [224,160,64], forest_gain: [143,208,106], sealed_new: [224,122,90], structure_new: [230,90,70], green_new: [120,200,110] };
+function neDiscrepant(v) { return !!v && v !== 'consistent' && v !== 'unknown'; }
+function setNEHeat(mode) {
+  G.neHeatMode = mode || null;
+  const b = document.getElementById('btn-ne');
+  if (b) { b.classList.toggle('off', !G.neHeatMode); b.textContent = G.neHeatMode === 'canopy' ? '🌳' : '👁'; }
+  if (G.neHeatMode) {
+    for (const c of tilesInAustria(gridTiles(viewBounds(), 12))) loadNEHeat(c);
+    if (!(G.neCells > 0)) toast('👁 ' + tr('In dieser Gegend gibt es noch keine Beobachtungsdaten (srtm v2.4).'), '');
+    else toast(G.neHeatMode === 'canopy' ? '🌳 ' + tr('Kronendach (LiDAR) eingeblendet') : '👁 ' + tr('Beobachtung vs. Kataster: orange Waldverlust · rot neu versiegelt · grün nachgewachsen'), '');
+  } else toast('👁 ' + tr('Beobachtung ausgeblendet'), '');
+  invalidateBase(); render();
+}
+function loadNEHeat(c) {
+  if (c.key == null) c = cellOf((c.w + c.e) / 2, (c.s + c.n) / 2);
+  if (G.neHeat[c.key] || G.neHeatTiles.has(c.key)) return;
+  if (!insideAustria((c.w + c.e) / 2, (c.s + c.n) / 2)) return;
+  G.neHeatTiles.add(c.key);
+  GET('/api/ne?' + cellQS(c) + '&v=2').then(d => {
+    if (!d || d.ready === false || d.pending || d.status === 'down' || !d.lon) {
+      G.neHeatTiles.delete(c.key);
+      // 404 = KG not processed: remember as empty for this page load; pending/down → retry
+      if (d && d.status === 'partial' || (d && d.ready === false && !d.retry_after_s)) { G.neHeat[c.key] = { n: 0, empty: true }; return; }
+      const attempt = (G.neHeatAttempts[c.key] || 0) + 1;
+      if (attempt <= 3) { G.neHeatAttempts[c.key] = attempt; setTimeout(() => { if (G.neHeatMode) loadNEHeat(c); }, layerRetryMs(d, attempt)); }
+      return;
+    }
+    const n = d.n | 0, lon = new Float64Array(d.lon), lat = new Float64Array(d.lat);
+    const cons = Uint8Array.from(d.consistency || []), can = Uint8Array.from(d.canopy || []);
+    G.neHeat[c.key] = { n, lon, lat, cons, can, codes: (d.codes && d.codes.consistency) || [], epoch: d.epoch };
+    if (G.neHeatMode) { invalidateBase(); render(); }
+  }).catch(() => G.neHeatTiles.delete(c.key));
+}
+function drawNEHeat(ctx) {
+  const mode = G.neHeatMode; if (!mode) return;
+  const z = G.cam.zoom;
+  const r = Math.max(1.5, 10.5 * mapScale() / 111320 * 1.4); // ~10 m hex radius in px (y is ×1.35, x ×1/cos φ ≈ 1.49)
+  const W = gc.width, H = gc.height;
+  const hex = r >= 3.5, a = z >= 16 ? 0.55 : 0.42;
+  ctx.save();
+  for (const key in G.neHeat) {
+    const h = G.neHeat[key]; if (!h.n) continue;
+    const [x0, y0] = toScreen(h.lon[0], h.lat[0]); // cheap cell cull via its first centre + cell size
+    const span = 0.02 * mapScale() * 1.2;
+    if (x0 < -span - W || y0 < -span - H || x0 > W + span || y0 > H + span) continue;
+    let lastCol = null;
+    for (let i = 0; i < h.n; i++) {
+      let col, al;
+      if (mode === 'canopy') {
+        const c = h.can[i]; if (c === 255 || c < 13) continue; // null or < 5 %
+        col = '70,210,150'; al = a * 0.9 * Math.min(1, c / 200);
+      } else {
+        const code = h.codes[h.cons[i]]; const rgb = NE_HEAT_COL[code]; if (!rgb) continue;
+        col = rgb.join(','); al = a;
+      }
+      const [x, y] = toScreen(h.lon[i], h.lat[i]);
+      if (x < -r || y < -r || x > W + r || y > H + r) continue;
+      const fs = 'rgba(' + col + ',' + al.toFixed(2) + ')';
+      if (fs !== lastCol) { ctx.fillStyle = fs; lastCol = fs; }
+      if (hex) {
+        ctx.beginPath();
+        for (let k = 0; k < 6; k++) { const t = Math.PI / 6 + k * Math.PI / 3; const px = x + r * 1.08 * Math.cos(t), py = y + r * 1.08 * Math.sin(t); k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+        ctx.closePath(); ctx.fill();
+      } else ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+  }
+  ctx.restore();
+}

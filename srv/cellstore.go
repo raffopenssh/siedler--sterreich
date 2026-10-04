@@ -162,24 +162,8 @@ func (s *Server) parcelsNear(lon, lat, radiusM float64, maxCells int) ([]bevParc
 // bevdirect /parcel/{id}?lon&lat (24 h cache). lon/lat may be 0 when the
 // parcel is expected in cache (we try the KG bbox cells then).
 func (s *Server) lookupParcel(pid string, lon, lat float64) (*bevParcel, bool) {
-	if lon != 0 && lat != 0 {
-		if d := s.cachedCell(cellOf(lon, lat)); d != nil {
-			for i := range d.Parcels {
-				if d.Parcels[i].ParcelID == pid {
-					return &d.Parcels[i], true
-				}
-			}
-		}
-	} else if a := admin().KGs[kgCodeOf(pid)]; a != nil {
-		for _, c := range a.cells() {
-			if d := s.cachedCell(c); d != nil {
-				for i := range d.Parcels {
-					if d.Parcels[i].ParcelID == pid {
-						return &d.Parcels[i], true
-					}
-				}
-			}
-		}
+	if p, ok := s.lookupParcelCached(pid, lon, lat); ok {
+		return p, true
 	}
 	if lon == 0 || lat == 0 {
 		return nil, false

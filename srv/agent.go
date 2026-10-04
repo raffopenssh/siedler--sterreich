@@ -823,6 +823,11 @@ Headers ` + "`X-RateLimit-Limit`" + `, ` + "`X-RateLimit-Remaining`" + `; 429 ca
   ` + "`terrain.forest_loss`" + ` shows whether it was clear-cut or storm-hit recently.
 - Water: a gauge on the plot pays +80 XP "Pegelwart" on claim; inside a
   Wasserschutz-/Schongebiet Naturschutz pays ×1.5 XP.
+- Observation (` + "`terrain.observed.verdict`" + `, KGs with srtm v2.4 NE cells only): a plot
+  where LiDAR/satellite disagree with the cadastre (forest_loss, forest_gain,
+  sealed_new, structure_new, green_new) pays +60 XP "Spurenleser" on claim and
+  completes the quest of that name; Naturschutz on a ` + "`forest_loss`" + ` plot pays
+  200 XP instead of 100 (Wiederbewaldung, ` + "`ne_restore`" + ` in the convert answer).
 - Bulk: parcels share an ` + "`ez`" + ` (land-register folio) — ` + "`ez.bulk_price_coins`" + ` is
   the whole folio at 20 %% off (` + "`POST /api/claim-ez`" + `, send the parcel list you saw).
   A farm's folio typically bundles house lot, barn, fields and forest.

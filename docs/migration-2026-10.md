@@ -106,3 +106,12 @@ What changed here (`srv/necells.go`):
 
 Known limitation: NE coverage is per KG (32 of 7 850 on 2026-10-04, growing); a cell straddling
 processed and unprocessed KGs shows both enrichment kinds side by side (`kgs[].ne`).
+
+Follow-up (same day, afternoon): verification under load — 129/159 cell builds since the deploy
+`ne=true`, 26 477 parcels NE-enriched, non-bevdirect overhead ≈ 200 ms per ready build on both
+paths, heightfield path intact for v2.3 KGs (Wien Josefstadt cell: 3 525 hf-enriched / 0 ne),
+srv RSS 124 MB, heap 54 MB, no panics. Added: 👁 heat overlay (`/api/ne`, consistency / canopy),
+`parcel_claims.ne_verdict` (migration 016) with the **Spurenleser** quest (+60 XP on a discrepant
+claim) and the Wiederbewaldung bonus (Naturschutz on `forest_loss` = 200 XP), xbrowser scenes
+`ne-*`. Bug fixed on the way: `/api/ne` emitted `[]uint8` columns, which Go JSON-encodes as base64
+(`neheat:v2`, client `&v=2`). Upstream notes: `docs/upstream-notes-ne.md`.
