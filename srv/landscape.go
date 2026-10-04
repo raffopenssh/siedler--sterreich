@@ -53,6 +53,8 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		Lon          float64 `json:"lon"`
 		Lat          float64 `json:"lat"`
 		V2           bool    `json:"v2,omitempty"`
+		V24          bool    `json:"v24,omitempty"` // product v2.4 = NE cells published
+		Product      string  `json:"product_version,omitempty"`
 	}
 	var all []kgEntry
 	gen := map[string]string{}
@@ -82,6 +84,8 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 				e.GemeindeCode, e.GemeindeName = a.Gemeinde, a.GemName
 			}
 			e.V2 = (k.Grid25 != nil && *k.Grid25) || isV2Product(k.ProductVer)
+			e.V24 = isV24Product(k.ProductVer)
+			e.Product = k.ProductVer
 			all = append(all, e)
 			gen[k.KgCode] = k.UpdatedAt
 		}
@@ -90,15 +94,25 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 			break
 		}
 	}
-	nv2 := 0
+	nv2, nv24 := 0, 0
 	for _, e := range all {
 		if e.V2 {
 			nv2++
 		}
+		if e.V24 {
+			nv24++
+		}
 	}
 	s.invalidateRegeneratedKGs(gen)
-	out, _ := json.Marshal(map[string]any{"count": len(all), "v2_count": nv2, "kgs": all})
+	out, _ := json.Marshal(map[string]any{"count": len(all), "v2_count": nv2, "v24_count": nv24, "kgs": all})
 	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(30 * time.Minute)})
+	v24 := map[string]bool{}
+	for _, e := range all {
+		if e.V24 {
+			v24[e.KgCode] = true
+		}
+	}
+	go s.neAdoptKGs(gen, v24)
 	return out, 200
 }
 
@@ -276,25 +290,47 @@ func splitBBox(b bbox, maxSpan float64) []bbox {
 
 // GET /api/trees?west&south&east&north → {trees:[{lon,lat,h_m,crown_d_m}]}
 func (s *Server) handleTrees(w http.ResponseWriter, r *http.Request) {
-	s.bboxLayer(w, r, "trees2:", "/trees/bbox", "min_height=8&limit=2000", "trees", func(m map[string]any) map[string]any {
+	slim := func(m map[string]any) map[string]any {
 		h, _ := m["height_m"].(float64)
 		if h <= 0 {
 			return nil
 		}
 		return map[string]any{"lon": m["lon"], "lat": m["lat"], "h_m": h, "crown_d_m": m["crown_d_m"]}
-	})
+	}
+	// NE cells (every apex ≥ 8 m with species/vitality) for aligned cells of
+	// processed KGs; legacy /trees/bbox sample otherwise.
+	if b, ok := parseBBox(r.URL.Query()); ok {
+		if c, aligned := isAlignedCell(b.W, b.S, b.E, b.N); aligned {
+			if s.neLayer(w, c, "trees", func() ([]map[string]any, bool) {
+				return s.legacyBboxRows(b, "/trees/bbox", "min_height=8&limit=2000", "trees", slim)
+			}) {
+				return
+			}
+		}
+	}
+	s.bboxLayer(w, r, "trees2:", "/trees/bbox", "min_height=8&limit=2000", "trees", slim)
 }
 
 // GET /api/buildings?west&south&east&north → {buildings:[{lon,lat,max_height_m,mean_height_m,stories_est,roof_type}]}
 func (s *Server) handleBuildings(w http.ResponseWriter, r *http.Request) {
-	s.bboxLayer(w, r, "bldg2:", "/buildings/bbox", "limit=3000", "buildings", func(m map[string]any) map[string]any {
+	slim := func(m map[string]any) map[string]any {
 		h, _ := m["height_max_m"].(float64)
 		if h <= 0 {
 			return nil
 		}
 		return map[string]any{"lon": m["lon"], "lat": m["lat"], "max_height_m": h, "mean_height_m": m["height_mean_m"],
 			"stories_est": m["stories_est"], "roof_type": m["roof"], "ground_elev_m": m["ground_elev_m"]}
-	})
+	}
+	if b, ok := parseBBox(r.URL.Query()); ok {
+		if c, aligned := isAlignedCell(b.W, b.S, b.E, b.N); aligned {
+			if s.neLayer(w, c, "buildings", func() ([]map[string]any, bool) {
+				return s.legacyBboxRows(b, "/buildings/bbox", "limit=3000", "buildings", slim)
+			}) {
+				return
+			}
+		}
+	}
+	s.bboxLayer(w, r, "bldg2:", "/buildings/bbox", "limit=3000", "buildings", slim)
 }
 
 // GET /api/landmarks?west&south&east&north → {landmarks:[{type,lon,lat,height_m}]}

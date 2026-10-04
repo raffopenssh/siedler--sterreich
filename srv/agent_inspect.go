@@ -396,9 +396,18 @@ func inspectOSM(osm map[string]any) map[string]any {
 // (terrain class, tallest trees, KG-level Hansen loss).
 func (s *Server) inspectTerrain(p *bevParcel) any {
 	out := map[string]any{"available": false}
+	if p.NE != nil {
+		// Observed layer (srtm NE cells, v2.4): the declared cadastre next to
+		// what LiDAR + satellite actually see on this parcel.
+		out["observed"] = p.NE
+		out["observed_note"] = "srtm-lidar-at NE cells (H3 res 12, ~307 m² each): cover shares, canopy, LiDAR heights, every tree apex ≥ 3 m inside the polygon (species/vitality), segmented structures, NDVI/phenology, surface change, and `verdict` = observation vs. declared land use (consistent | forest_loss | forest_gain | sealed_new | structure_new | green_new | unknown). " + neAttribution
+	}
 	if p.Elev != nil {
 		out["available"] = true
 		out["resolution"] = "parcel (25 m heightfield)"
+		if p.NE != nil {
+			out["resolution"] = fmt.Sprintf("parcel (%d NE cells, H3 res 12)", p.NE.Cells)
+		}
 		out["elevation_m"] = r1(*p.Elev)
 		if p.ElevMin != nil {
 			out["elevation_min_m"] = r1(*p.ElevMin)
@@ -1025,7 +1034,32 @@ func inspectNarrate(p agentParcel, o map[string]any) string {
 				fmt.Fprintf(&b, "; LiDAR sees mostly %s", dc)
 			}
 		}
-		if trees, ok := t["tallest_trees"].([]map[string]any); ok && len(trees) > 0 {
+		if ne, ok := t["observed"].(*neParcel); ok && ne != nil {
+			if ne.TreeN > 0 {
+				fmt.Fprintf(&b, "; %d tree crowns on the parcel (tallest %.0f m", ne.TreeN, ne.TreeHMaxM)
+				if sp := topN(ne.Species, 1); len(sp) == 1 {
+					for k := range sp {
+						fmt.Fprintf(&b, ", mostly %s", k)
+					}
+				}
+				b.WriteString(")")
+			}
+			if ne.StructN > 0 {
+				fmt.Fprintf(&b, "; %d structures up to %.0f m", ne.StructN, ne.StructHMaxM)
+			}
+			switch ne.Verdict {
+			case "forest_loss":
+				fmt.Fprintf(&b, ". Observation vs cadastre: FOREST LOSS — the declared woodland is largely gone (Hansen %d)", ne.ForestLossYr)
+			case "forest_gain":
+				b.WriteString(". Observation vs cadastre: forest has grown over the declared use")
+			case "sealed_new":
+				b.WriteString(". Observation vs cadastre: newly sealed ground not in the declared use")
+			case "structure_new":
+				b.WriteString(". Observation vs cadastre: a structure stands here that the cadastre does not declare")
+			case "green_new":
+				b.WriteString(". Observation vs cadastre: declared built/sealed, observed green")
+			}
+		} else if trees, ok := t["tallest_trees"].([]map[string]any); ok && len(trees) > 0 {
 			fmt.Fprintf(&b, ", tallest tree %.1f m", toFloat(trees[0]["height_m"]))
 		}
 		if fl, ok := t["forest_loss"].(map[string]any); ok && toFloat(fl["loss_since_2020_px"]) > 0 {

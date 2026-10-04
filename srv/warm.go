@@ -34,7 +34,7 @@ const (
 	warmDailyKGs   = 100
 	warmPatches    = 20 // 20 destinations a day → 20 lucky players land in 20 places
 	warmPatchSize  = warmDailyKGs / warmPatches
-	warmPlanVer    = "v2"
+	warmPlanVer    = "v3"
 	warmCellPause  = 800 * time.Millisecond
 	warmFreshGuard = 2 * time.Hour // don't re-warm what is still fresh for this long
 )
@@ -258,6 +258,27 @@ func (s *Server) warmKG(kg, reason string) {
 // Daily plan
 
 func (s *Server) warmPlanner() {
+	// The plan prefers v2.4 (NE cells) Gemeinden — make sure the srtm KG
+	// registry is loaded before the first plan of the day is made.
+	if _, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey); err != nil {
+		s.buildEnhancedKGs(enhancedKGsKey)
+	}
+	// v2.4 KGs are always kept warm: whatever the plan says, re-queue the
+	// ones that are not fresh (the in-memory queue does not survive a restart).
+	go func() {
+		for {
+			n := 0
+			for kg := range s.neReadyKGSet() {
+				if len(kg) == 5 && s.enqueueWarm(kg, "v24", 1) {
+					n++
+				}
+			}
+			if n > 0 {
+				slog.Info("warm: v2.4 KGs queued", "kgs", n)
+			}
+			time.Sleep(2 * time.Hour)
+		}
+	}()
 	for {
 		now := time.Now()
 		plan := s.loadOrMakePlan(now)
@@ -353,6 +374,30 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	}
 	sort.Strings(seeds)
 	rng.Shuffle(len(seeds), func(i, j int) { seeds[i], seeds[j] = seeds[j], seeds[i] })
+	// v2.4 first: Gemeinden with an NE-cells KG (observed layer, the richest
+	// enrichment we have) lead the day's plan, regardless of size or state
+	// quota; the rest of the shuffled seeds follow.
+	v24 := s.neReadyKGSet()
+	if len(v24) > 0 {
+		var first, rest []string
+		seen := map[string]bool{}
+		for code, g := range adm.Gemeinde {
+			for _, kg := range g.KGs {
+				if v24[kg] {
+					first = append(first, code)
+					seen[code] = true
+					break
+				}
+			}
+		}
+		sort.Strings(first)
+		for _, c := range seeds {
+			if !seen[c] {
+				rest = append(rest, c)
+			}
+		}
+		seeds = append(first, rest...)
+	}
 	used := map[string]bool{}
 	fresh := s.freshWarmSet()
 	plan := &warmPlan{Date: now.Format("2006-01-02"), Started: map[string]bool{}}
@@ -363,7 +408,14 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 			break
 		}
 		g := adm.Gemeinde[seed]
-		if usedState[g.State] >= perState {
+		isV24 := false
+		for _, kg := range g.KGs {
+			if v24[kg] {
+				isV24 = true
+				break
+			}
+		}
+		if usedState[g.State] >= perState && !isV24 {
 			continue
 		}
 		allFresh := true
@@ -385,7 +437,11 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 		}
 		usedState[g.State]++
 		plan.Patches = append(plan.Patches, patch)
-		plan.Seeds = append(plan.Seeds, g.Name+" ("+g.State+")")
+		tag := ""
+		if isV24 {
+			tag = " · v2.4"
+		}
+		plan.Seeds = append(plan.Seeds, g.Name+" ("+g.State+")"+tag)
 	}
 	return plan
 }
@@ -489,6 +545,7 @@ type luckyPick struct {
 	Lat          float64  `json:"lat"`
 	State        string   `json:"state"`
 	Enhanced     bool     `json:"enhanced"`
+	NE           bool     `json:"ne"` // destination has NE cells (srtm v2.4 observed layer)
 	Warm         bool     `json:"warm"`
 	WarmKGs      int      `json:"warm_kgs"`
 	KGs          []string `json:"kgs"`
@@ -558,6 +615,26 @@ func (s *Server) luckyPick() luckyPick {
 			return lp, true
 		}
 		return luckyPick{}, false
+	}
+	// Prefer destinations with the observed layer (v2.4 NE cells) — about
+	// 2 of 3 picks when any are warm, so other warm places still get visits.
+	v24 := s.neReadyKGSet()
+	if len(v24) > 0 && rand.Intn(3) != 0 {
+		var pref []cand
+		for _, c := range append(append([]cand{}, full...), partial...) {
+			for _, kg := range c.g.KGs {
+				if v24[kg] && playable[kg] {
+					pref = append(pref, c)
+					break
+				}
+			}
+		}
+		if len(pref) > 0 {
+			if lp, ok := pick(pref); ok {
+				lp.NE = true
+				return lp
+			}
+		}
 	}
 	if len(full) > 0 {
 		if lp, ok := pick(full); ok {
@@ -662,9 +739,24 @@ func (s *Server) warmStatusMap() map[string]any {
 		q = q[:40]
 	}
 	plan, _ := s.warm.plan.Load().(*warmPlan)
+	var v24 []string
+	for kg := range s.neReadyKGSet() {
+		if len(kg) == 5 {
+			v24 = append(v24, kg)
+		}
+	}
+	sort.Strings(v24)
+	v24Warm := 0
+	fresh := s.freshWarmSet()
+	for _, kg := range v24 {
+		if fresh[kg] {
+			v24Warm++
+		}
+	}
 	return map[string]any{
 		"current": s.warm.current.Load(), "queue": q, "queue_len": queueLen, "done": s.warm.done.Load(),
 		"cells_built": s.warm.cells.Load(), "warm_kgs": warmKGs, "warm_gemeinden": warmGem,
+		"v24_kgs": v24, "v24_warm": v24Warm,
 		"plan": plan, "policy": map[string]any{"daily_kgs": warmDailyKGs, "patches": warmPatches, "ttl_h": 24},
 	}
 }

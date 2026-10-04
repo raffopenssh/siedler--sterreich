@@ -332,6 +332,7 @@ func (s *Server) Serve(addr string) error {
 	// Sibling roadmap consumers (see siblings.go): viewport landuse slice, INVEKOS fields
 	mux.HandleFunc("GET /api/viewport-landuse", s.handleViewportLanduse)
 	mux.HandleFunc("GET /api/schlaege", s.handleSchlaege)
+	mux.HandleFunc("GET /api/ne", s.handleNE)                  // NE cells heat-layer columns (srtm v2.4 observed layer)
 	mux.HandleFunc("GET /api/trees", s.handleTrees)            // LID-2 tree apices
 	mux.HandleFunc("GET /api/giants-near", s.handleGiantsNear) // nearest giants ring search (hint scout)
 	mux.HandleFunc("GET /api/hofstellen", s.handleHofstellen)  // FARM-4 farmsteads
@@ -2649,6 +2650,12 @@ func landmarkLetter(typ string) string {
 
 // isV2Product: the srtm index reports "v2", "v2.1", "v2.2", "v2.3", ... while
 // the KG JSON carries "2.1"/"2.3". Anything ≥ 2 counts as the v2 product line.
+// isV24Product: srtm product v2.4 = NE cells published (observed layer).
+// "v2.4-partial" counts too — cells exist for the processed part.
+func isV24Product(pv string) bool {
+	return strings.HasPrefix(pv, "v2.4") || strings.HasPrefix(pv, "2.4")
+}
+
 func isV2Product(pv string) bool {
 	return strings.HasPrefix(pv, "v2") || strings.HasPrefix(pv, "2.")
 }

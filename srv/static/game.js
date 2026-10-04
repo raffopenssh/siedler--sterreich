@@ -1668,6 +1668,14 @@ function setAttribution(notice) {
   if (tg) { const m = notice.match(/© BEV,? ?(\d{4})/); if (m) tg.textContent = '© BEV ' + m[1] + ' · OSM'; }
 }
 
+/** NE cells (srtm v2.4 observed layer) seen in a cell → attribution row + HUD flag. */
+function noteNE(ne) {
+  G.neCells = (G.neCells || 0) + 1;
+  if (ne.epoch) G.neEpoch = ne.epoch;
+  const row = document.getElementById('map-attrib-ne');
+  if (row) row.style.display = '';
+}
+
 /** Load one grid cell of cadastre (+ per-parcel 25 m terrain + landuse polygons)
  *  from /api/viewport. Dedups on the cell id. Returns {added, ready, truncated,
  *  retryAfter, cached}. ready:false / pending ⇒ the cell is still being assembled
@@ -1693,6 +1701,7 @@ async function loadViewportGeometry(c, opts) {
     return { added:0, ready:false, truncated:false, retryAfter: data && data.retry_after_s, down: !!(data && data.status === 'down') };
   }
   if (data.notice) setAttribution(data.notice);
+  if (data.ne && data.ne.ready) noteNE(data.ne);
   if (data.ready === false || data.pending) {
     // Partial answer: whatever bevdirect already had is in the arrays; keep it,
     // allow a re-fetch, and tell the player what is going on.
@@ -1751,6 +1760,7 @@ async function loadViewportGeometry(c, opts) {
         slope: props.slope_deg, aspect: props.aspect, tclass: null,
         dom: props.dom_terrain, domTerrain: props.dom_terrain, forestFrac: props.tree_frac,
         fracs: props.fracs, kg: props.kg_code, treeH: null,
+        ne: props.ne || null,   // observed layer (srtm NE cells v2.4): cover, trees, structures, verdict
       };
     }
   }
@@ -2135,6 +2145,12 @@ function tallTreesInParcel(f) {
 function lidarForFootprint(f, ring) {
   const fid = f.properties && f.properties.footprint_id;
   if (fid && G.bldgByFp[fid]) return G.bldgByFp[fid];
+  const ne = f.properties && f.properties.ne;   // NE cells: segmented structure inside this ring (server-side PIP)
+  if (ne && ne.h_max_m > 0) {
+    return f._neB || (f._neB = { lon: null, lat: null, max_height_m: ne.h_max_m, mean_height_m: ne.h_robust_m || ne.h_max_m,
+      stories_est: ne.stories_est || Math.max(1, Math.round((ne.h_robust_m || ne.h_max_m) / 2.9)),
+      roof_type_hint: null, measured: true, exact: true, ne: true, type: ne.type, dh_m: ne.dh_m });
+  }
   if (!ring || !ring.length) { const c = featureLonLat(f); return c[0] != null ? findLidarBuilding(c[0], c[1]) : null; }
   let cx = 0, cy = 0;
   for (const c of ring) { cx += c[0]; cy += c[1]; }
@@ -9279,6 +9295,8 @@ function renderBuildingRows(fp) {
       if (lb.stories_est > 0) h += ' · ' + lb.stories_est + ' Etage' + (lb.stories_est > 1 ? 'n' : '');
       rows.push(['📐 Höhe (LiDAR)', h]);
       if (lb.roof_type_hint) rows.push(['🏠 Dach', lb.roof_type_hint === 'flat' ? 'Flachdach' : 'Steildach']);
+      if (lb.ne && lb.type && lb.type !== 'roof') rows.push(['👁 Beobachtet', NE_STRUCT_DE[lb.type] || lb.type]);
+      if (lb.ne && Math.abs(lb.dh_m || 0) >= 1) rows.push(['📡 Veränderung', (lb.dh_m > 0 ? '+' : '') + lb.dh_m.toFixed(1) + ' m seit letzter Befliegung']);
     }
   }
   if (p.orientation_axis) rows.push(['🧭 Ausrichtung', p.orientation_axis]);
@@ -9413,9 +9431,9 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     // Land-cover composition: 1m-resolution srtm fracs, corrected against
     // cadastre building/landuse data (roof + road bleed). Falls back to the
     // plain dominant-type row when no fracs are available.
-    const cf = correctedFracs(lp.fracs, G.sel?.properties || {});
+    const cf = lp.ne ? (lp.fracs && Object.keys(lp.fracs).length ? lp.fracs : null) : correctedFracs(lp.fracs, G.sel?.properties || {});
     if (cf) {
-      rows.push(['🌿 Bewuchs', fracsBarHTML(cf)]);
+      rows.push(['🌿 Bewuchs', fracsBarHTML(cf) + (lp.ne ? '<div class="fracs-legend"><em style="color:var(--text-dim)">LiDAR-Beobachtung ' + (lp.ne.epoch || '') + '</em></div>' : '')]);
     } else {
       const domShown = lp.domTerrain || lp.dom;
       if (domShown) {
@@ -9426,6 +9444,8 @@ function renderEnhancedPopupRows(pid, gamePrice) {
       }
     }
   }
+
+  if (lp && lp.ne) neRows(lp.ne, rows, moreRows);
 
   // Giant-tree bonus (only after reveal)
   if (G.tallRevealed && G.sel) {
@@ -10465,6 +10485,8 @@ pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attrib
 // Also honoured on load: URL ?dev=1 skips the min. loading-screen dwell time,
 // and #v=lon,lat,zoom (existing) sets the initial camera.
 window.DEV = {
+  /** NE cells (observed layer): per-parcel block of the selection / a pid, or cell stats. */
+  ne(pid) { const id = pid || (G.sel && G.sel.properties.parcel_id); if (id) return (G.lidarParcels[id] || {}).ne || null; const n = Object.values(G.lidarParcels).filter(l => l.ne).length; return { cells: G.neCells || 0, epoch: G.neEpoch, parcels_with_ne: n, parcels: G.parcelPolys.length }; },
   /** Toponyms: DEV.topo() → counts; DEV.topo('Wunderburg') → fly to best local match. */
   async topo(q) {
     if (!q) {
@@ -12214,6 +12236,8 @@ function loadTrees(b) {
       const crown = +it.crown_d_m || 0;
       // crown/height ratio → broadleaf; merged multi-crown blobs (>40 m) tell nothing
       const t = { lon: it.lon, lat: it.lat, h, crown, pid: '', broad: crown > 0 && crown < 40 && crown / h > 0.62 };
+      if (it.species) { t.species = it.species; if (NE_BROADLEAF.has(it.species)) t.broad = true; else if (NE_CONIFER.has(it.species)) t.broad = false; }
+      if (it.vitality) t.vitality = it.vitality;
       G.apexTrees.push(t); G.apexUnassigned.push(t);
     },
     done: () => {
@@ -12277,8 +12301,58 @@ function nearestLandPoint(lon, lat, waterF) {
 function apexTreesOf(pid) { return G.apexByParcel[pid] || null; }
 /** Sprite variant for a measured tree: species hint from crown shape, size class from height. */
 function apexVariant(t, hash) {
+  if (t.vitality === 'dead' || t.vitality === 'declining') return 6;   // snag / bare crown
+  if (t.species === 'larch' || t.species === 'birch') return (hash + Math.round(t.h)) % 2 ? 3 : 1;
   if (t.broad) return (hash + Math.round(t.h)) % 2;      // oak / beech
   return (hash + Math.round(t.h)) % 3 === 0 ? 7 : 5;      // fir / mixed conifer
+}
+// NE cells vocabulary (srtm v2.4 observed layer) → German labels
+const NE_BROADLEAF = new Set(['beech','oak','maple','ash','birch','alder','poplar','willow','fruit','broadleaf']);
+const NE_CONIFER = new Set(['spruce','fir','pine','larch','conifer']);
+const NE_SPECIES_DE = { spruce:'Fichte', fir:'Tanne', pine:'Kiefer', larch:'Lärche', beech:'Buche', oak:'Eiche', maple:'Ahorn', ash:'Esche', birch:'Birke', alder:'Erle', poplar:'Pappel', willow:'Weide', fruit:'Obstbaum', conifer:'Nadelholz', broadleaf:'Laubholz' };
+const NE_VITALITY_DE = { vital:'vital', normal:'normal', stressed:'gestresst', declining:'absterbend', dead:'tot' };
+const NE_STRUCT_DE = { roof:'Dach', greenhouse:'Glashaus', solar_panel:'PV-Anlage', mast:'Mast', wind_turbine:'Windrad', substation:'Umspannwerk', bridge:'Brücke', wall:'Mauer', fence:'Zaun' };
+const NE_PHENO_DE = { forest:'Wald', crop:'Ackerkultur', pasture:'Grünland', seasonal_vegetation:'Saisonbewuchs', road_or_bare:'versiegelt/offen' };
+const NE_VERDICT = {
+  consistent:   { de:'stimmt mit Kataster überein', ico:'✅', col:'var(--text-dim)' },
+  forest_loss:  { de:'Waldverlust beobachtet',       ico:'🪓', col:'#e0a040' },
+  forest_gain:  { de:'Wald nachgewachsen',            ico:'🌱', col:'#8fd06a' },
+  sealed_new:   { de:'neu versiegelt',                ico:'🧱', col:'#e07a5a' },
+  structure_new:{ de:'Bauwerk nicht im Kataster',     ico:'🏗️', col:'#e07a5a' },
+  green_new:    { de:'begrünt (nicht im Kataster)',   ico:'🌿', col:'#8fd06a' },
+  unknown:      { de:'kein Befund',                   ico:'❔', col:'var(--text-dim)' },
+};
+/** Popup rows for the observed layer (NE cells) of a parcel. */
+function neRows(ne, rows, moreRows) {
+  if (!ne) return;
+  const v = NE_VERDICT[ne.verdict] || NE_VERDICT.unknown;
+  let vt = v.ico + ' <span style="color:' + v.col + '">' + v.de + '</span>';
+  if (ne.verdict === 'forest_loss' && ne.forest_loss_year) vt += ' <span style="color:var(--text-dim)">(' + ne.forest_loss_year + ')</span>';
+  if (ne.verdict !== 'unknown' || ne.cells > 1) rows.push(['👁 Beobachtet', vt]);
+  if (ne.tree_n > 0) {
+    let t = ne.tree_n + ' Baum' + (ne.tree_n > 1 ? 'kronen' : 'krone');
+    if (ne.tree_h_max_m) t += ' · max ' + Math.round(ne.tree_h_max_m) + ' m';
+    const sp = Object.entries(ne.species || {}).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => NE_SPECIES_DE[k] || k);
+    if (sp.length) t += ' <span style="color:var(--text-dim)">' + sp.join(', ') + '</span>';
+    const bad = (ne.vitality && ((ne.vitality.dead || 0) + (ne.vitality.declining || 0))) || 0;
+    if (bad > 0 && bad >= ne.tree_n * 0.15) t += ' · <span style="color:#e0a040">' + bad + ' absterbend</span>';
+    rows.push(['🌲 Bäume', t]);
+  }
+  if (ne.structures_n > 0) {
+    let b = ne.structures_n + ' Bauwerk' + (ne.structures_n > 1 ? 'e' : '');
+    if (ne.structure_h_max_m) b += ' · bis ' + Math.round(ne.structure_h_max_m) + ' m';
+    const ty = Object.keys(ne.structure_types || {}).filter(k => k !== 'roof').map(k => NE_STRUCT_DE[k] || k);
+    if (ty.length) b += ' <span style="color:var(--text-dim)">' + ty.join(', ') + '</span>';
+    moreRows.push(['🏠 Bauwerke', b]);
+  }
+  if (ne.phenology && ne.phenology !== 'unknown') {
+    let ph = NE_PHENO_DE[ne.phenology] || ne.phenology;
+    if (ne.ndvi != null) ph += ' <span style="color:var(--text-dim)">NDVI ' + ne.ndvi.toFixed(2) + '</span>';
+    moreRows.push(['🛰️ Satellit', ph]);
+  }
+  if (ne.dh_m != null && Math.abs(ne.dh_m) >= 0.5) {
+    moreRows.push(['📡 Veränderung', (ne.dh_m > 0 ? '+' : '') + ne.dh_m.toFixed(1) + ' m Oberfläche' + (ne.als_years && ne.als_years.length ? ' <span style="color:var(--text-dim)">(ALS ' + ne.als_years.join('/') + ')</span>' : '')]);
+  }
 }
 /** Draw one measured tree at its real position, scaled by its lidar height
  *  (15 m → 1.0, 30 m → ~1.6). Height tag for the parcel's tallest at zoom ≥ 17.5. */

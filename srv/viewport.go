@@ -297,6 +297,8 @@ type bevParcel struct {
 	DomTerr  string             `json:"dom_terrain,omitempty"`
 	Fracs    map[string]float64 `json:"fracs,omitempty"`
 	TreeFrac *float64           `json:"tree_frac,omitempty"`
+	// observed block (srtm NE cells, product ≥ v2.4) — necells.go
+	NE *neParcel `json:"ne,omitempty"`
 }
 
 type bevFootprint struct {
@@ -311,6 +313,7 @@ type bevFootprint struct {
 	OBBWid      float64         `json:"obb_width_m,omitempty"`
 	Orient      float64         `json:"orientation_deg,omitempty"`
 	Geometry    json.RawMessage `json:"geometry"`
+	NE          *neFootprint    `json:"ne,omitempty"` // segmented structure inside the ring (necells.go)
 }
 
 type bevLanduse struct {
@@ -339,6 +342,7 @@ type vpKG struct {
 	Gemeinde string `json:"gemeinde_code"`
 	GemName  string `json:"gemeinde_name"`
 	Enhanced bool   `json:"enhanced"` // grid25 terrain present in this cell
+	NE       bool   `json:"ne"`       // NE cells (observed layer) present in this cell
 }
 
 // buildCell fetches bevdirect + the srtm heightfield in parallel, enriches,
@@ -351,9 +355,12 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		vpSt   int
 		vpDown []byte // breaker body when the cadastre breaker is open
 		hf     *heightfield
+		ne     *neCols
+		neSt   *neStatus
+		neCode int
 		wg     sync.WaitGroup
 	)
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		u := bevAPI + "/viewport?" + b.qs() + "&layers=parcels,footprints,landuse&wait=" + strconv.Itoa(bevWait)
@@ -388,6 +395,12 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		defer wg.Done()
 		hf = s.fetchHeightfield(b.pad(0.004))
 	}()
+	go func() {
+		defer wg.Done()
+		if c, ok := isAlignedCell(b.W, b.S, b.E, b.N); ok {
+			ne, neSt, neCode = s.neCells(c)
+		}
+	}()
 	wg.Wait()
 	if vpDown != nil {
 		return vpDown, 503
@@ -404,6 +417,7 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 	// --- enrich parcels ---
 	kgSeen := map[string]*vpKG{}
 	adm := admin()
+	neParcels := 0
 	for i := range vp.Parcels {
 		p := &vp.Parcels[i]
 		if p.KG == "" {
@@ -416,7 +430,14 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 			}
 			kgSeen[p.KG] = e
 		}
-		if hf != nil {
+		// Observed layer first (NE cells, res-12 hexagons incl. trees and
+		// structures); the 25 m heightfield only where the KG has no NE
+		// product yet.
+		if ne != nil && neEnrichParcel(p, ne) {
+			kgSeen[p.KG].Enhanced = true
+			kgSeen[p.KG].NE = true
+			neParcels++
+		} else if hf != nil {
 			if enrichParcel(p, hf) {
 				kgSeen[p.KG].Enhanced = true
 			}
@@ -427,6 +448,9 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		f := &vp.Footprints[i]
 		f.FootprintID = f.ID
 		f.ID = ""
+		if ne != nil {
+			neEnrichFootprint(f, ne)
+		}
 		f.Geometry = roundGeomRaw(f.Geometry)
 	}
 	for i := range vp.Landuse {
@@ -465,8 +489,15 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		"notice":     notice,
 		"license":    "https://creativecommons.org/licenses/by/4.0/",
 		"source":     "bev-tiles",
-		"terrain":    hf != nil,
+		"terrain":    hf != nil || ne != nil,
 		"built_ms":   time.Since(t0).Milliseconds(),
+	}
+	if ne != nil {
+		out["ne"] = map[string]any{"ready": true, "epoch": ne.Meta.Epoch, "partial": ne.Meta.Partial, "kgs": ne.Meta.KGs,
+			"kgs_missing": ne.Meta.KGsMissing, "cells": len(ne.Cells), "trees": len(ne.Trees.Lon), "structures": len(ne.Structures.Lon),
+			"parcels": neParcels, "attribution": neAttribution}
+	} else if neSt != nil {
+		out["ne"] = map[string]any{"ready": false, "status": neSt.Status, "retry_after_s": neSt.RetryAfter, "kgs_missing": neSt.KGsMissing, "code": neCode}
 	}
 	if c, ok := isAlignedCell(b.W, b.S, b.E, b.N); ok {
 		out["cell"] = map[string]int{"i": c.I, "j": c.J}
@@ -489,7 +520,7 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		})
 	}
 	slog.Info("viewport cell built", "key", key, "parcels", len(vp.Parcels), "incomplete", incomplete, "footprints", len(vp.Footprints),
-		"landuse", len(vp.Landuse), "ready", ready, "terrain", hf != nil, "ms", time.Since(t0).Milliseconds(), "bev_ms", vp.QueryMs)
+		"landuse", len(vp.Landuse), "ready", ready, "terrain", hf != nil, "ne", ne != nil, "ne_parcels", neParcels, "ms", time.Since(t0).Milliseconds(), "bev_ms", vp.QueryMs)
 	return enc, 200
 }
 
