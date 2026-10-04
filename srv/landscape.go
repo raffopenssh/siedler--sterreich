@@ -21,13 +21,24 @@ import (
 	"srv.exe.dev/db/dbgen"
 )
 
-const enhancedKGsKey = "enhanced-kgs:v3"
+const enhancedKGsKey = "enhanced-kgs:v4"
 
 // ---------------------------------------------------------------------------
 // GET /api/enhanced-kgs — srtm-processed KGs (v2 = grid25 terrain available)
 
 func (s *Server) handleEnhancedKGs(w http.ResponseWriter, r *http.Request) {
-	s.cachedFetch(w, enhancedKGsKey, func() ([]byte, int) { return s.buildEnhancedKGs(enhancedKGsKey) })
+	s.cachedFetchX(w, enhancedKGsKey, func() ([]byte, int) { return s.buildEnhancedKGs(enhancedKGsKey) }, func(b []byte) []byte {
+		// Weak ETag = registry_hash (universe + per-KG product/updated_at).
+		var h struct {
+			RegistryHash string `json:"registry_hash"`
+			Source       string `json:"source"`
+		}
+		if json.Unmarshal(b, &h) == nil && h.RegistryHash != "" {
+			w.Header().Set("ETag", `W/"`+h.RegistryHash+`"`)
+			w.Header().Set("X-Registry-Source", h.Source)
+		}
+		return b
+	})
 }
 
 type srtmKG struct {
@@ -35,6 +46,7 @@ type srtmKG struct {
 	KgName       string    `json:"kg_name"`
 	GemeindeCode string    `json:"gemeinde_code"`
 	GemeindeName string    `json:"gemeinde_name"`
+	Processed    bool      `json:"processed"`
 	ProductVer   string    `json:"product_version"`
 	UpdatedAt    string    `json:"updated_at"`
 	Grid25       *bool     `json:"grid25"`
@@ -55,43 +67,35 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		V24          bool    `json:"v24,omitempty"` // product v2.4 = NE cells published
 		Product      string  `json:"product_version,omitempty"`
 	}
+	// One list of the whole KG universe (srtm /kgs, mirrored to
+	// data/srtm-kgs.json.gz) — kgs[] below keeps only the processed rows,
+	// which is what the picker glow and the warm planner key on.
+	uni, source, err := loadSrtmKGUniverse()
+	if err != nil {
+		return jsonErrBody("data service error"), 502
+	}
+	s.noteSrtmUniverseHash(uni.UniverseHash)
 	var all []kgEntry
 	gen := map[string]string{}
-	offset := 0
-	for {
-		u := fmt.Sprintf("%s/kgs?limit=1000&offset=%d", lidarAPI, offset)
-		code, _, body, err := upstreamGetWait(u, 20*time.Second, 30<<20)
-		if err != nil || code != 200 {
-			return jsonErrBody("data service error"), 502
+	adm := admin()
+	for _, k := range uni.KGs {
+		if !k.Processed || k.ProductVer == "" {
+			continue
 		}
-		var page struct {
-			KGs   []srtmKG `json:"kgs"`
-			Total int      `json:"total"`
+		e := kgEntry{KgCode: k.KgCode, KgName: k.KgName, GemeindeCode: k.GemeindeCode, GemeindeName: k.GemeindeName}
+		if len(k.Centroid) == 2 {
+			e.Lon, e.Lat = k.Centroid[0], k.Centroid[1]
+		} else if a := adm.KGs[k.KgCode]; a != nil {
+			e.Lon, e.Lat = a.center()
 		}
-		if json.Unmarshal(body, &page) != nil {
-			return jsonErrBody("data service parse error"), 502
+		if a := adm.KGs[k.KgCode]; a != nil && e.GemeindeCode == "" {
+			e.GemeindeCode, e.GemeindeName = a.Gemeinde, a.GemName
 		}
-		adm := admin()
-		for _, k := range page.KGs {
-			e := kgEntry{KgCode: k.KgCode, KgName: k.KgName, GemeindeCode: k.GemeindeCode, GemeindeName: k.GemeindeName}
-			if len(k.Centroid) == 2 {
-				e.Lon, e.Lat = k.Centroid[0], k.Centroid[1]
-			} else if a := adm.KGs[k.KgCode]; a != nil {
-				e.Lon, e.Lat = a.center()
-			}
-			if a := adm.KGs[k.KgCode]; a != nil && e.GemeindeCode == "" {
-				e.GemeindeCode, e.GemeindeName = a.Gemeinde, a.GemName
-			}
-			e.V2 = (k.Grid25 != nil && *k.Grid25) || isV2Product(k.ProductVer)
-			e.V24 = isV24Product(k.ProductVer)
-			e.Product = k.ProductVer
-			all = append(all, e)
-			gen[k.KgCode] = k.UpdatedAt
-		}
-		offset += len(page.KGs)
-		if len(page.KGs) == 0 || offset >= page.Total {
-			break
-		}
+		e.V2 = (k.Grid25 != nil && *k.Grid25) || isV2Product(k.ProductVer)
+		e.V24 = isV24Product(k.ProductVer)
+		e.Product = k.ProductVer
+		all = append(all, e)
+		gen[k.KgCode] = k.UpdatedAt
 	}
 	nv2, nv24 := 0, 0
 	for _, e := range all {
@@ -102,16 +106,31 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 			nv24++
 		}
 	}
-	s.invalidateRegeneratedKGs(gen)
-	out, _ := json.Marshal(map[string]any{"count": len(all), "v2_count": nv2, "v24_count": nv24, "kgs": all})
-	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(30 * time.Minute)})
-	v24 := map[string]bool{}
-	for _, e := range all {
-		if e.V24 {
-			v24[e.KgCode] = true
-		}
+	ttl := 30 * time.Minute
+	if source == "local-copy" {
+		ttl = 5 * time.Minute // retry srtm soon
+	} else {
+		// Only a live answer may purge derived caches / adopt v2.4 KGs — the
+		// mirror carries no news.
+		s.invalidateRegeneratedKGs(gen)
 	}
-	go s.neAdoptKGs(gen, v24)
+	out, _ := json.Marshal(map[string]any{
+		"count": len(all), "v2_count": nv2, "v24_count": nv24,
+		"kg_count": uni.KGsTotal, "kg_universe": kgUniverseCount,
+		"universe_hash": uni.UniverseHash, "registry_hash": uni.RegistryHash,
+		"source": source, "fetched_at": uni.FetchedAt, "upstream_etag": uni.ETag,
+		"kgs": all,
+	})
+	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(ttl)})
+	if source == "srtm" {
+		v24 := map[string]bool{}
+		for _, e := range all {
+			if e.V24 {
+				v24[e.KgCode] = true
+			}
+		}
+		go s.neAdoptKGs(gen, v24)
+	}
 	return out, 200
 }
 

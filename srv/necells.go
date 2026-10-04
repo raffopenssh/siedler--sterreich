@@ -999,6 +999,10 @@ func hotCellDrop(key string) {
 // cells are rebuilt with the observed layer before a player arrives. Once
 // per KG per product generation (`ne-adopt:v1:<kg>` = updated_at).
 func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
+	if !kgUniverseOK() {
+		slog.Warn("ne: v2.4 adoption skipped — KG universe not verified (see /api/metrics kg_universe)")
+		return
+	}
 	ctx := context.Background()
 	adm := admin()
 	adopted := 0

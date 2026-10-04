@@ -370,6 +370,7 @@ func (s *Server) metricsSnapshot(fresh bool) map[string]any {
 		"cache":          cacheOut,
 		"bevdirect":      metrics.bevHealth(),
 		"warm":           s.warmStatusMap(),
+		"kg_universe":    kgUniverseStatus(),
 		"api_cache":      s.apiCacheStats(fresh),
 		"process": map[string]any{
 			"goroutines":    runtime.NumGoroutine(),

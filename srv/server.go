@@ -194,6 +194,8 @@ func (s *Server) Serve(addr string) error {
 	go s.cacheJanitor()
 	go s.compressLegacyCache()
 	go s.safetyJanitor()
+	s.kgUniverseBoot()
+	go s.kgUniverseInit()
 	go s.warmLoop()
 	go s.warmPlanner()
 

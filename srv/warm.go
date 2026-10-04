@@ -281,6 +281,12 @@ func (s *Server) warmPlanner() {
 	}()
 	for {
 		now := time.Now()
+		if !kgUniverseOK() {
+			// Universe unverified / changed (kguniverse.go): a plan keyed on
+			// kg codes could warm the wrong KGs. Wait, re-check every 10 min.
+			time.Sleep(10 * time.Minute)
+			continue
+		}
 		plan := s.loadOrMakePlan(now)
 		// Patch k is due at k × (24 h / patches) after local midnight.
 		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -756,7 +762,7 @@ func (s *Server) warmStatusMap() map[string]any {
 	return map[string]any{
 		"current": s.warm.current.Load(), "queue": q, "queue_len": queueLen, "done": s.warm.done.Load(),
 		"cells_built": s.warm.cells.Load(), "warm_kgs": warmKGs, "warm_gemeinden": warmGem,
-		"v24_kgs": v24, "v24_warm": v24Warm,
+		"v24_kgs": v24, "v24_warm": v24Warm, "kg_universe": kgUniverseStatus(),
 		"plan": plan, "policy": map[string]any{"daily_kgs": warmDailyKGs, "patches": warmPatches, "ttl_h": 24},
 	}
 }
