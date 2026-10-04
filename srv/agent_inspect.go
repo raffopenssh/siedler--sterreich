@@ -956,6 +956,14 @@ func (s *Server) inspectForest(kg, pid string, area float64, lu string, lon, lat
 	if e.NTrees > 0 {
 		out["n_trees"] = e.NTrees
 	}
+	if e.SpeciesSource != "" {
+		out["species_source"] = e.SpeciesSource // "ne" = measured apex species, else elevation guess
+	}
+	if e.TreeN > 0 {
+		out["tree_n"] = e.TreeN
+		out["trees_tall"] = e.TreesTall
+		out["dead_frac"] = math.Round(e.DeadFrac*100) / 100
+	}
 	if e.History != nil {
 		out["history"] = e.History
 	}
