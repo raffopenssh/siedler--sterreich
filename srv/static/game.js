@@ -7,7 +7,7 @@
 // Fallback if i18n.js failed to load: identity translator.
 if (typeof window.tr !== 'function') window.tr = function(s){ return s; };
 
-const CAD = '/api/cadastre';
+const CAD = '/api/umfeld';
 
 // ---- Colors inspired by Settlers IV ----
 const TERRAIN = {
@@ -32,8 +32,8 @@ const TERRAIN = {
 // The upstream API corrected its German labels in Aug 2026; the CODES never
 // changed. Two corrections matter a lot for us:
 //   48 = "Äcker, Wiesen oder Weiden" (farmland — Austria's most common code,
-//        3.76M parcels) — we used to render and PRICE it as Verkehrsfläche.
-//   83 = "Gebäudenebenflächen" (a Baufläche) — we used to treat it as Fels/Sumpf.
+//        3.76M parcels) — must never be rendered or priced as Verkehrsfläche.
+//   83 = "Gebäudenebenflächen" (a Baufläche) — not Fels/Sumpf.
 // Codes outside this table are not defined by BEV and do not occur in the data.
 // `price` = base coins/m² used by calcPrice() — MUST stay in sync with
 // nsPricePerSqm() in srv/server.go.
@@ -308,7 +308,7 @@ function apiRoute(url) {
   p = p.replace(/\/api\/session\/[^/]+/, '/api/session/{id}').replace(/\/api\/player\/[^/]+/, '/api/player/{id}')
        .replace(/\/api\/(lidar\/kg|kg-geo|kg-summary|dossier|water\/station|water\/parcel|invite)\/[^/]+/, '/api/$1/{x}')
        .replace(/\/api\/tiles\/hillshade\/.*/, '/api/tiles/hillshade/{z}/{x}/{y}')
-       .replace(/\/api\/cadastre\/(\w+\/?\w*).*/, '/api/cadastre/$1');
+       .replace(/\/api\/umfeld\/(\w+\/?\w*).*/, '/api/umfeld/$1');
   return p;
 }
 function apiStat(url, status, ms, xcache) {
@@ -625,8 +625,8 @@ function savePlayer(p) {
 
 // Pick a random municipality and start loading immediately
 async function startLucky() {
-  // Server picks a Gemeinde whose cells are already warm (prefers srtm terrain
-  // coverage); nothing to decide client-side any more.
+  // Server picks a Gemeinde whose cells are already warm (prefers NE / srtm
+  // terrain coverage); nothing to decide client-side.
   try {
     const l = await GET('/api/lucky');
     if (!l || l.error || !l.gemeinde_code) throw new Error(l && l.error || 'kein Vorschlag');
@@ -883,7 +883,10 @@ function drawPick() {
   // Enhanced (lidar) municipalities: precompute set of codes for glow
   if (!pickData.enhancedCodes || pickData.enhancedCount !== G.enhancedGemeinden.length) {
     pickData.enhancedCodes = new Set(G.enhancedGemeinden.map(g => String(g.gemeinde_code)));
+    pickData.neCodes = new Set(G.enhancedGemeinden.filter(g => g.ne).map(g => String(g.gemeinde_code)));
     pickData.enhancedCount = G.enhancedGemeinden.length;
+    const lg = document.getElementById('pick-ne-legend');
+    if (lg) { lg.style.display = pickData.enhancedCodes.size ? '' : 'none'; const n = document.getElementById('pick-ne-n'); if (n) n.textContent = pickData.neCodes.size ? '(' + pickData.neCodes.size + ')' : ''; }
   }
   const glowPulse = 0.55 + Math.sin(Date.now()/600) * 0.25;
 
@@ -903,7 +906,13 @@ function drawPick() {
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
       }
-      ctx.fillStyle = isHover ? '#ffd700' : (isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
+      const isNE = isEnh && pickData.neCodes.has(String(m.gemeinde_code || m.code));
+      if (isNE) { // 👁 observed layer: a pulsing green ring around the cyan halo
+        ctx.strokeStyle = 'rgba(143,240,176,' + (0.6 + 0.4*glowPulse).toFixed(3) + ')';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, 9 + glowPulse * 1.5, 0, Math.PI*2); ctx.stroke();
+      }
+      ctx.fillStyle = isHover ? '#ffd700' : (isNE ? '#c8ffdc' : isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
       const sz = isHover ? 5 : (isEnh ? 4 : 3);
       ctx.fillRect(x-sz/2, y-sz/2, sz, sz);
     }
@@ -925,7 +934,8 @@ function drawPick() {
     if (pickData.hoverMuni && pickData.hoverPos) {
       const m = pickData.hoverMuni;
       const hx = pickData.hoverPos[0], hy = pickData.hoverPos[1];
-      const label = m.name + (m.district_name ? ' · ' + m.district_name : '');
+      let label = m.name + (m.district_name ? ' · ' + m.district_name : '');
+      if (pickData.neCodes && pickData.neCodes.has(String(m.gemeinde_code || m.code))) label += ' · 👁 ' + tr('beobachtet');
       ctx.font = '16px VT323';
       const tw = ctx.measureText(label).width;
       const px = Math.min(hx + 12, W - tw - 16);
@@ -943,8 +953,9 @@ function drawPick() {
   } else if (G.pick.level === 'munis' && G.pick.munis.length) {
     // Draw municipality polygons - Settlers-style terrain fill
     for (const f of G.pick.munis) {
-      const isEnh = pickData.enhancedCodes.has(String(f.properties.gemeinde_code || f.properties.code));
-      drawMuniPoly(ctx, f, f === pickData.hover, isEnh, glowPulse);
+      const code = String(f.properties.gemeinde_code || f.properties.code);
+      const isEnh = pickData.enhancedCodes.has(code);
+      drawMuniPoly(ctx, f, f === pickData.hover, isEnh, glowPulse, pickData.neCodes.has(code));
     }
   }
 
@@ -954,7 +965,7 @@ function drawPick() {
   }
 }
 
-function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
+function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse, isNE) {
   const geom = feature.geometry;
   const rings = geom.type === 'MultiPolygon' ? geom.coordinates.map(p=>p[0]) : [geom.coordinates[0]];
 
@@ -988,6 +999,12 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
       ctx.restore();
       ctx.fillStyle = 'rgba(80,230,255,' + (0.05 + 0.05*(glowPulse||0.5)).toFixed(3) + ')';
       ctx.fill();
+      if (isNE) { // observed layer: green inner rim
+        ctx.save(); ctx.clip();
+        ctx.strokeStyle = 'rgba(120,240,170,' + (0.35 + 0.35*(glowPulse||0.5)).toFixed(2) + ')';
+        ctx.lineWidth = 6; ctx.stroke();
+        ctx.restore();
+      }
     }
     ctx.strokeStyle = isHover ? '#ffd700' : '#2a4020';
     ctx.lineWidth = isHover ? 2.5 : 1;
@@ -1004,6 +1021,19 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
     ctx.fillText(feature.properties.name, cx+1, cy+1);
     ctx.fillStyle = isHover ? '#ffd700' : '#e8dbb5';
     ctx.fillText(feature.properties.name, cx, cy);
+    if (isNE) { // observed layer badge under the name (WebKit-safe: measured, left-aligned)
+      const tag = '👁 ' + tr('beobachtet');
+      ctx.font = MAP_FONT.small;
+      const tw = ctx.measureText(tag).width;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(10,20,10,0.75)';
+      ctx.fillRect(cx - tw/2 - 4, cy + 5, tw + 8, 14);
+      ctx.strokeStyle = 'rgba(143,240,176,' + (0.5 + 0.4*(glowPulse||0.5)).toFixed(2) + ')';
+      ctx.lineWidth = 1; ctx.strokeRect(cx - tw/2 - 4 + 0.5, cy + 5.5, tw + 8, 14);
+      ctx.fillStyle = '#8ff0b0';
+      ctx.fillText(tag, cx - tw/2, cy + 16);
+      ctx.textAlign = 'center';
+    }
   }
 }
 
@@ -1638,7 +1668,7 @@ G.cellState = {};
 function cellNote(c, patch) { const st = G.cellState[c.key] || (G.cellState[c.key] = { key: c.key, i: c.i, j: c.j }); Object.assign(st, patch, { at: Date.now() }); return st; }
 
 /** Point-parcel list: synthesised from the polygon rows (centroid features
- *  sharing the same properties object) — the old /spatial/bbox point layer is gone. */
+ *  sharing the same properties object). */
 function addPointParcel(f) {
   const p = f.properties;
   if (p.lon == null || p.lat == null) { const c = featureLonLat(f); if (c[0] == null) return; p.lon = c[0]; p.lat = c[1]; }
@@ -1752,8 +1782,8 @@ async function loadViewportGeometry(c, opts) {
     if (props.ezh && props.ez) G.ezByHash[props.ezh] = props.ez;
     addedP++;
     if (props.kg_code) { G.kgsLoaded.add(props.kg_code); if (!G.kgNames[props.kg_code]) ensureKGName(props.kg_code); }
-    // Per-parcel terrain enrichment (srtm 25 m heightfield) — same shape the
-    // lidar-slim used to fill, so renderer + popup need no change.
+    // Per-parcel terrain enrichment from the cell row (NE cells where the KG
+    // is v2.4, else the srtm 25 m heightfield) — one shape for renderer + popup.
     if (props.elev_m != null || props.dom_terrain || props.fracs) {
       G.lidarParcels[id] = {
         elev: props.elev_m, elevMin: props.elev_min_m, elevMax: props.elev_max_m,
@@ -2042,9 +2072,11 @@ async function loadEnhancedRegistry() {
     G.enhancedKGs = new Set(res.kgs.map(k => k.kg_code));
     const byGem = {};
     G.v2KGs = new Set(res.kgs.filter(k => k.v2).map(k => k.kg_code));
+    G.neKGs = new Set(res.kgs.filter(k => k.v24).map(k => k.kg_code)); // observed layer (NE cells) published
     for (const k of res.kgs) {
-      if (!byGem[k.gemeinde_code]) byGem[k.gemeinde_code] = { gemeinde_code: k.gemeinde_code, gemeinde_name: k.gemeinde_name, lon: k.lon, lat: k.lat, v2: false };
+      if (!byGem[k.gemeinde_code]) byGem[k.gemeinde_code] = { gemeinde_code: k.gemeinde_code, gemeinde_name: k.gemeinde_name, lon: k.lon, lat: k.lat, v2: false, ne: false };
       if (k.v2) byGem[k.gemeinde_code].v2 = true;
+      if (k.v24) byGem[k.gemeinde_code].ne = true;
     }
     G.enhancedGemeinden = Object.values(byGem);
   } catch(e) { console.error('enhanced registry failed:', e); }
@@ -8253,6 +8285,8 @@ function renderMiniBase(mctx, w, dpr) {
     mctx.fillRect(mx-1, my-1, 3, 3);
   }
 
+  drawMiniNEHeat(mctx, w);
+
   // ---- Austrian border on the minimap ----
   // Clipped to the minimap extent; makes it obvious when the play area butts
   // against the state border (no cadastre data on the other side).
@@ -8291,7 +8325,7 @@ function renderMini() {
   // Static part (parcels + border) is cached per camera/data state: render()
   // calls renderMini() on every animation frame, the polygons only change on
   // pan/zoom or when new cells/claims arrive.
-  const baseKey = [G.cam.lon.toFixed(6), G.cam.lat.toFixed(6), G.cam.zoom.toFixed(3), G.parcelPolys.length, G.parcels.length, G.claimed.length, G.lidarGen, G.atBorder ? 1 : 0, dpr].join('|');
+  const baseKey = [G.cam.lon.toFixed(6), G.cam.lat.toFixed(6), G.cam.zoom.toFixed(3), G.parcelPolys.length, G.parcels.length, G.claimed.length, G.lidarGen, G.atBorder ? 1 : 0, dpr, G.neHeatMode || '', G.neHeatMode ? Object.keys(G.neHeat).length : 0].join('|');
   if (MINI.baseKey !== baseKey || !MINI.base) {
     if (!MINI.base) MINI.base = document.createElement('canvas');
     const bc = MINI.base;
@@ -9424,9 +9458,54 @@ async function openKGSummary(kg) {
     }
     html += '<div class="kg-lu-title">' + (byShare ? tr('Nutzung (nach Fläche)') : tr('Nutzung (nach Parzellenzahl)')) + '</div><div class="fracs-bar">' + seg + '</div><div class="fracs-legend">' + leg + '</div>';
   }
-  if (d.enhanced) html += '<div class="kg-enh">✨ Enhanced — LiDAR-Geländedaten aktiv</div>';
+  if (d.ne && d.ne.cells) html += kgObservedHTML(kg, d.ne);
+  if (d.enhanced) html += '<div class="kg-enh">✨ Enhanced — LiDAR-Geländedaten aktiv' + (d.ne && d.ne.cells ? ' · 👁 ' + tr('beobachtet') : '') + '</div>';
   html += '<div class="kg-lu-title"><span class="pp-ez-link" onclick="openDossier(\'' + kg + '\')">📖 ' + tr('Gemeinde-Chronik') + ' ▸</span> <span class="kg-dim">' + tr('Wasser · Wald · Höfe') + '</span></div>';
   body.innerHTML = html;
+}
+
+/** 👁 Spähbericht: the observed layer of a KG (NE cells aggregated server-side)
+ *  as a compact Settlers-style report — cover bar, four stat tiles, and the
+ *  discrepancy tile doubles as the switch for the map overlay. */
+const NE_VERDICT_SHORT = { forest_loss:'Waldverlust', forest_gain:'Wald nachgewachsen', sealed_new:'neu versiegelt', structure_new:'Bauwerk fehlt', green_new:'neu begrünt' };
+const NE_GROUP_DE = { wald:'Wald', gruen:'Grünland', acker:'Acker', geb:'Gebäude', bau:'Bauflächen', verkehr:'Verkehr', wasser:'Wasser', alpen:'Alpin', sonst:'Sonstiges' };
+const NE_GROUP_COL = { wald:'#2f7a3a', gruen:'#7ab648', acker:'#c9a24a', geb:'#b55a4a', bau:'#a08070', verkehr:'#6e6a62', wasser:'#4a86c8', alpen:'#b9b9b9', sonst:'#8a7f6a' };
+function kgObservedHTML(kg, ne) {
+  const fmt = n => (+n || 0).toLocaleString('de-AT');
+  const pct = v => Math.round((+v || 0) * 100) + '%';
+  const ent = Object.entries(ne.cover || {}).sort((a, b) => b[1] - a[1]);
+  let seg = '', leg = '';
+  for (const [g, fr] of ent) {
+    if (fr < 0.02) continue;
+    seg += '<i style="width:' + (fr * 100).toFixed(1) + '%;background:' + NE_GROUP_COL[g] + '"></i>';
+    if (leg.split('<em').length <= 4) leg += '<em><i style="background:' + NE_GROUP_COL[g] + '"></i>' + esc(tr(NE_GROUP_DE[g] || g)) + ' ' + pct(fr) + '</em>';
+  }
+  const cov = ne.coverage < 0.95 ? '<span class="kg-obs-cov">' + pct(ne.coverage) + ' ' + tr('erfasst') + '</span>' : '';
+  const epoch = ne.epoch ? '<span class="kg-obs-epoch">' + esc(ne.epoch) + '</span>' : '';
+  let html = '<div class="kg-obs">';
+  html += '<div class="kg-obs-h"><span>👁 ' + tr('Spähbericht') + '</span>' + cov + epoch + '</div>';
+  html += '<div class="fracs-bar">' + seg + '</div><div class="fracs-legend">' + leg + '</div>';
+  // stat tiles
+  const tiles = [];
+  const top = Object.entries(ne.consistency || {}).filter(([k]) => k !== 'consistent' && k !== 'unknown').sort((a, b) => b[1] - a[1]);
+  const lead = top[0] && NE_VERDICT[top[0][0]];
+  const onMap = G.neHeatMode === 'consistency';
+  tiles.push({ cls: 'act' + (onMap ? ' on' : ''), ico: '🔎', val: pct(ne.discrepant), lab: tr('Abweichung vom Kataster'),
+    sub: lead ? lead.ico + ' ' + tr(NE_VERDICT_SHORT[top[0][0]] || lead.de) + ' ' + pct(top[0][1]) : tr('stimmt mit Kataster überein'),
+    onclick: "setNEHeat(G.neHeatMode === 'consistency' ? null : 'consistency'); openKGSummary('" + kg + "')",
+    hint: onMap ? '◉ ' + tr('auf der Karte') : '▸ ' + tr('auf der Karte zeigen') });
+  tiles.push({ ico: '🌲', val: fmt(ne.tree_n), lab: tr('Bäume'), sub: ne.trees_tall ? fmt(ne.trees_tall) + ' ≥ 25 m' : (ne.tree_h_max_m ? '↑ ' + ne.tree_h_max_m + ' m' : '') });
+  tiles.push({ ico: '🏗️', val: fmt(ne.structures_n), lab: tr('Bauwerke'), sub: ne.canopy != null ? tr('Kronendach') + ' ' + pct(ne.canopy) : '' });
+  if (ne.forest_loss > 0.005) tiles.push({ ico: '🪓', val: pct(ne.forest_loss), lab: tr('Waldverlust'), sub: ne.forest_loss_last ? tr('zuletzt') + ' ' + ne.forest_loss_last : '' });
+  else tiles.push({ ico: '🌿', val: pct(ne.cover && ne.cover.wald), lab: tr('Wald beobachtet'), sub: tr('kein Verlust') });
+  html += '<div class="kg-obs-tiles">' + tiles.map(t =>
+    '<div class="kg-obs-tile ' + (t.cls || '') + '"' + (t.onclick ? ' onclick="' + t.onclick + '" role="button" tabindex="0"' : '') + '>' +
+    '<div class="kg-obs-top"><span class="kg-obs-ico">' + t.ico + '</span><b>' + t.val + '</b></div>' +
+    '<div class="kg-obs-lab">' + esc(t.lab) + '</div>' +
+    (t.sub ? '<div class="kg-obs-sub">' + t.sub + '</div>' : '') +
+    (t.hint ? '<div class="kg-obs-hint">' + esc(t.hint) + '</div>' : '') + '</div>').join('') + '</div>';
+  html += '</div>';
+  return html;
 }
 
 /** Enhanced-mode rows in the parcel popup: elevation, slope, vegetation, market value, Natura 2000. */
@@ -12748,6 +12827,36 @@ function loadNEHeat(c) {
     if (G.neHeatMode) { invalidateBase(); render(); }
   }).catch(() => G.neHeatTiles.delete(c.key));
 }
+/** Minimap twin of drawNEHeat: while the 👁 overlay is on, the observed layer
+ *  is binned to minimap pixels (max discrepancy / mean canopy per 2×2 px) so
+ *  the whole loaded area reads at a glance — where the cadastre and the
+ *  observation disagree, and how much canopy there is around the view. */
+function drawMiniNEHeat(mctx, w) {
+  const mode = G.neHeatMode; if (!mode) return;
+  const px = 3, cols = Math.ceil(MINI.W / px), rows = Math.ceil(MINI.H / px);
+  const acc = new Float32Array(cols * rows), cnt = new Uint16Array(cols * rows), code = new Uint8Array(cols * rows);
+  const codeRank = { forest_loss: 5, structure_new: 4, sealed_new: 3, forest_gain: 2, green_new: 1 };
+  for (const key in G.neHeat) {
+    const h = G.neHeat[key]; if (!h.n) continue;
+    for (let i = 0; i < h.n; i++) {
+      const lon = h.lon[i], lat = h.lat[i];
+      if (lon < w.minLon || lon > w.maxLon || lat < w.minLat || lat > w.maxLat) continue;
+      const gx = ((w.pad + (lon - w.minLon) * w.sc) / px) | 0, gy = ((w.pad + (w.maxLat - lat) * w.sc) / px) | 0;
+      if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) continue;
+      const k = gy * cols + gx;
+      if (mode === 'canopy') { const c = h.can[i]; if (c === 255) continue; acc[k] += c / 254; cnt[k]++; }
+      else { const r = codeRank[h.codes[h.cons[i]]] || 0; cnt[k]++; if (r > code[k]) code[k] = r; }
+    }
+  }
+  const rankCol = ['', NE_HEAT_COL.green_new, NE_HEAT_COL.forest_gain, NE_HEAT_COL.sealed_new, NE_HEAT_COL.structure_new, NE_HEAT_COL.forest_loss];
+  for (let k = 0; k < cols * rows; k++) {
+    if (!cnt[k]) continue;
+    if (mode === 'canopy') { const c = acc[k] / cnt[k]; if (c < 0.05) continue; mctx.fillStyle = 'rgba(70,210,150,' + (0.65 * c).toFixed(2) + ')'; }
+    else { if (!code[k]) continue; mctx.fillStyle = 'rgba(' + rankCol[code[k]].join(',') + ',0.85)'; }
+    mctx.fillRect((k % cols) * px, ((k / cols) | 0) * px, px, px);
+  }
+}
+
 function drawNEHeat(ctx) {
   const mode = G.neHeatMode; if (!mode) return;
   const z = G.cam.zoom;

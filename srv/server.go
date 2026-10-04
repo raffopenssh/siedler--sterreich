@@ -308,9 +308,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/player/{id}/sessions", s.handleGetPlayerSessions)
 
 	// KG data endpoint (paginated, avoids proxy size limits)
-	mux.HandleFunc("GET /api/kg/{code}", s.handleKGData)
 	// Viewport fast path: batch geometry by ID (R-tree cached upstream, single-digit ms)
-	mux.HandleFunc("POST /api/geometry-batch/{kind}", s.handleGeometryBatch)
 	// Viewport polygon geometry (parcels + footprints) straight from upstream R-tree.
 	// Replaces whole-KG export/geojson loads for map rendering.
 	mux.HandleFunc("GET /api/viewport", s.handleViewport)
@@ -343,7 +341,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/kg-summary/{code}", s.handleKGSummary)
 
 	// Cadastre proxy with caching
-	mux.HandleFunc("GET /api/cadastre/", s.handleCadastreProxy)
+	mux.HandleFunc("GET /api/umfeld/", s.handleUmfeldProxy)
 
 	// LiDAR (srtm-lidar) proxy + enhanced-KG registry
 	mux.HandleFunc("GET /api/lidar/kg/{code}", s.handleLidarKG)
@@ -974,6 +972,8 @@ func toFloat(v interface{}) float64 {
 		return x
 	case int64:
 		return float64(x)
+	case int:
+		return float64(x)
 	case nil:
 		return 0
 	default:
@@ -1076,7 +1076,7 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 	verdict := s.neVerdictOf(req.ParcelID, req.Lon, req.Lat)
 	neBonus := 0
 	if neDiscrepant(verdict) {
-		neBonus = 60
+		neBonus = neBonusXP
 	}
 
 	landuse := req.Landuse
@@ -2230,22 +2230,7 @@ func (s *Server) handleGetPlayerSessions(w http.ResponseWriter, r *http.Request)
 	jsonResp(w, sessions)
 }
 
-// ---- Cadastre Proxy with Caching ----
-
-// handleKGData / handleGeometryBatch: whole-KG exports and id-keyed geometry
-// batches no longer exist (the cadastre is assembled per 0.02° cell from the
-// BEV tiles — see /api/viewport). 410 so stale clients fail loudly.
-func (s *Server) handleKGData(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusGone)
-	w.Write([]byte(`{"error":"gone","message":"whole-KG exports are no longer available; use GET /api/viewport with a grid-aligned 0.02° cell"}`))
-}
-
-func (s *Server) handleGeometryBatch(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusGone)
-	w.Write([]byte(`{"error":"gone","message":"id-keyed geometry batches are no longer available; geometry rides in GET /api/viewport"}`))
-}
+// ---- umfeld-at context proxy (cached) ----
 
 // waterParcelsComplete reads meta.water_parcels.complete from an
 // /osm/geometry?cat=water_parcels response (true when the block is absent).
@@ -2263,10 +2248,9 @@ func waterParcelsComplete(body []byte) bool {
 	return *d.Meta.WaterParcels.Complete
 }
 
-// umfeldPublicPrefixes are the only upstream paths the generic proxy still
-// forwards — all non-cadastre, point/bbox/code keyed (umfeld-at public tier).
-// Everything cadastre-shaped answers 410 so a stale client fails loudly
-// instead of hammering a gone endpoint.
+// umfeldPublicPrefixes are the only umfeld-at paths the generic proxy
+// forwards — point/bbox/code keyed context. Parcel data lives in our cached
+// cadastre cells (/api/viewport), never behind this proxy.
 var umfeldPublicPrefixes = []string{
 	"/lookup", "/search/municipalities", "/search/address_osm", "/search/protected_area",
 	"/toponyms/", "/kg/", "/natura2000/point", "/natura2000/site/", "/natura2000/search", "/natura2000/stats",
@@ -2274,8 +2258,8 @@ var umfeldPublicPrefixes = []string{
 	"/land_prices/bezirk/", "/land_prices/bundesland/", "/context",
 }
 
-func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/cadastre")
+func (s *Server) handleUmfeldProxy(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/umfeld")
 	allowed := false
 	for _, p := range umfeldPublicPrefixes {
 		if strings.HasPrefix(path, p) {
@@ -2284,9 +2268,7 @@ func (s *Server) handleCadastreProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !allowed {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusGone)
-		w.Write([]byte(`{"error":"gone","message":"cadastre data now comes from /api/viewport (BEV tiles); context from /api/parcel-context, /api/osm-lines, /api/n2k, /api/municipality"}`))
+		jsonErr(w, "not an umfeld context path; parcels come from GET /api/viewport, context from /api/parcel-context, /api/osm-lines, /api/n2k, /api/municipality", 404)
 		return
 	}
 	// /kg/{kg}/toponyms is public; a bare /kg/{kg} is not an umfeld route.
@@ -2829,7 +2811,7 @@ func (s *Server) buildLidarSlim(ctx context.Context, kg string) ([]byte, int) {
 // Cached 15 minutes — the lidar service processes more KGs continuously.
 // invalidateRegeneratedKGs makes the v1 → v2 (and any future) product upgrade
 // transparent: srtm re-generates a KG in place under the same code, so our
-// 6h lidar-slim and 1h similar caches would keep serving the old product.
+// 6h lidar-slim and 1h similar caches would keep serving the previous product.
 // We persist the index's generated_at per KG and, on every registry refresh
 // (15 min, FAST index query — no extra upstream cost), purge our derived
 // caches for KGs whose timestamp changed. The next client request rebuilds
@@ -2869,9 +2851,8 @@ func (s *Server) invalidateRegeneratedKGs(gen map[string]string) {
 
 // generateN2KTreasures places extra high-value rare-species treasures inside
 // Natura-2000 sites overlapping the session's Gemeinde (EEA site polygons via
-// umfeld; no parcel enumeration any more — points are sampled inside the
-// site ∩ Gemeinde bbox and snapped to a cached parcel point when one is
-// there). Runs in a goroutine at session create; broadcasts treasures_updated.
+// umfeld); points are sampled inside the site ∩ Gemeinde bbox and snapped
+// to a cached parcel point when one is there. Runs in a goroutine at session create; broadcasts treasures_updated.
 func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniCode string) {
 	g := admin().Gemeinde[muniCode]
 	if g == nil {
@@ -2956,8 +2937,8 @@ func (s *Server) generateN2KTreasures(ctx context.Context, sessionID, muniCode s
 // GET /api/building-info?fp={footprint_id}&lon=&lat=
 // From the cached cell: the footprint's shape metrics and every parcel it
 // touches (a footprint id is unique per tile piece; a building spanning
-// parcels shows up as several footprints sharing the centroid). No address
-// points any more (not public). Cached 24 h per footprint.
+// parcels shows up as several footprints sharing the centroid). Address
+// points are not part of the data tiers. Cached 24 h per footprint.
 func (s *Server) handleBuildingInfo(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	fp := q.Get("fp")
@@ -3011,15 +2992,16 @@ func (s *Server) handleBuildingInfo(w http.ResponseWriter, r *http.Request) {
 // ---- KG summary card ----
 // GET /api/kg-summary/{code}: register names (embedded VGD), srtm KG dossier
 // (terrain, land cover, buildings), Natura-2000 sites overlapping the KG,
-// RIS legal refs (umfeld) and what we hold of the KG in cached cells
-// (parcel count / area). Cached 1 h.
+// RIS legal refs (umfeld), the observed layer aggregated over the cached NE
+// cells (`ne`, neKGSummary) and what we hold of the KG in cached cadastre
+// cells (parcel count / area). Cached 1 h.
 func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 	kg := r.PathValue("code")
 	if !validKG(kg) {
 		jsonErr(w, "invalid kg code", 400)
 		return
 	}
-	cacheKey := "kg-summary:v2:" + kg
+	cacheKey := "kg-summary:v3:" + kg
 	s.cachedFetch(w, cacheKey, func() ([]byte, int) {
 		out := map[string]any{"kg_code": kg}
 		a := admin().KGs[kg]
@@ -3031,7 +3013,7 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		set := func(k string, v any) { mu.Lock(); out[k] = v; mu.Unlock() }
-		wg.Add(4)
+		wg.Add(5)
 		go func() { // srtm dossier
 			defer wg.Done()
 			body, st := s.llmGet("srtmkg:"+kg, lidarAPI+"/kg/"+kg, 6*time.Hour)
@@ -3091,6 +3073,12 @@ func (s *Server) handleKGSummary(w http.ResponseWriter, r *http.Request) {
 			if json.Unmarshal(body, &d) == nil && d.Data != nil {
 				set("legal_refs", d.Data["total_refs"])
 				set("legal_contexts", d.Data["legal_contexts"])
+			}
+		}()
+		go func() { // observed layer (NE cells) aggregated over the KG
+			defer wg.Done()
+			if ne := s.neKGSummary(kg); ne != nil {
+				set("ne", ne)
 			}
 		}()
 		go func() { // what we hold in cells + giant trees from the slim
@@ -3302,7 +3290,7 @@ func (s *Server) settlementCenter(name string, lon, lat float64) (float64, float
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, "GET", cadastreAPI+"/search/address_osm?limit=8&q="+url.QueryEscape(name), nil)
+		req, _ := http.NewRequestWithContext(ctx, "GET", umfeldAPI+"/search/address_osm?limit=8&q="+url.QueryEscape(name), nil)
 		resp, err := upstreamClient.Do(req)
 		if err != nil {
 			return 0, 0, false

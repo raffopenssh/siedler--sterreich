@@ -1,8 +1,8 @@
 package srv
 
 // Similar parcels "in der Nähe": candidates come from the cadastre cells we
-// already hold around the reference point (explored / prewarmed area, no
-// upstream parcel index exists any more). Score 0..1 on size ratio,
+// already hold around the reference point (explored / prewarmed area,
+// ≤ 24 h old). Score 0..1 on size ratio,
 // Benützungsart composition (measured m² shares), built density and the
 // 25 m terrain enrichment (elevation, slope, aspect, dominant natural cover,
 // land-cover histogram). Cached 1 h per reference parcel (similar:v6:).

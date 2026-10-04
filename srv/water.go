@@ -134,8 +134,8 @@ func (s *Server) handleWaterGWI(w http.ResponseWriter, r *http.Request) {
 	b, st := s.llmGet("gwi:all", gwAPI+"/llm/gwi.json", 24*time.Hour)
 	if st == 200 {
 		w.Header().Set("Cache-Control", "public, max-age=86400")
-		// GW-7 picker tint: the old cadastre /spatial/kgs join is gone, so add
-		// the mean GWI per Gemeinde from the embedded VGD register.
+		// GW-7 picker tint: add the mean GWI per Gemeinde, joined over the
+		// embedded VGD register (KG → Gemeinde).
 		var d map[string]json.RawMessage
 		if json.Unmarshal(b, &d) == nil {
 			var kgs map[string][]float64

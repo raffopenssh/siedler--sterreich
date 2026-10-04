@@ -1,9 +1,8 @@
 package srv
 
-// Public-tier adapters (docs/migration-2026-10.md): everything the game used
-// to read from the old cadastre / srtm private surfaces, rebuilt on the
-// point/bbox/KG-code keyed public APIs. Response shapes are kept compatible
-// with game.js wherever possible.
+// srtm-lidar-at public-tier adapters: landscape, trees, buildings,
+// landmarks, heightfield, KG registry — all point/bbox/KG-code keyed. No
+// parcel or footprint ids cross the wire; the client joins by geometry.
 
 import (
 	"context"

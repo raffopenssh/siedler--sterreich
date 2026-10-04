@@ -208,8 +208,8 @@ func normaliseRoute(method, path string) string {
 		if len(parts) == 2 {
 			path += "/" + parts[1]
 		}
-	case strings.HasPrefix(path, "/api/cadastre/"):
-		path = "/api/cadastre/"
+	case strings.HasPrefix(path, "/api/umfeld/"):
+		path = "/api/umfeld/"
 	case strings.HasPrefix(path, "/api/lidar/"):
 		path = "/api/lidar/"
 	case strings.HasPrefix(path, "/join/"), strings.HasPrefix(path, "/rejoin/"):

@@ -1,8 +1,8 @@
 package srv
 
 // GET /api/tiles/hillshade/{z}/{x}/{y}.png — proxy for the srtm sibling's
-// pre-rendered hillshade tiles (LID-4). The browser used to fetch them
-// directly, which exposed the upstream host in every client. Tiles are
+// pre-rendered hillshade tiles (LID-4), so no upstream host is exposed to
+// the browser. Tiles are
 // immutable upstream (1 y), so we keep them 30 d in api_cache (base64, the
 // column is TEXT) and let the client cache for a year. 204 = no data.
 

@@ -562,7 +562,7 @@ func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm flo
 	} else {
 		histCh <- nil
 	}
-	e.V3 = "off" // the single-tree inventory is no longer public; lidar heights + heuristic instead
+	e.V3 = "off" // no single-tree inventory in the data tiers; lidar apex heights + heuristic instead
 	e.History = <-histCh
 	if vfm == 0 {
 		vfm = 0.9 * math.Pow(clampF(hMean, 3, 40), 1.95) * canopyHa

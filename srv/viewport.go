@@ -229,8 +229,8 @@ func addParcelHashes(body []byte) []byte {
 	return out
 }
 
-// handleViewportLanduse keeps the old per-tile landuse endpoint alive: same
-// cell build, only the landuse array returned.
+// handleViewportLanduse: same cell build as /api/viewport, only the landuse
+// array returned (lighter for callers that only need Benützungsart polygons).
 func (s *Server) handleViewportLanduse(w http.ResponseWriter, r *http.Request) {
 	b, ok := parseBBox(r.URL.Query())
 	if !ok {

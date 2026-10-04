@@ -35,11 +35,6 @@ var (
 	lidarAPI  = envOr("SIEDLER_SRTM_URL", "https://srtm-lidar-at.exe.xyz/api/v1")
 )
 
-// cadastreAPI is kept as an alias of the umfeld public tier for the handful
-// of non-cadastre call sites (lookup, municipalities, toponyms, N2K, OSM
-// point, address search). Anything cadastre-shaped must go to bevAPI.
-var cadastreAPI = umfeldAPI
-
 func envOr(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		return strings.TrimRight(v, "/")

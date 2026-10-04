@@ -17,8 +17,9 @@ go build ./... && go vet ./srv/...
 bevdirect-serve: installed from the GitHub release (`bootstrap.sh`, currently **v0.2.1**; `SOURCE.txt` in /opt/bevdirect; unit tuned `-cells 120 -prefetch 0`).
 Live: `https://siedler-oesterreich.exe.xyz:8000/`. DB `./db.sqlite3`. Service
 `/etc/systemd/system/srv.service`. Maintenance mode: `touch MAINTENANCE`
-(bypass cookie `siedler_dev=1` / `?dev=1`). Provider history (Oct 2026):
-`docs/migration-2026-10.md`.
+(bypass cookie `siedler_dev=1` / `?dev=1`). Provider change log:
+`docs/migration-2026-10.md` (the only place that documents past providers —
+code, comments and docs elsewhere describe the current setup only).
 
 ## Layout
 
@@ -51,7 +52,7 @@ timeout, per-host circuit breaker). Never `http.Get`; never set
 | what | where | notes |
 |---|---|---|
 | **cadastre** — parcels, footprints, landuse polygons, EZ, Gemeinde/KG at point | **bevdirect-serve** `http://127.0.0.1:8787` (`bevAPI`, systemd `bevdirect-serve`, /opt/bevdirect) | Assembles live from `kataster.bev.gv.at` vector tiles (CC BY 4.0). World = fixed 0.02° grid `floor(lon/0.02), floor(lat/0.02)`. Endpoints `/viewport?west&south&east&north&layers=parcels,footprints,landuse&wait=s`, `/parcel/{kg}-{gnr}?lon&lat`, `/ez?kg&ez&west..north`, `/municipality?lon&lat`, `/municipalities?q=`, `/kg/{kg}`, `/health`. `ready:false,pending:true,retry_after_s` = still assembling, **never "no parcels"**. Every response carries `notice` (© BEV … CC BY 4.0, bearbeitet) → shown in `#map-attrib`, relayed on agent endpoints. Anything derived is cached **≤ 24 h** (`cadastreTTL`). |
-| **context** around a point | **umfeld-at** `https://umfeld-at.exe.xyz/api/v1` (`umfeldAPI`; alias `cadastreAPI` for legacy non-cadastre call sites), ≤ 5 req/s | `/context` (land price, OSM distances, N2K, toponyms, RIS legal), `/search/municipalities`, `/lookup`, `/search/address_osm`, `/osm/geometry?bbox` (bbox only), `/natura2000/*`, `/toponyms/*`, `/legal/*`, `/land_prices/point…`. Statistik Austria, EEA, OSM, BEV DLM names, RIS. |
+| **context** around a point | **umfeld-at** `https://umfeld-at.exe.xyz/api/v1` (`umfeldAPI`), ≤ 5 req/s | `/context` (land price, OSM distances, N2K, toponyms, RIS legal), `/search/municipalities`, `/lookup`, `/search/address_osm`, `/osm/geometry?bbox` (bbox only), `/natura2000/*`, `/toponyms/*`, `/legal/*`, `/land_prices/point…`. Statistik Austria, EEA, OSM, BEV DLM names, RIS. |
 | **observed layer (NE cells)** — primary parcel enrichment | **srtm-lidar-at** `/api/v1/cells?bbox&format=columns&centres=1&layers=obs,trees,structures` (`srv/necells.go`), declared twin **umfeld-at** `/api/v1/ne/{kg}`, `/ne/manifest` | H3 res-12 cells (~307 m²) for KGs with product **v2.4**: cover[9 groups], canopy, LiDAR heights, NDVI, change, terrain, `consistency` (observed vs declared), **every tree apex ≥ 3 m** (species, vitality) and **every structure** (type, heights). One fetch per 0.02° cell (`ne:v1:i:j`, 24 h, hot LRU 24 parsed); 404 = KG not processed (negative 1 h, `retry_after_s`), `meta.partial` for mixed cells. `neEnrichParcel` fills the legacy terrain fields **and** `ne{}` (`neParcel`); heightfield only where no NE. We report cadastre epochs back (`tools/ne-report`, `docs/ne-report.md`). |
 | **landscape** | **srtm-lidar-at** `https://srtm-lidar-at.exe.xyz/api/v1` (`lidarAPI`, public tier: bbox/point/KG-code keyed only) | `/landscape?bbox`, `/trees/bbox`, `/buildings/bbox`, `/landmarks/bbox`, `/heightfield?bbox&cell=25&landcover=1` (404 where no grid25), `/kgs`, `/kg/{code}`, `/tiles/hillshade/{z}/{x}/{y}.png`. **No parcel or footprint ids** — the client assigns by point-in-parcel / centroid grid. |
 | **admin table** | `srv/data/admin.json.gz` (embedded; BEV VGD 1:50 000, CC BY 4.0) | all 7 850 KGs: code, name, Gemeinde, district, state, bbox, area. Drives `/api/kg-geo/{kg}`, KG neighbours, the warm plan, `/api/lucky`, `kgsAlongPath`. |
@@ -132,13 +133,12 @@ G.cellState          // per cell: state (loading|pending|ready|down|error|gaveup
 - **Never gate polygon loading on zoom/span** (`viewBounds()` is in device
   pixels). **Never treat 202 / `ready:false` / `pending:true` as "no data"**, and
   never cache such a response.
-- Gone (410): `/api/kg/{code}` whole-KG export, `POST /api/geometry-batch/*`,
-  and every cadastre-shaped path on `/api/cadastre/*` (only `umfeldPublicPrefixes`
-  are forwarded).
+- `/api/umfeld/*` forwards only `umfeldPublicPrefixes` (context paths); anything
+  else is 404 — parcel data exists solely as cached cells via `/api/viewport`.
 
 ### Cell store (`srv/cellstore.go`)
 
-Everything that used to need a parcel index upstream reads our cached cells:
+All parcel look-ups read our cached cells (≤ 24 h):
 `cachedCell` (no fetch), `ensureCell`/`ensureCellStatus` (blocking, singleflight;
 200/202/5xx + retry hint), `parcelsNear(lon,lat,radiusM,maxCells)`,
 `lookupParcel(pid,lon,lat)` (cell first, then bevdirect `/parcel/{id}`, 24 h),
@@ -280,7 +280,7 @@ blocked), `/api/trees`, `/api/buildings`, `/api/landmarks`, `/api/landscape`,
 `/api/similar`, `/api/forest-value`, `/api/building-info`, `/api/kg-summary/{code}`,
 `/api/schlaege`, `/api/hofstellen`, `/api/water/*`, `/api/well-quote`,
 `/api/field-economy`, `/api/dossier/{kg}`, `/api/tiles/hillshade/{z}/{x}/{y}`,
-`/api/cadastre/*` (umfeld non-cadastre paths only), `/api/licenses`.
+`/api/umfeld/*` (umfeld context paths only), `/api/licenses`.
 Bbox layer proxies (`bboxProxy`, `bboxLayer`) quantise the bbox to ~150 m for the
 cache key and cache only `ready` answers. **KG codes: compare with `unpadKG`**
 (`/lookup` returns `3301`, cells carry `03301`).
@@ -342,6 +342,7 @@ whenever game.js/style.css change.** Gzip middleware level 5.
   `G.lidarBuildingIdx`), `G.topTrees[kg]`, `G.topObjects[kg]`.
 - **NE-backed layers**: for an aligned cell of a v2.4 KG `/api/trees` returns every NE apex ≥ 8 m (≤ 2500, tallest first) with `species`, `vitality` (`source:"ne-cells"`), `/api/buildings` every structure (`type`, `area_m2`, `dh_m`; walls/fences dropped); partial cells merge legacy rows for the uncovered part (`legacy_rows`). `GET /api/ne?west..north` → heat columns (lon/lat, cover, canopy, h_max, consistency, phenology) for overlays. Client: `apexVariant()` uses species/vitality (dead/declining → snag), `lidarForFootprint()` prefers `props.ne`, popup `neRows()` ("👁 Beobachtet" verdict `NE_VERDICT`, Bäume, Bauwerke, Satellit, Veränderung), `#map-attrib-ne` row via `noteNE()`, `DEV.ne(pid?)`. Agent inspect `terrain.observed` + narration.
 - **NE heat overlay** (`#btn-ne` 👁 in the zoom column, cycles off → `consistency` → `canopy`): `setNEHeat(mode)` → `loadNEHeat(c)` per cell (`GET /api/ne?…&v=2`, plain int arrays — never `[]uint8`, Go would base64 it; cache key `neheat:v2`) → `G.neHeat[key]` typed arrays → `drawNEHeat()` in the cached base layer (H3-res-12-sized hexes, ~10 m; part of `baseSignature`). Consistency paints only discrepant cells (`NE_HEAT_COL`), canopy a teal wash. `DEV.neHeat(mode?)`.
+- **NE everywhere else**: `/api/kg-summary/{code}` carries `ne{cells, coverage, cover{9 groups}, canopy, tree_n, trees_tall, tree_h_max_m, structures_n, consistency{}, discrepant, forest_loss, forest_loss_last, species{}, structure_types{}, epoch}` = `neKGSummary(kg)` over the cached NE cells (no fetch) → KG card **👁 Spähbericht** (`kgObservedHTML`: cover bar + 4 stat tiles; the Abweichung tile toggles the map overlay). Minimap mirrors the heat overlay (`drawMiniNEHeat`, part of the minimap base key). Picker: `G.neKGs` / `enhancedGemeinden[].ne` (registry `v24`) → green ring + "👁 beobachtet" badge, legend `#pick-ne-legend`. Agent look rows carry `ne_verdict, ne_canopy, ne_tree_n, ne_structures_n, bonus_spurenleser_xp` (`neBonusXP`).
 - **NE mechanic**: `parcel_claims.ne_verdict` (migration 016) = `neVerdictOf(pid,lon,lat)` from the cached cell at claim time (client `doClaim` sends `lon/lat`). `neDiscrepant(verdict)` (not consistent/unknown) → **+60 XP Spurenleser** on claim (`ne_bonus_xp`, `ne_verdict` in the answer) and quest **"Spurenleser"** (`challenge_type: observe`, hidden until `G.neCells>0`, briefing points at the nearest discrepant parcel or turns the overlay on); `convert biodiversity` on a `forest_loss` claim pays 200 XP (`ne_restore`, Wiederbewaldung). Popup row shows the bonus on unclaimed parcels. Agent inspect `game.actions[].bonus_spurenleser_xp`. xbrowser scenes `ne-heat`, `ne-heat-canopy`, `ne-popup`, `ne-quest`, `ne-back` (jump to Kohlschwarz 63330).
 - `/api/trees` → `{trees:[{lon,lat,h_m,crown_d_m}]}` per cell → `loadTrees(c)` →
   `G.apexTrees`, `assignApexTrees(newPolys)` (PIP → `G.apexByParcel`);

@@ -19,12 +19,12 @@ import (
 // GET /api/agent/inspect?session_id=&player_id=&parcel_id=[&lon=&lat=]
 //
 // The "Grundbuch-Dossier" of one parcel: everything the data services know
-// about it, gathered in parallel under one time budget. Since the Oct-2026
-// provider migration (docs/migration-2026-10.md) nothing is keyed by parcel
-// id upstream any more:
+// about it, gathered in parallel under one time budget. No upstream is keyed
+// by parcel id — every block is derived from the parcel's point/bbox:
 //
-//   - the parcel row comes from the cadastre cell we already hold (cellstore:
-//     lookupParcel → bevdirect-serve, live from the BEV vector tiles);
+//   - the parcel row comes from the cadastre cell we hold (cellstore:
+//     lookupParcel → bevdirect-serve, assembled from the BEV vector tiles,
+//     cached ≤ 24 h);
 //   - context (OSM proximity, Natura 2000, land price, toponyms, legal) is one
 //     umfeld /context call for the parcel's point + our own area figures;
 //   - terrain / trees / buildings come from the srtm public tier by bbox
@@ -33,9 +33,9 @@ import (
 //   - water is gw /llm/point + stations in the parcel bbox, forest the cached
 //     timber estimate, chronik the KG dossier, similar the vicinity search.
 //
-// Blocks that no longer exist upstream (per-parcel Hansen forest loss, legal
-// references per parcel, folio addresses, LiDAR auto_class) are listed in
-// `missing`; forest loss is reported at KG resolution instead. Blocks that
+// Figures the data tiers do not provide per parcel (Hansen forest loss, legal
+// references, folio addresses, LiDAR auto_class) are listed in `missing`;
+// forest loss is reported at KG resolution instead. Blocks that
 // miss the budget come back as {"pending":true}; every fetch is cached, so
 // calling again a few seconds later fills them in.
 //
@@ -333,7 +333,7 @@ func inspectCadastreBlock(p *bevParcel, fps []bevFootprint, cx map[string]any) m
 		}
 	}
 	if lg := sub(cx, "legal"); lg != nil {
-		l := map[string]any{"scope": "kg", "total_refs": int(toFloat(lg["total_refs"])), "detail": "GET /api/cadastre/legal/kg/" + p.KG}
+		l := map[string]any{"scope": "kg", "total_refs": int(toFloat(lg["total_refs"])), "detail": "GET /api/umfeld/legal/kg/" + p.KG}
 		if refs := arr(lg, "refs"); len(refs) > 0 {
 			if len(refs) > 8 {
 				refs = refs[:8]
@@ -345,8 +345,8 @@ func inspectCadastreBlock(p *bevParcel, fps []bevFootprint, cx map[string]any) m
 	return out
 }
 
-// landuseSummaryOf: the old `landuse_summary` shape ({code: m²}) kept for
-// clients that read it — identical to landuse_areas now.
+// landuseSummaryOf: `landuse_summary` ({code: m²}) is an alias of
+// landuse_areas for clients that read that key.
 func landuseSummaryOf(p *bevParcel) map[string]float64 {
 	if len(p.LanduseAreas) > 0 {
 		return p.LanduseAreas
@@ -357,12 +357,12 @@ func landuseSummaryOf(p *bevParcel) map[string]float64 {
 	return map[string]float64{}
 }
 
-// inspectMissing documents what the public tiers no longer provide per parcel.
+// inspectMissing documents which figures the data tiers provide only at KG/bbox resolution.
 func inspectMissing(p *bevParcel, cx map[string]any) map[string]string {
 	m := map[string]string{
 		"terrain.forest_loss": "Hansen forest loss is reported at KG resolution (srtm /landscape), not per parcel",
 		"cadastre.legal_refs": "RIS legal references are per KG (umfeld /legal/kg), not per parcel",
-		"ez.addresses":        "no address register on the public tier; folio = parcels within the fetched BEV tiles only",
+		"ez.addresses":        "no address register in the data tiers; folio = parcels within the fetched BEV tiles only",
 		"terrain.auto_class":  "no LiDAR per-parcel landscape label; dom_terrain / cover fractions come from the 25 m heightfield",
 	}
 	if p.Elev == nil {
@@ -995,7 +995,7 @@ func (s *Server) inspectGame(ctx context.Context, sess dbgen.GameSession, p agen
 			}
 		}
 		if neDiscrepant(verdict) {
-			a["bonus_spurenleser_xp"] = 60
+			a["bonus_spurenleser_xp"] = neBonusXP
 			a["ne_verdict"] = verdict
 		}
 		acts = append(acts, a)

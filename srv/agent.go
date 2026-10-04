@@ -73,6 +73,12 @@ type agentParcel struct {
 	ConvertedTo   *string `json:"converted_to,omitempty"`
 	ClaimID       int64   `json:"claim_id,omitempty"`
 	MapURL        string  `json:"map_url"`
+	// observed layer (NE cells) where the KG is v2.4
+	NEVerdict     string  `json:"ne_verdict,omitempty"`
+	NECanopy      float64 `json:"ne_canopy,omitempty"`
+	NETreeN       int     `json:"ne_tree_n,omitempty"`
+	NEStructN     int     `json:"ne_structures_n,omitempty"`
+	SpurenleserXP int     `json:"bonus_spurenleser_xp,omitempty"`
 }
 
 // agentSeen remembers parcels an agent has looked at (2 h) so /api/agent/claim
@@ -138,9 +144,9 @@ func landuseName(code string) string {
 
 // fetchAgentParcels: parcels around a point from the cadastre cells. The
 // centre cell is assembled on demand (bevdirect, ≤ bevWait s), neighbouring
-// cells are used when cached. Rows mirror the old /spatial/point shape
-// (parcel_id, kg_code, kg_name, gnr, ez, area_sqm, building_count,
-// total_building_area_sqm, lon, lat, distance_m, dominant_ns, landuse_areas).
+// cells are used when cached. Row shape: parcel_id, kg_code, kg_name, gnr,
+// ez, area_sqm, building_count, total_building_area_sqm, lon, lat,
+// distance_m, dominant_ns, landuse_areas (+ ne_verdict where observed).
 func (s *Server) fetchAgentParcels(lon, lat float64, radius, limit int, landuse string) ([]map[string]any, cellStatus, error) {
 	if _, st, cs := s.ensureCellStatus(cellOf(lon, lat)); st != 200 {
 		if st == 202 {
@@ -172,6 +178,12 @@ func (s *Server) fetchAgentParcels(lon, lat float64, radius, limit int, landuse 
 		}
 		if p.Elev != nil {
 			row["elev_m"], row["slope_deg"], row["dom_terrain"] = *p.Elev, p.Slope, p.DomTerr
+		}
+		if p.NE != nil {
+			row["ne_verdict"], row["ne_canopy"], row["ne_tree_n"], row["ne_structures_n"] = p.NE.Verdict, p.NE.Canopy, p.NE.TreeN, p.NE.StructN
+			if neDiscrepant(p.NE.Verdict) {
+				row["bonus_spurenleser_xp"] = neBonusXP
+			}
 		}
 		rows = append(rows, row)
 		if len(rows) >= limit {
@@ -252,6 +264,10 @@ func parcelFromRow(row map[string]any, sess dbgen.GameSession) agentParcel {
 	p.LanduseName = landuseName(p.Landuse)
 	p.Price = calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.BuildingArea)
 	p.MapURL = mapURL(sess.InviteCode, p.Lon, p.Lat, 17.5)
+	if v := strn(row, "ne_verdict"); v != "" {
+		p.NEVerdict, p.NECanopy, p.NETreeN, p.NEStructN = v, toFloat(row["ne_canopy"]), int(toFloat(row["ne_tree_n"])), int(toFloat(row["ne_structures_n"]))
+		p.SpurenleserXP = int(toFloat(row["bonus_spurenleser_xp"]))
+	}
 	return p
 }
 
@@ -569,10 +585,10 @@ func (s *Server) handleAgentMunicipality(w http.ResponseWriter, r *http.Request)
 		jsonErr(w, "q= (name) or random=1 required", 400)
 		return
 	}
-	url := cadastreAPI + "/search/municipalities?limit=8&format=json&q=" + urlQueryEscape(q)
+	url := umfeldAPI + "/search/municipalities?limit=8&format=json&q=" + urlQueryEscape(q)
 	key := "agentmuni:" + strings.ToLower(q)
 	if random {
-		url = cadastreAPI + "/search/municipalities?list=all&limit=5000&format=json"
+		url = umfeldAPI + "/search/municipalities?list=all&limit=5000&format=json"
 		key = "agentmuni:*all*"
 	}
 	b, st := s.llmGet(key, url, 24*time.Hour)
@@ -678,7 +694,7 @@ gathers everything the data services know about one parcel, in parallel, in
 | ` + "`chronik`" + ` | gw / holz / farm chronicles | this KG's drought level now (σ vs. 30-year normal) → yield factor, well protection, Förderung per ha; link to the full ` + "`/api/dossier/{kg}`" + ` |
 | ` + "`similar`" + ` | our own cadastre cells (` + "`scope:\"vicinity\"`" + `) | up to 8 look-alike parcels **in the explored area around the point** (the 0.02° cells we already hold, default radius 3 km — not all of Austria), scored 0..1 on size, land-use composition, built density and terrain where the 25 m grid exists — "where else near here is a parcel like this?" (more: ` + "`GET /api/similar?parcel_id=&lon=&lat=&area=&lu=`" + `) |
 | ` + "`game`" + ` | — | price, owner, the actions you can take *here* with their exact payout (claim + giant-tree/Pegelwart bonus, bulk EZ, convert XP, timber coins, harvest economy, sell value) |
-| ` + "`missing`" + ` | — | what the public data tiers no longer provide per parcel (per-parcel Hansen loss, per-parcel legal refs, folio addresses, LiDAR landscape label) and KGs without a 25 m grid — read it before you quote a number |
+| ` + "`missing`" + ` | — | figures the data tiers provide only at KG/bbox resolution (Hansen loss, legal refs, folio addresses, LiDAR landscape label) and KGs without a 25 m grid — read it before you quote a number |
 | ` + "`text`" + ` | — | one paragraph that reads all of the above |
 
 Example narration (real output, parcel 90107-4806): *"14 965 m² of Wälder. No
@@ -767,7 +783,9 @@ take ~10 ms.
                   56 forest, 54 alpine pasture, 59/60 water) &unclaimed=1
 
 Returns ` + "`parcels[]`" + ` (id, kg_name, gnr, ez, landuse + name, area, building
-count/area, price, owner, distance, ` + "`map_url`" + `) from the 0.02° cadastre
+count/area, price, owner, distance, ` + "`map_url`" + `, and where the KG is observed
+` + "`ne_verdict`" + ` / ` + "`ne_canopy`" + ` / ` + "`ne_tree_n`" + ` / ` + "`ne_structures_n`" + ` plus
+` + "`bonus_spurenleser_xp`" + ` when observation and cadastre disagree) from the 0.02° cadastre
 cells around the point (nearest first, ≤ 9 cells),
 ` + "`treasures[]`" + ` in range, ` + "`players[]`" + `, ` + "`quests[]`" + ` with progress (only with
 your ` + "`player_id`" + ` + token), the local ` + "`drought`" + ` state (real groundwater anomaly →

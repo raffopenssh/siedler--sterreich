@@ -1,9 +1,9 @@
 package srv
 
-// Read-side helpers over the cached cadastre cells (api_cache `vp:v1:i:j`).
-// Everything that used to query a parcel index upstream (similar parcels,
-// treasure placement, agent look/inspect, timber stand facts) now reads the
-// cells we already hold — "in der Nähe" means within the explored/warm area.
+// Read-side helpers over the cached cadastre cells (api_cache `vp:v1:i:j`,
+// ≤ 24 h). Similar parcels, treasure placement, agent look/inspect and timber
+// stand facts all read the cells we already hold — "in der Nähe" means
+// within the explored/warm area.
 
 import (
 	"context"

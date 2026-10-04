@@ -1031,6 +1031,9 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 
 // neDiscrepant reports whether an NE verdict means "observation disagrees with
 // the cadastre" (forest_loss, forest_gain, sealed_new, structure_new, green_new).
+// neBonusXP: Spurenleser bonus on a claim whose observation contradicts the declared use.
+const neBonusXP = 60
+
 func neDiscrepant(verdict string) bool {
 	return verdict != "" && verdict != "consistent" && verdict != "unknown"
 }
@@ -1043,4 +1046,140 @@ func (s *Server) neVerdictOf(pid string, lon, lat float64) string {
 		return p.NE.Verdict
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// KG aggregate
+
+// neKGSummary aggregates the observed layer over every cached NE cell of a
+// KG (no upstream call): observed cover shares, canopy, tree / structure
+// counts, consistency distribution and forest-loss share. `coverage` is the
+// share of the KG's expected res-12 cells (~307 m²) we actually hold, so
+// callers can tell a complete picture from a corner. nil when nothing is cached.
+func (s *Server) neKGSummary(kg string) map[string]any {
+	a := admin().KGs[kg]
+	if a == nil {
+		return nil
+	}
+	var (
+		n, lossN, treeN, tallN, structN, canopyN int
+		cover                                    [9]float64
+		canopy, hMax, treeHMax                   float64
+		cons                                     = map[string]int{}
+		species                                  = map[string]int{}
+		stypes                                   = map[string]int{}
+		lossYears                                = map[int]int{}
+		epoch                                    string
+		cells                                    int
+	)
+	for _, c := range a.cells() {
+		ne := s.neCached(c)
+		if ne == nil {
+			continue
+		}
+		cells++
+		if epoch == "" {
+			epoch = ne.Meta.Epoch
+		}
+		mine := make([]bool, len(ne.KG))
+		for i, k := range ne.KG {
+			if k != kg {
+				continue
+			}
+			mine[i] = true
+			n++
+			for g := 0; g < 9 && i < len(ne.Cover); g++ {
+				cover[g] += float64(ne.Cover[i][g]) / 255
+			}
+			if i < len(ne.Canopy) && ne.Canopy[i] != 255 {
+				canopy += float64(ne.Canopy[i]) / 254
+				canopyN++
+			}
+			if i < len(ne.HMax) && ne.HMax[i] != 255 && float64(ne.HMax[i])*0.5 > hMax {
+				hMax = float64(ne.HMax[i]) * 0.5
+			}
+			if i < len(ne.Consistency) {
+				ci := int(ne.Consistency[i])
+				if ci < len(neConsistency) {
+					cons[neConsistency[ci]]++
+				}
+			}
+			if i < len(ne.ForestLossYear) && ne.ForestLossYear[i] > 0 && ne.ForestLossYear[i] != 255 {
+				lossN++
+				lossYears[2000+int(ne.ForestLossYear[i])]++
+			}
+		}
+		for t, ci := range ne.Trees.CellIndex {
+			if int(ci) >= len(mine) || !mine[ci] {
+				continue
+			}
+			treeN++
+			h := ne.Trees.HM[t]
+			if h >= 25 {
+				tallN++
+			}
+			if h > treeHMax {
+				treeHMax = h
+			}
+			if t < len(ne.Trees.Species) && int(ne.Trees.Species[t]) < len(neSpecies) {
+				species[neSpecies[ne.Trees.Species[t]]]++
+			}
+		}
+		for t, ci := range ne.Structures.CellIndex {
+			if int(ci) >= len(mine) || !mine[ci] {
+				continue
+			}
+			structN++
+			if t < len(ne.Structures.Type) && int(ne.Structures.Type[t]) < len(neStructTypes) {
+				stypes[neStructTypes[ne.Structures.Type[t]]]++
+			}
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	fn := float64(n)
+	cov := map[string]float64{}
+	for g := 0; g < 9; g++ {
+		if v := cover[g] / fn; v >= 0.005 {
+			cov[neGroups[g]] = math.Round(v*1000) / 1000
+		}
+	}
+	consShare := map[string]float64{}
+	discrepant := 0.0
+	for k, v := range cons {
+		consShare[k] = math.Round(float64(v)/fn*1000) / 1000
+		if neDiscrepant(k) {
+			discrepant += float64(v)
+		}
+	}
+	lastLoss := 0
+	for y := range lossYears {
+		if y > lastLoss {
+			lastLoss = y
+		}
+	}
+	expected := a.AreaKm2 * 1e6 / 307.0
+	out := map[string]any{
+		"cells": n, "grid_cells": cells, "epoch": epoch,
+		"coverage":         math.Round(math.Min(1, fn/math.Max(1, expected))*100) / 100,
+		"cover":            cov,
+		"canopy":           math.Round(canopy/math.Max(1, float64(canopyN))*1000) / 1000,
+		"h_max_m":          hMax,
+		"tree_n":           treeN,
+		"trees_tall":       tallN,
+		"tree_h_max_m":     math.Round(treeHMax*10) / 10,
+		"structures_n":     structN,
+		"consistency":      consShare,
+		"discrepant":       math.Round(discrepant/fn*1000) / 1000,
+		"forest_loss":      math.Round(float64(lossN)/fn*1000) / 1000,
+		"forest_loss_last": lastLoss,
+	}
+	if len(species) > 0 {
+		out["species"] = species
+	}
+	if len(stypes) > 0 {
+		out["structure_types"] = stypes
+	}
+	return out
 }

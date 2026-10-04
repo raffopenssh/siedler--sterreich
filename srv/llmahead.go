@@ -25,7 +25,8 @@ import (
 )
 
 // Fixture: KG 63307 Gaisfeld (Stmk, Gemeinde 61611 Krottendorf-Gaisfeld) —
-// covered by cadastre, srtm-lidar (v2 product), holzeinschlag and farm data.
+// covered by the bevdirect cadastre cells, srtm-lidar (v2 product),
+// holzeinschlag, farm and groundwater data.
 const (
 	fxKG       = "63307"
 	fxGem      = "61611"
@@ -41,16 +42,17 @@ type aheadService struct {
 	Note             string `json:"note,omitempty"`
 }
 
-// Oct-2026 provider migration (docs/migration-2026-10.md): the former
-// cadastre context service is now umfeld-at (non-cadastre, point-keyed context
-// only); the cadastre itself is assembled locally by bevdirect-serve from the
-// BEV vector tiles and is not a sibling service any more. srtm-lidar-at is
-// consumed on its public tier (port 443; bbox/point/KG-code keyed only).
+// Provider setup: the cadastre itself (parcels, footprints, landuse) is
+// assembled locally by bevdirect-serve from the BEV vector tiles (0.02° cells,
+// cached ≤ 24 h in api_cache) and is not part of this list. The sibling
+// services we ask things of are umfeld-at (point-keyed context), srtm-lidar-at
+// (public tier on :443; bbox/point/KG-code keyed), holzeinschlag-at,
+// farm-subsidies-austria and groundwater-at.
 var aheadServices = []aheadService{
-	{"cadastre", "https://umfeld-at.exe.xyz", "umfeld-at",
-		"context only (Statistik Austria, EEA N2K, WDPA, OSM, DLM names, RIS) under /api/v1; cadastre comes from the local bevdirect-serve (127.0.0.1:8787, BEV tiles, CC BY 4.0) — every /spatial/*, /export/*, /query/parcels, /kg/{code} parcel list, /parcel/{id}, /parcels/geometry/batch, /osm/parcel, /land_prices/parcel, /natura2000/kg, osm water_parcels item below is GONE"},
+	{"umfeld", "https://umfeld-at.exe.xyz", "umfeld-at",
+		"point-keyed context under /api/v1 (Statistik Austria land prices, EEA N2K, WDPA, OSM distances, DLM toponyms, RIS legal, NE declared layer); cadastre geometry comes from the local bevdirect-serve (BEV tiles, CC BY 4.0)"},
 	{"srtm", "https://srtm-lidar-at.exe.xyz", "raffopenssh/srtm-lidar-at",
-		"public tier on :443 under /api/v1: /landscape, /trees/bbox, /buildings/bbox, /landmarks/bbox, /heightfield, /kgs, /kg/{code}, /tiles/hillshade — no parcel ids, no footprint ids, no /query/parcels, no /flags, no /v3/trees, no /parcel/{id}"},
+		"public tier on :443 under /api/v1: /landscape, /trees/bbox, /buildings/bbox, /landmarks/bbox, /heightfield, /cells, /kgs, /kg/{code}, /tiles/hillshade — bbox/point/KG-code keyed, no parcel or footprint ids (the game assigns by point-in-parcel / centroid grid)"},
 	{"holz", "https://holzeinschlag-at.exe.xyz", "raffopenssh/holzeinschlag-austria", ""},
 	{"farm", "https://farm-subsidies-austria.exe.xyz", "raffopenssh/farm-subsidies", ""},
 	{"gw", "https://groundwater-at.exe.xyz", "groundwater-at (GW Power)", ""},
@@ -76,16 +78,13 @@ type aheadItem struct {
 	Spec            string   // terse contract
 	Why             string   // one line: what it unlocks in the game
 	Check           *aheadCheck
-	Manual          bool   // no automatic check
-	Gone            string // Oct-2026: the endpoint this item targeted no longer exists on the public tier — why / what replaced it
+	Manual          bool // no automatic check
 }
 
 // aheadUsed: items the game actually consumes today → where. Rendered as [x]
 // in the roadmap; ?unused=1 hides them so an implementing agent only reads
 // what still matters to us (green in the harness ≠ used in the game).
 var aheadUsed = map[string]string{
-	"CAD-1":  "GONE upstream; same idea now served from bevdirect: landuse polygons ride in GET /api/viewport (and /api/viewport-landuse) per 0.02° cell",
-	"CAD-2":  "GONE upstream; bevdirect rows carry landuse_areas + dominant_ns measured from the tiles → game.js extractLuCode(), popup, price",
 	"HOLZ-2": "server: timberStatePrices() in timber.go (Holzernte prices)",
 	"FARM-4": "server: GET /api/hofstellen → game.js loadHofstellen() per tile, drawHofstellen() farmstead sprite + 'Hofstelle' popup row",
 	"LID-2":  "server: GET /api/trees → game.js loadTrees() per tile: real apex positions anchor forest sprites (drawForestSprites), giants ≥25 m feed G.topTrees for every indexed KG",
@@ -101,18 +100,15 @@ var aheadUsed = map[string]string{
 	"GW-5":   "server: GET /api/water/protection + inWaterProtection() ×1.5 XP; game.js loadWaterProtection() per tile, drawWaterProtection() blue hatch (shares #btn-n2k), popup badge, +150⚡ label",
 	"GW-6":   "server: GET /api/water/flowpath; game.js startFlow()/drawFlowPath(): camera-follow droplet journey, gauge checkpoints, #flow-chip",
 	"GW-7":   "server: GET /api/water/gwi; game.js loadPickerGwi() joins kg→gemeinde from the embedded BEV VGD table (srv/data/admin.json.gz) → gwiTint() wash in drawMuniPoly() + legend",
-	"GW-8":   "server: +80 XP Pegelwart on POST /api/claim-parcel via stationOnParcel() (gw /llm/parcel, now mostly 404 no_data) and /llm/points in the parcel bbox (agent inspect); game.js stationOnParcel() sends gw_station, popup row '📏 Messstelle · +80⚡ Pegelwart'",
 	"HOLZ-1": "server: forestBlock() in dossier.go; game.js renderDossier('forest') — Wald tab with 24-year loss pxChart + Naturwald XP rule",
-	"LID-3":  "footprint_id GONE on the public tier; GET /api/buildings (srtm /buildings/bbox) → game.js loadBuildings() indexes points into the centroid grid G.lidarBuildingIdx; agent inspect matches nearest point ≤ 20 m",
 	"HOLZ-3": "server: plotHistory() in timber.go → estimate.history (Hansen loss years, young_frac, stock_factor, CO₂ flux) scales the Holzernte and feeds the 'Kahlschlag' popup row",
-	"CAD-5":  "GONE (no upstream assembly tags): cadastre cells are rebuilt from the BEV tiles at most every 24 h (api_cache TTL), so no invalidation protocol is needed",
 	"FARM-1": "server: farmBlock() + subsidyCoins(); game.js Höfe tab (archetype segBar, top measures), popup Förderung row/button, harvest toast breakdown",
 }
 
 var aheadItems = []aheadItem{
 	// ---- cross-cutting: the sibling spec nobody implements yet ----
 	{ID: "ALL-1", Prio: "P1", Services: []string{"*"}, Title: "GET /llm/kg/{kg_code} (sibling spec)",
-		Spec: "Per cadastre spec (cadastre /api/v1/docs/llm.txt?section=integration). JSON: service, dataset, kg_code, gemeinde_code, granularity (gemeinde|point|parcel), as_of, updated_at, source, license, unit_glossary, metrics{flat snake_case numbers}, history[{as_of,...}]. Unknown KG → 404 {kg_code,error:\"no_data\"}. CORS *. ETag. <300 ms warm.",
+		Spec: "Shared sibling contract. JSON: service, dataset, kg_code, gemeinde_code, granularity (gemeinde|point|parcel), as_of, updated_at, source, license, unit_glossary, metrics{flat snake_case numbers}, history[{as_of,...}]. Unknown KG → 404 {kg_code,error:\"no_data\"}. CORS *. ETag. <300 ms warm.",
 		Why:  "One KG dossier call at session start replaces 6-8 proxies with 4 pending semantics.",
 		Check: &aheadCheck{Path: "/llm/kg/" + fxKG, MaxMs: 3000, Has: []string{"service", "kg_code", "granularity", "metrics", "as_of"},
 			HeaderHas: map[string]string{"Access-Control-Allow-Origin": "*"}}},
@@ -133,10 +129,6 @@ var aheadItems = []aheadItem{
 			}
 			return nil
 		}}},
-	{Gone: "we warm our own cadastre cells now (warm.go: daily plan + session + neighbour warming); no upstream prewarm is called", ID: "ALL-4", Prio: "P2", Services: []string{"cadastre", "srtm"}, Title: "POST /api/v1/prewarm?kgs=a,b — explicit warm-up hint",
-		Spec:  "Idempotent, deduped, low-priority. Returns ≤500 ms with 202 {queued:[..],already_warm:[..]} (200 if all warm). ≤50 KGs per call. Fired once per game session create.",
-		Why:   "Kills loading-screen 202 waits; both of you lazily pull Zenodo.",
-		Check: &aheadCheck{Method: "POST", Path: "/api/v1/prewarm?kgs=" + fxKG, Status: []int{200, 202}, MaxMs: 2000}},
 	{ID: "ALL-5", Prio: "P3", Services: []string{"holz", "farm", "gw"}, Title: "ETag/304 + gzip on static JSON",
 		Spec: "Every /data/* and /llm/* JSON: ETag (or Last-Modified), If-None-Match → 304, Content-Encoding gzip when requested, Cache-Control max-age≥3600. CORS *.",
 		Why:  "700 KB catalog every session → 0 bytes when unchanged.",
@@ -150,63 +142,23 @@ var aheadItems = []aheadItem{
 			return nil
 		}}},
 
-	// ---- cadastre ----
-	{Gone: "/spatial/landuse is gone with the cadastre API; landuse polygons come from bevdirect /viewport?layers=landuse", ID: "CAD-1", Prio: "P1", Services: []string{"cadastre"}, Title: "GET /api/v1/spatial/landuse?west&south&east&north — R-tree landuse polygons",
-		Spec:  "Same contract as /spatial/parcels: {landuse:[{kg_code, code (NS 40-97), area_sqm, geometry(Polygon|MultiPolygon, ring[0]=exterior)}], count, limit, ready, truncated, warming?}. Clipped to bbox or whole polygons ≤ limit. ≤150 ms warm.",
-		Why:   "Backdrop today streams the whole-KG landuse export (~7 MB); viewport slice is ~50 KB.",
-		Check: &aheadCheck{Path: "/api/v1/spatial/landuse?" + fxBBoxQ, MaxMs: 5000, Has: []string{"landuse.0.code", "landuse.0.geometry", "ready"}}},
-	{Gone: "/spatial/parcels is gone; bevdirect parcel rows carry landuse_areas + dominant_ns", ID: "CAD-2", Prio: "P1", Services: []string{"cadastre"}, Title: "landuse_areas on /spatial/parcels rows",
-		Spec:  "Each parcel row gains landuse_areas:{\"48\":12000.5,\"56\":450.0} (m² from polygon geometry, same source as landuse_area_breakdown) and dominant_ns:\"48\" (largest area). Default on; ?attrs=min to drop.",
-		Why:   "Replaces symbol-count guessing (nsWeight hack) for terrain fill + price; lets us drop the landuse layer entirely.",
-		Check: &aheadCheck{Path: "/api/v1/spatial/parcels?" + fxBBoxQ, MaxMs: 5000, Has: []string{"parcels.0.landuse_areas|parcels.0.dominant_ns"}}},
-	{Gone: "/spatial/parcels|footprints are gone; we never used tolerance_m", ID: "CAD-3", Prio: "P2", Services: []string{"cadastre"}, Title: "?tolerance_m= geometry simplification on /spatial/parcels|footprints",
-		Spec:  "Douglas-Peucker (or VW) with tolerance in metres, 0 = exact. Response echoes tolerance_m; keep ring closure, drop rings whose area < tolerance². Suggested client mapping: zoom13→8 m, z15→2 m, z17+→0.",
-		Why:   "16 km² Alm polygons with thousands of vertices at zoom 13 kill canvas FPS in dense towns.",
-		Check: &aheadCheck{Path: "/api/v1/spatial/parcels?" + fxBBoxQ + "&tolerance_m=10", MaxMs: 5000, Has: []string{"tolerance_m"}}},
-	{Gone: "/spatial/parcels is gone; enrichment is one umfeld /context call per inspected parcel (GET /api/parcel-context)", ID: "CAD-4", Prio: "P2", Services: []string{"cadastre"}, Title: "?include=land_prices,osm,n2k enrichment on /spatial/parcels rows",
-		Spec: "Opt-in comma list. land_prices → {buy_total_blended_eur, class_source}; osm → {dist_road_m, remoteness}; n2k → in_natura2000:bool, n2k_site_codes[]. Unknown include → 400. Row cost ≤ +200 B.",
-		Why:  "Price heat-map, remoteness quests and N2K badges without one lazy call per popup.",
-		Check: &aheadCheck{Path: "/api/v1/spatial/parcels?" + fxBBoxQ + "&include=land_prices,osm,n2k", MaxMs: 6000,
-			Has: []string{"parcels.0.land_prices|parcels.0.osm|parcels.0.in_natura2000"}}},
-	{Gone: "/spatial/* and /export/geojson are gone; cells expire after ≤ 24 h instead", ID: "CAD-5", Prio: "P2", Services: []string{"cadastre"}, Title: "assembly version on viewport responses",
-		Spec:  "Add assembly:{\"63307\":{version:\"tile_partition_v1\",reprocessed_at:\"2026-08-06T..\"}} per KG touched to /spatial/parcels, /spatial/footprints and /export/geojson (as header X-Assembly-Version for GeoJSON).",
-		Why:   "Lets us invalidate our 6 h viewport cache exactly when you reprocess a KG, instead of purging everything.",
-		Check: &aheadCheck{Path: "/api/v1/spatial/parcels?" + fxBBoxQ, MaxMs: 5000, Has: []string{"assembly"}}},
-
 	// ---- srtm-lidar ----
-	{Gone: "/query/parcels is gone on the public tier; per-parcel terrain is measured from /heightfield in our viewport build", ID: "LID-1", Prio: "P1", Services: []string{"srtm"}, Title: "/api/v1/query/parcels?bbox= carries the slim fields, served from index",
-		Spec: "Row fields: parcel_id, fracs{type:frac ≥0.02}, tree_h{mean,max}, dom_terrain (dominant natural cover), auto_class, auto_subclass, slope_deg, elev_m, aspect_deg, top_trees[{lon,lat,h,rf_conf}] (h≥25). Answered from the R-tree/SQLite index, never from the KG JSON; ≤500 ms warm, ready:false + retry_after_s when cold (never hang).",
-		Why:  "Deletes our 1 MB-per-KG lidar-slim proxy; enhanced data loads per viewport tile like the cadastre.",
-		Check: &aheadCheck{Path: "/api/v1/query/parcels?bbox=" + fxBBoxCSV + "&limit=20", MaxMs: 4000,
-			Has: []string{"parcels.0.fracs|data.parcels.0.fracs|results.0.fracs", "parcels.0.tree_h|data.parcels.0.tree_h|results.0.tree_h"}}},
 	{ID: "LID-2", Prio: "P1", Services: []string{"srtm"}, Title: "GET /api/v1/trees/bbox — tree apices from a precomputed index",
 		Spec:  "Params west,south,east,north, min_height (default 20), limit (≤2000). {trees:[{lon,lat,h_m,crown_d_m?,species_hint?,parcel_id?}], count, truncated, ready}. Backed by a pre-extracted apex R-tree (not the light GPKG). ≤500 ms warm.",
-		Why:   "Giant-tree gameplay + timber estimate stop depending on the 2.5 s POST /v3/trees budget.",
+		Why:   "Giant-tree gameplay + timber estimate read apex positions from one bounded bbox query per tile.",
 		Check: &aheadCheck{Path: "/api/v1/trees/bbox?" + fxBBoxQ + "&min_height=20&limit=50", MaxMs: 4000, Has: []string{"trees", "ready|count"}}},
-	{Gone: "/query/buildings and footprint ids are gone on the public tier; /buildings/bbox points are matched by centroid", ID: "LID-3", Prio: "P2", Services: []string{"srtm"}, Title: "footprint_id on buildings",
-		Spec:  "Every building object (KG JSON buildings[], /query/buildings, /kg/X/buildings) carries cadastre footprint_id (from /api/v1/spatial/footprints) next to the address building_id. null when unmatched; matching by ≥50 % footprint overlap.",
-		Why:   "We match heights by centroid grid today — fragile in terraces and courtyards.",
-		Check: &aheadCheck{Path: "/api/v1/query/buildings?bbox=" + fxBBoxCSV + "&limit=5", MaxMs: 4000, Has: []string{"buildings.0.footprint_id|data.buildings.0.footprint_id|results.0.footprint_id"}}},
 	{ID: "LID-4", Prio: "P2", Services: []string{"srtm"}, Title: "Static hillshade / nDSM XYZ tiles",
 		Spec:  "GET /tiles/{hillshade|ndsm}/{z}/{x}/{y}.png (z 12-17, 256 px, WebMercator) pre-rendered from the products; 204 for no-data tiles; Cache-Control 1 y; CORS *.",
-		Why:   "Real relief under the pixel art; overlay endpoints are POST-and-render and we had to block them.",
+		Why:   "Real relief under the pixel art from static, cacheable tiles instead of per-view renders.",
 		Check: &aheadCheck{Path: "/tiles/hillshade/14/8882/5773.png", Status: []int{200, 204}, MaxMs: 4000, HeaderHas: map[string]string{"Content-Type": "image/"}}},
 	{ID: "LID-7", Prio: "P1", Services: []string{"srtm", "umfeld"}, Title: "NE cells: H3 res-12 observed layer (/api/v1/cells) zipped with umfeld's declared layer (/api/v1/ne)",
 		Spec:  "GET /api/v1/cells?bbox=w,s,e,n&format=columns&centres=1&layers=obs,trees,structures for one 0.02° cell (≤ 16 384 cells): cover[9], canopy, heights, ndvi, change, terrain, consistency verdict, every tree apex (species, vitality) and structure (type, heights). 404 + Retry-After where the KG is not v2.4 yet; meta.partial for mixed cells. umfeld: GET /api/v1/ne/{kg}, /ne/manifest, POST /ne/{kg}/report (peer token).",
 		Why:   "Replaces the 25 m heightfield as the parcel enrichment source wherever a KG is processed: real trees per parcel, undeclared structures, forest loss — the observed truth next to the declared cadastre.",
 		Check: &aheadCheck{Path: "/api/v1/cells?lon=14.4848&lat=48.0787&k=0", Status: []int{200, 404}, MaxMs: 4000}},
-	{Gone: "/processing/queue was 401 and is not on the public tier", ID: "LID-5", Prio: "P2", Services: []string{"srtm"}, Title: "POST /api/v1/processing/queue low-priority hint (dedupe, instant)",
-		Spec: "Body {kgs:[..], priority:\"low\", source:\"siedler\"}. Unauthenticated when priority=low (today: 401). Skips processed KGs, dedupes queued ones, returns ≤1 s with 202 {queued[], skipped[], position}. Hard cap 20 KGs/call, 100/h per source.",
-		Why:  "Coverage is 33 % of KGs; queueing where players actually are grows it where it matters.",
-		Check: &aheadCheck{Method: "POST", Path: "/api/v1/processing/queue", Body: `{"kgs":["` + fxKG + `"],"priority":"low","source":"siedler-ahead-check"}`,
-			Headers: map[string]string{"Content-Type": "application/json"}, Status: []int{200, 202}, MaxMs: 3000}},
-	{Gone: "/v3 and the per-KG GPKG are not on the public tier", ID: "LID-6", Prio: "P3", Services: []string{"srtm"}, Title: "Light artefact split for cold start", Manual: true,
-		Spec: "Publish parcels+buildings+tree_apices as a separate ≤5 MB Zenodo artefact per KG so a cold KG answers LID-1/LID-2 in ≤5 s (cadastre cold path is ~2 s). Keep the full GPKG for /v3.",
-		Why:  "223 s cold start makes 'Auf Glück' unplayable outside already-warm KGs."},
 
 	// ---- holzeinschlag ----
 	{ID: "HOLZ-1", Prio: "P1", Services: []string{"holz"}, Title: "/llm/kg/{kg} = municipal forest timeline",
-		Spec:  "granularity gemeinde. metrics: forest_area_ha, loss_ha_2024, loss_total_ha, harvest_efm, harvest_value_eur, co2_t, net_flux_tco2e_ha, price_spruce_eur_efm. history: one row per year 2001-2024 with the same keys (null where series absent). kg→gemeinde via cadastre /lookup, cached.",
+		Spec:  "granularity gemeinde. metrics: forest_area_ha, loss_ha_2024, loss_total_ha, harvest_efm, harvest_value_eur, co2_t, net_flux_tco2e_ha, price_spruce_eur_efm. history: one row per year 2001-2024 with the same keys (null where series absent). kg→gemeinde via the BEV VGD admin table (the game embeds it as srv/data/admin.json.gz), cached.",
 		Why:   "Gives every forest parcel a 24-year context line and a real CO₂ number for Naturwald.",
 		Check: &aheadCheck{Path: "/llm/kg/" + fxKG, MaxMs: 3000, Has: []string{"metrics.harvest_efm", "history.0.as_of"}}},
 	{ID: "HOLZ-2", Prio: "P1", Services: []string{"holz"}, Title: "GET /data/prices/state/{1-9}.json — slim regional prices",
@@ -225,11 +177,11 @@ var aheadItems = []aheadItem{
 
 	// ---- farm subsidies ----
 	{ID: "FARM-1", Prio: "P1", Services: []string{"farm"}, Title: "/llm/kg/{kg} = municipal subsidy profile (aggregate only)",
-		Spec:  "granularity gemeinde, no recipient data. metrics: recipients_n, total_eur, eur_per_ha_median, eur_per_recipient_median, organic_share, archetype_mix{archetype:share}, top_measures[{code,name,share}]. history per year. kg→gemeinde via cadastre /lookup.",
+		Spec:  "granularity gemeinde, no recipient data. metrics: recipients_n, total_eur, eur_per_ha_median, eur_per_recipient_median, organic_share, archetype_mix{archetype:share}, top_measures[{code,name,share}]. history per year. kg→gemeinde via the BEV VGD admin table (the game embeds it as srv/data/admin.json.gz).",
 		Why:   "'Förderung' income mechanic on farmland + Bio-Bergbauer quests, GDPR-free.",
 		Check: &aheadCheck{Path: "/llm/kg/" + fxKG, MaxMs: 4000, Has: []string{"metrics.eur_per_ha_median|metrics.total_eur"}}},
 	{ID: "FARM-2", Prio: "P1", Services: []string{"farm"}, Title: "GET /api/schlaege?west&south&east&north — INVEKOS field polygons",
-		Spec:  "{fields:[{id, snar_code, snar_name, crop_group (getreide|mais|gruenland|wein|obst|alm|brache|sonst), area_ha, organic:bool?, geometry}], year, count, truncated, ready}. Open national INVEKOS Schläge data, WGS84, limit 3000, ≤300 ms from an R-tree; join to parcel_id optional (POST cadastre /spatial/points).",
+		Spec:  "{fields:[{id, snar_code, snar_name, crop_group (getreide|mais|gruenland|wein|obst|alm|brache|sonst), area_ha, organic:bool?, geometry}], year, count, truncated, ready}. Open national INVEKOS Schläge data, WGS84, limit 3000, ≤300 ms from an R-tree; no parcel ids needed — the game joins fields to parcels client-side by point-in-polygon.",
 		Why:   "Real crop per field replaces hash-based field textures; field cycle uses true phenology. Biggest visual win available.",
 		Check: &aheadCheck{Path: "/api/schlaege?" + fxBBoxQ, MaxMs: 5000, Has: []string{"fields", "year"}}},
 	{ID: "FARM-3", Prio: "P2", Services: []string{"farm"}, Title: "CORS + /llm.txt",
@@ -271,10 +223,6 @@ var aheadItems = []aheadItem{
 		Spec:  "/llm/gwi.json → {as_of, categories:{0:good,1:watch,2:stressed}, kgs:{\"63307\":[0.53,2], …}} for all 7,850 KGs, ≤150 KB gzip, ETag, Cache-Control 1 d. On /llm/kg and /llm/kgs: ?fields=metrics,points,drought (comma list of top-level keys; unit_glossary only when asked) and ?history=0.",
 		Why:   "Colour the municipality picker by water stress in one cached file; per-session KG dossiers drop from 9 KB (3 KB glossary each) to ~1 KB.",
 		Check: &aheadCheck{Path: "/llm/gwi.json", MaxMs: 3000, MaxBytes: 1 << 20, Has: []string{"kgs", "as_of"}}},
-	{Gone: "we no longer send parcel ids to siblings; gauges on a parcel = /llm/points in the parcel bbox + point-in-polygon", ID: "GW-8", Prio: "P3", Services: []string{"gw"}, Title: "parcel_id on every point + GET /llm/parcel/{parcel_id}",
-		Spec:  "Snap all points to parcels (today only 'when confident'); expose parcel_id → {points[], water_body, point-context (= GW-1 at the parcel centroid)}. 404 no_data when the parcel has no snapped point and no coverage.",
-		Why:   "Buying the parcel with the Messstelle on it is a collectible ('Pegelwart' badge); one call from the parcel popup.",
-		Check: &aheadCheck{Path: "/llm/parcel/63307-133/5", MaxMs: 3000, Has: []string{"points|metrics"}}},
 }
 
 func aheadServiceByName(slug string) *aheadService {
@@ -383,10 +331,6 @@ func jsonPath(v any, path string) (any, bool) {
 func evalCheck(base string, it aheadItem) checkResult {
 	c := it.Check
 	cr := checkResult{ID: it.ID, Prio: it.Prio}
-	if it.Gone != "" {
-		cr.Status, cr.Detail = "gone", it.Gone
-		return cr
-	}
 	if c == nil || it.Manual {
 		cr.Status = "manual"
 		return cr
@@ -622,7 +566,6 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 			Why      string   `json:"why"`
 			Check    string   `json:"check,omitempty"`
 			Manual   bool     `json:"manual,omitempty"`
-			Gone     string   `json:"gone,omitempty"`
 			Used     string   `json:"used_by_game,omitempty"`
 		}
 		out := struct {
@@ -643,7 +586,7 @@ func (s *Server) handleLLMAhead(w http.ResponseWriter, r *http.Request) {
 			if unusedOnly && aheadUsed[it.ID] != "" {
 				continue
 			}
-			ji := jItem{ID: it.ID, Prio: it.Prio, Services: it.Services, Title: it.Title, Spec: it.Spec, Why: it.Why, Manual: it.Manual, Gone: it.Gone, Used: aheadUsed[it.ID]}
+			ji := jItem{ID: it.ID, Prio: it.Prio, Services: it.Services, Title: it.Title, Spec: it.Spec, Why: it.Why, Manual: it.Manual, Used: aheadUsed[it.ID]}
 			if it.Check != nil {
 				m := it.Check.Method
 				if m == "" {
@@ -666,7 +609,7 @@ func renderAheadMarkdown(self, svcF, itemF string, unusedOnly bool) []byte {
 	if itemF == "" {
 		fmt.Fprintf(&b, "# Siedler Österreich → sibling services: AHEAD list\n\n")
 		fmt.Fprintf(&b, "Consumer: https://siedler-oesterreich.exe.xyz:8000 (browser game on live Austrian cadastre). Terse by design.\n")
-		fmt.Fprintf(&b, "Machine form: %s?format=json   Filter: ?service=cadastre|srtm|holz|farm|gw  ?item=ID  ?unused=1 (only items the game does not consume yet — start here)\n", self)
+		fmt.Fprintf(&b, "Machine form: %s?format=json   Filter: ?service=umfeld|srtm|holz|farm|gw  ?item=ID  ?unused=1 (only items the game does not consume yet — start here)\n", self)
 		fmt.Fprintf(&b, "Checkbox = **used by the game** (where: 'used:' line), not 'implemented upstream' — that is what %s/check/<service> tells you.\n\n", self)
 		fmt.Fprintf(&b, "## Protocol (for the implementing agent)\n")
 		fmt.Fprintf(&b, "1. `curl -s %s/check/<service>` → JSON pass/fail per item, P1 first in next_steps.\n", self)
@@ -674,7 +617,7 @@ func renderAheadMarkdown(self, svcF, itemF string, unusedOnly bool) []byte {
 		fmt.Fprintf(&b, "3. Green → next item by priority. Done → reply with the check URL; nothing else needed.\n")
 		fmt.Fprintf(&b, "Rules: additive changes only; never break existing fields; 202/`ready:false` + `retry_after_s` when cold, never hang; CORS `*`; ETag; codes are 5-char strings.\n")
 		fmt.Fprintf(&b, "Fixture used by every check: kg_code %s (Gaisfeld, Stmk; gemeinde %s), bbox %s, no-data kg %s. Warm these.\n", fxKG, fxGem, fxBBoxCSV, fxNoDataKG)
-		fmt.Fprintf(&b, "Oct 2026: the former cadastre context service became umfeld-at (context only); the cadastre is assembled locally from the BEV vector tiles (bevdirect-serve) and srtm-lidar-at is consumed on its public tier. Items marked [~] GONE target endpoints that no longer exist — do not implement them.\n\n")
+		fmt.Fprintf(&b, "Providers: the cadastre (parcels, footprints, landuse) is assembled by our local bevdirect-serve from the BEV vector tiles — 0.02° cells cached ≤ 24 h — and is not on this list. Siblings: umfeld-at (point-keyed context), srtm-lidar-at (public tier: bbox/point/KG-code keyed), holzeinschlag-at, farm-subsidies-austria, groundwater-at.\n\n")
 	}
 	for _, svc := range aheadServices {
 		if svcF != "" && svcF != svc.Slug {
@@ -707,13 +650,6 @@ func renderAheadMarkdown(self, svcF, itemF string, unusedOnly bool) []byte {
 					fmt.Fprintf(&b, "- [%s] **%s** %s %s → see under %s\n", mark, it.ID, it.Prio, it.Title, firstServiceFor(it))
 					continue
 				}
-			}
-			if it.Gone != "" {
-				fmt.Fprintf(&b, "- [~] **%s** %s — ~~%s~~ **GONE/DROPPED** (Oct 2026): %s\n", it.ID, it.Prio, it.Title, it.Gone)
-				if used != "" {
-					fmt.Fprintf(&b, "  - now: %s\n", used)
-				}
-				continue
 			}
 			fmt.Fprintf(&b, "- [%s] **%s** %s — %s\n  - spec: %s\n  - why: %s\n", mark, it.ID, it.Prio, it.Title, it.Spec, it.Why)
 			if used != "" {
@@ -765,7 +701,7 @@ func firstServiceFor(it aheadItem) string {
 func (s *Server) handleLLMAheadCheck(w http.ResponseWriter, r *http.Request) {
 	svc := aheadServiceByName(r.PathValue("service"))
 	if svc == nil {
-		http.Error(w, `{"error":"unknown service; use cadastre|srtm|holz|farm"}`, 404)
+		http.Error(w, `{"error":"unknown service; use umfeld|srtm|holz|farm|gw"}`, 404)
 		return
 	}
 	base := svc.Base
