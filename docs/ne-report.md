@@ -47,6 +47,16 @@ passed) → `python -m ne_cells report --observer siedler-oesterreich` → file 
 `tools/ne-report/ne-report.env`, gitignored). Without one the POST is a no-op with the log line
 `POST skipped — no peer token …`. We have no token yet; unauthenticated POSTs answer 404 by design.
 
+## 2026-10-04 — contributor path & bevdirect v0.3.0
+
+- bevdirect-serve is now the public `github.com/raffopenssh/vtcseamless` (MIT); we run **v0.3.0**
+  (preset bevdirect, output byte-identical to v0.2.1, so digests should not move).
+- Report POST moved from `/k/api/v1/ne/{kg}/report` to **`/contrib/api/v1/ne/{kg}/report`**
+  (`ne_report.py --contrib-prefix`, env `UMFELD_CONTRIB_PREFIX`; same Bearer token in `ne-peer.key`,
+  same bodies/answers; the old path still answers for now). `/head` stays on the public `/api/v1`.
+- Expected: the first report per KG with `bevdirect@v0.3.0` is stored as the new baseline
+  (`baseline:"this_report"`); `chunks_changed` appears again from the second run on.
+
 ## Validation 2026-10-04 (bevdirect-serve v0.2.1, epoch 2026-10)
 
 | KG | bevdirect cells | our cells / K | digest | umfeld `lu` cells_n (index-2026-03) | note |

@@ -59,9 +59,19 @@
   <strong>Cadastre</strong> (parcels, building footprints, land-use areas): © BEV – Federal Office of
   Metrology and Surveying, cadastral map as vector tiles from
   <a href="https://kataster.bev.gv.at" rel="noopener">kataster.bev.gv.at</a>,
-  licensed <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener license">CC BY 4.0</a>,
-  assembled live and cached for <strong>at most 24 hours</strong>.
+  licensed <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener license">CC BY 4.0</a>.
   Mandatory notice: <em>“© BEV, 2026 – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster (CC BY 4.0), bearbeitet”</em>.</p>
+  <p><strong>Legal basis:</strong> product description “Katastralmappe VTC” (BEV_S_KA_Katastralmappe_VTC.pdf) section 2.3 Licence:
+  “The standard licence Creative Commons CC BY 4.0 applies to the products described here” – the tileset
+  <code>https://kataster.bev.gv.at/at.gv.bev.kataster/tiles/{kataster|symbole}/{z}/{x}/{y}.pbf</code> is that product.
+  CC BY 4.0 section 4 explicitly grants the sui generis database right (§§ 76c–76e Austrian Copyright Act) as well.
+  We use neither the paid DKM (BEV terms of use, Amtsblatt 3/2022) nor the Katasterservice (search / information API).
+  The tiles are assembled into parcels by a service of our own whose source code is open (MIT):
+  <a href="https://github.com/raffopenssh/vtcseamless" rel="noopener">github.com/raffopenssh/vtcseamless</a> (preset bevdirect, version v0.3.0).
+  Assembled grid cells are cached for at most 6 h, tiles for at most 24 h, and pruned continuously.
+  Parcels and folios (EZ) can only be found inside a visible map extent, never without a location; the tiles contain
+  no owner data. BEV note: no legally binding coordinates can be derived from the tiles – the game is not an official
+  register extract. Every rendering carries the notice “© BEV, 2026 … CC BY 4.0, bearbeitet”.</p>
   <p>Further sources: BEV administrative boundaries and ALS elevation model, Copernicus/ESA, Statistics Austria,
   EEA Natura 2000, WDPA, European Red List (IUCN/EEA), OpenStreetMap (ODbL), RIS, AMA INVEKOS, Hansen/GFW, BML eHYD, MERIT Hydro, geoBoundaries.
   Every source with fetch location, licence, attribution, our modifications and maximum cache age:

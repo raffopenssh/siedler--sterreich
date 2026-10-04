@@ -184,7 +184,7 @@ def chunk_digests(raw: bytes, cells_n: int, bbox=None) -> dict:
 
 
 def epoch_report(section: "Section", observer: str, bbox=None) -> dict:
-    """Body for POST /k/api/v1/ne/{kg}/report — digests only, no cell content. `bbox` defaults to
+    """Body for POST /contrib/api/v1/ne/{kg}/report — digests only, no cell content. `bbox` defaults to
     the section's coverage_bbox/input_bbox; chunks not fully inside it are dropped."""
     h = section.header
     if bbox is None:

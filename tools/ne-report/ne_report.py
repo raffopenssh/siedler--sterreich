@@ -7,7 +7,7 @@ Pipeline (contract: docs/ne-report.md, umfeld's docs/ne-cells.md):
   3. python -m ne_cells build --kg KG --epoch E --bevdirect cell_*.json --input-bbox W,S,E,N -o KG.nec
      (source derived from bevdirect_version in the documents — never pass --source)
   4. python -m ne_cells report KG.nec --observer siedler-oesterreich  → data/ne-reports/KG.<date>.json
-  5. POST the report with `Authorization: Bearer $NE_PEER_TOKEN` if a token is configured, else a logged no-op.
+  5. POST {umfeld}/contrib/api/v1/ne/{kg}/report with `Authorization: Bearer $NE_PEER_TOKEN` if a token is configured, else a logged no-op.
 
 Run through the venv: tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py 05007
 """
@@ -159,8 +159,11 @@ def load_token(path):
     return (t, "env NE_PEER_TOKEN") if t else (None, None)
 
 
-def post_report(umfeld, kg, report_bytes, token):
-    url = f"{umfeld}/api/v1/ne/{kg}/report"
+def post_report(umfeld, kg, report_bytes, token, prefix="/contrib"):
+    # Contributor surface: POST {umfeld}/contrib/api/v1/ne/{kg}/report (was /k/…; the old path still
+    # answers for now). /head stays on the public /api/v1. First report per KG after a bevdirect
+    # upgrade is stored as the new baseline (baseline:"this_report"), chunks_changed from the 2nd run on.
+    url = f"{umfeld}{prefix}/api/v1/ne/{kg}/report"
     req = urllib.request.Request(url, data=report_bytes, method="POST",
                                  headers={"User-Agent": UA, "Accept": "application/json",
                                           "Content-Type": "application/json", "Authorization": "Bearer " + token})
@@ -247,7 +250,7 @@ def process_kg(a, kg):
         log(f"{kg}: POST skipped — no peer token ({a.token_file} absent and NE_PEER_TOKEN unset)")
         meta["post"] = dict(status="skipped", reason="no token")
     else:
-        st, body = post_report(a.umfeld, kg, report_s.encode(), token)
+        st, body = post_report(a.umfeld, kg, report_s.encode(), token, a.contrib_prefix)
         try:
             ans = json.loads(body)
         except Exception:
@@ -273,6 +276,8 @@ def main(argv=None):
     ap.add_argument("--observer", default="siedler-oesterreich")
     ap.add_argument("--bev", default=os.environ.get("BEV_API", "http://127.0.0.1:8787"))
     ap.add_argument("--umfeld", default=os.environ.get("UMFELD_API", "https://umfeld-at.exe.xyz"))
+    ap.add_argument("--contrib-prefix", default=os.environ.get("UMFELD_CONTRIB_PREFIX", "/contrib"),
+                    help="path prefix of umfeld's contributor API for the report POST (default /contrib)")
     ap.add_argument("--out", default=os.path.join(REPO, "data", "ne-reports"))
     ap.add_argument("--work", default=os.path.join(REPO, "data", "ne-reports", "work"))
     ap.add_argument("--token-file", default=os.path.join(REPO, "ne-peer.key"))

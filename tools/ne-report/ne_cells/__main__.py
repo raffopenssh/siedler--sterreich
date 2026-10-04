@@ -227,7 +227,7 @@ def cmd_dump(a):
 
 
 def cmd_report(a):
-    """Epoch report for a build: chunk digests only. POST it to /k/api/v1/ne/{kg}/report."""
+    """Epoch report for a build: chunk digests only. POST it to /contrib/api/v1/ne/{kg}/report."""
     with open(a.file, "rb") as f:
         secs = [s for s in unpack_sections(f.read()) if s.magic == MAGIC_LU]
     bbox = tuple(map(float, a.bbox.split(","))) if a.bbox else None

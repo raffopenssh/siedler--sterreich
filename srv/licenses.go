@@ -18,6 +18,11 @@ import (
 	"time"
 )
 
+// bevdirectVersion is the vtcseamless release installed in /opt/bevdirect (see
+// /opt/bevdirect/SOURCE.txt); bump together with the upgrade. /api/metrics
+// reports the live value from bevdirect /health.
+const bevdirectVersion = "v0.3.0"
+
 type licenseSource struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -48,7 +53,7 @@ func licenseSources() []licenseSource {
 			ViaEN:       "bevdirect-serve on this server (127.0.0.1:8787): assembles the tiles live for the visible 0.02° grid cell; no parcel database, no access to the Katasterservice (JSON API, §76c)",
 			ModifiedEN:  "assembled from tiles, merged, coordinates rounded, enriched with area / land-use per parcel",
 			UsedForEN:   []string{"Parcel polygons", "Building footprints", "Land-use areas", "Folio (EZ) grouping in view", "Municipality/KG at a point"},
-			NotesEN:     "Legal basis: product description “Katastralmappe VTC” (BEV_S_KA_Katastralmappe_VTC.pdf) section 2.3 Licence: “The standard licence Creative Commons CC BY 4.0 applies to the products described here” – the tileset https://kataster.bev.gv.at/tiles/{kataster|symbole}/{z}/{x}/{y}.pbf is that product. CC BY 4.0 section 4 explicitly grants the sui generis database right (§§ 76c–76e Austrian Copyright Act): extracting, reusing, reproducing and sharing substantial parts of the database is licensed. We do not use the paid DKM (digital cadastral map with attribute data) nor the Katasterservice (search / information API). Assembled grid cells stay in our cache for at most 24 h (api_cache, kg_warm) and are pruned daily; bevdirect keeps tiles 24 h and cells 6 h. Nothing can be looked up by parcel number, folio or owner. BEV note: no legally binding coordinates can be derived from the tiles – the game is not an official register extract.",
+			NotesEN:     "Legal basis: product description “Katastralmappe VTC” (BEV_S_KA_Katastralmappe_VTC.pdf) section 2.3 Licence: “The standard licence Creative Commons CC BY 4.0 applies to the products described here” – the tileset https://kataster.bev.gv.at/at.gv.bev.kataster/tiles/{kataster|symbole}/{z}/{x}/{y}.pbf is that product. CC BY 4.0 section 4 explicitly grants the sui generis database right (§§ 76c–76e Austrian Copyright Act) as well. We use neither the paid DKM (BEV terms of use, Amtsblatt 3/2022) nor the Katasterservice (search / information API). The tiles are assembled into parcels by a service of our own whose source code is open (MIT): https://github.com/raffopenssh/vtcseamless (preset bevdirect, version " + bevdirectVersion + "). Assembled grid cells are cached for at most 6 h, tiles for at most 24 h, and pruned continuously. Parcels and folios (EZ) can only be found inside a visible map extent, never without a location; the tiles contain no owner data. BEV note: no legally binding coordinates can be derived from the tiles – the game is not an official register extract. Every rendering carries the notice “© BEV, 2026 … CC BY 4.0, bearbeitet”.",
 			Name:        "Kataster (Grundstücke, Gebäude-Grundrisse, Benützungsarten)",
 			Provider:    "BEV – Bundesamt für Eich- und Vermessungswesen",
 			FetchedFrom: "https://kataster.bev.gv.at (Vektorkacheln der Katastralmappe, z15 Grundstücke / z16 Nutzungsflächen)",
@@ -58,7 +63,7 @@ func licenseSources() []licenseSource {
 			Modified:    "zusammengesetzt aus Kacheln, vereinigt, Koordinaten gerundet, mit Flächen/Benützungsart je Grundstück angereichert",
 			UsedFor:     []string{"Grundstückspolygone", "Gebäudegrundrisse", "Benützungsarten-Flächen", "EZ-Gruppierung im Sichtbereich", "Gemeinde/KG am Punkt"},
 			MaxCacheH:   24,
-			Notes:       "Rechtsgrundlage: Produktbeschreibung „Katastralmappe VTC“ (BEV_S_KA_Katastralmappe_VTC.pdf) Abschnitt 2.3 Lizenz: „Für die hier beschriebenen Produkte gilt die Standardlizenz Creative Commons CC BY 4.0“ – das Tileset https://kataster.bev.gv.at/tiles/{kataster|symbole}/{z}/{x}/{y}.pbf ist dieses Produkt. CC BY 4.0 Abschnitt 4 räumt ausdrücklich auch das Sui-generis-Datenbankrecht (§§ 76c–76e UrhG) ein: Entnahme, Weiterverwendung, Vervielfältigung und Weitergabe wesentlicher Teile der Datenbank sind lizenziert. Die kostenpflichtige DKM (Katastralmappe und Sachdaten digital, BEV-Nutzungsbedingungen Amtsblatt 3/2022) und das Katasterservice (Such-/Auskunfts-API) nutzen wir nicht. Zusammengesetzte Rasterzellen werden höchstens 24 h in unserem Zwischenspeicher gehalten (api_cache, kg_warm) und täglich ausgedünnt; bevdirect hält Kacheln 24 h, Zellen 6 h. Nichts ist nach Grundstücksnummer, EZ oder Eigentümer abfragbar. Hinweis BEV: aus den Kacheln können keine rechtsverbindlichen Koordinaten abgeleitet werden – das Spiel ist keine amtliche Auskunft.",
+			Notes:       "Rechtsgrundlage: Produktbeschreibung „Katastralmappe VTC“ (BEV_S_KA_Katastralmappe_VTC.pdf) Abschnitt 2.3 Lizenz: „Für die hier beschriebenen Produkte gilt die Standardlizenz Creative Commons CC BY 4.0“ – das Tileset https://kataster.bev.gv.at/at.gv.bev.kataster/tiles/{kataster|symbole}/{z}/{x}/{y}.pbf ist dieses Produkt. CC BY 4.0 Abschnitt 4 räumt ausdrücklich auch das Sui-generis-Datenbankrecht (§§ 76c–76e UrhG) ein. Die kostenpflichtige DKM (BEV-Nutzungsbedingungen Amtsblatt 3/2022) und das Katasterservice (Such-/Auskunfts-API) nutzen wir nicht. Die Kacheln werden von einem eigenen Dienst zu Parzellen zusammengesetzt; dessen Quellcode ist offen (MIT): https://github.com/raffopenssh/vtcseamless (Preset bevdirect, Version " + bevdirectVersion + "). Zusammengesetzte Rasterzellen werden höchstens 6 h, Kacheln höchstens 24 h zwischengespeichert und laufend ausgedünnt. Parzellen und Einlagezahlen sind nur innerhalb eines sichtbaren Kartenausschnitts auffindbar, nicht ohne Ortsangabe; Eigentümerdaten sind in den Kacheln nicht enthalten. Hinweis BEV: aus den Kacheln können keine rechtsverbindlichen Koordinaten abgeleitet werden – das Spiel ist keine amtliche Auskunft. Jede Darstellung trägt den Hinweis „© BEV, 2026 … CC BY 4.0, bearbeitet“.",
 		},
 		{
 			ID: "bev_vgd", Icon: "🏛️", NameEN: "Administrative boundaries (cadastral-community & municipality register with outlines)",
@@ -119,12 +124,13 @@ func (s *Server) licensesDoc() map[string]any {
 		"service":      "Siedler Österreich",
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"policy": map[string]any{
-			"cadastre_source":  "BEV Katastralmappe – Vektorkacheln (kataster.bev.gv.at), CC BY 4.0, live zusammengesetzt durch bevdirect-serve auf diesem Server",
-			"cadastre_max_age": "24h",
-			"cadastre_storage": "keine Datenbank; Rasterzellen (0,02°) im Zwischenspeicher mit Ablauf ≤ 24 h; kg_warm-Register läuft mit ab; nichts ist nach Grundstücksnummer/EZ abfragbar",
-			"prewarm":          fmt.Sprintf("%d Katastralgemeinden pro Tag in %d zusammenhängenden Gebieten; beim Laden einer KG werden Nachbar-KGs im Hintergrund vorgewärmt; alles verfällt nach 24 h", warmDailyKGs, warmPatches),
-			"context_max_age":  "24h (Umfeld, Landschaft), 6h (Wasser)",
-			"no_endorsement":   "Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.",
+			"cadastre_source":    "BEV Katastralmappe – Vektorkacheln (kataster.bev.gv.at), CC BY 4.0, live zusammengesetzt durch bevdirect-serve auf diesem Server (Quellcode MIT: https://github.com/raffopenssh/vtcseamless, Preset bevdirect, " + bevdirectVersion + ")",
+			"cadastre_assembler": map[string]string{"name": "bevdirect-serve", "version": bevdirectVersion, "source": "https://github.com/raffopenssh/vtcseamless", "preset": "bevdirect", "license": "MIT", "cell_ttl": "6h", "tile_ttl": "24h"},
+			"cadastre_max_age":   "24h",
+			"cadastre_storage":   "keine Datenbank; Rasterzellen (0,02°) im Zwischenspeicher mit Ablauf ≤ 24 h; kg_warm-Register läuft mit ab; nichts ist nach Grundstücksnummer/EZ abfragbar",
+			"prewarm":            fmt.Sprintf("%d Katastralgemeinden pro Tag in %d zusammenhängenden Gebieten; beim Laden einer KG werden Nachbar-KGs im Hintergrund vorgewärmt; alles verfällt nach 24 h", warmDailyKGs, warmPatches),
+			"context_max_age":    "24h (Umfeld, Landschaft), 6h (Wasser)",
+			"no_endorsement":     "Dieses Spiel wird nicht vom BEV, von Statistik Austria, der EEA, ESA oder OSM betrieben oder unterstützt.",
 			"legal_basis": map[string]string{
 				"bev_vtc_licence":    "BEV Produktbeschreibung Katastralmappe VTC, Abschnitt 2.3: CC BY 4.0 (https://www.bev.gv.at/Services/Geoinformationsdienste/Services/Katasterservice.html → Download BEV_S_KA_Katastralmappe_VTC.pdf)",
 				"database_right":     "CC BY 4.0 legalcode Abschnitt 4 (Sui Generis Database Rights) lizenziert Entnahme und Weiterverwendung wesentlicher Teile; damit ist §76c ff UrhG für das VTC-Produkt abgedeckt. Unsere 24-h-Grenze und der Verzicht auf eine Gst./EZ-Abfrage gehen darüber hinaus.",
