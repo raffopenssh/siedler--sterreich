@@ -1492,12 +1492,13 @@ async function startGameWithLoading() {
   }
 
   // Set camera — use shared view from invite URL hash if present, else municipality center
+  // (#v= is also what syncViewHash() keeps current while playing, so a
+  // reload or "Weiter ▸" on the welcome screen reopens the exact same spot.)
   const sharedView = parseViewHash();
   if (sharedView) {
     G.cam.lon = sharedView.lon;
     G.cam.lat = sharedView.lat;
     G.cam.zoom = sharedView.zoom;
-    history.replaceState(null, '', location.pathname + location.search); // clean hash
   } else {
     G.cam.lon = G.session.center_lon;
     G.cam.lat = G.session.center_lat;
@@ -1686,7 +1687,7 @@ async function loadMoreParcels() {
   // Polygon geometry ALWAYS loads, at every zoom: fetchKGPolygons tiles the
   // viewport into grid cells (nearest first) — never gate this on span, because
   // viewBounds() is in device pixels and trips early on retina/wide screens.
-  fetchKGPolygons().then(() => { buildEZIndex(); refreshSimilarForView(); }).catch(e => console.error(e));
+  fetchKGPolygons().then(() => { buildEZIndex(); refreshSimilarForView(); updateEnhancedBadge(); }).catch(e => console.error(e));
   loadToponyms().catch(e => console.error(e));
   if (G.sel && document.getElementById('parcel-popup')?.classList.contains('open')) updateSimilarRadiusLabel();
   detectAdjacentMunicipalities();
@@ -2393,12 +2394,64 @@ function camOverEnhancedKG() {
   const kg = kgAtCamera();
   return !!(kg && G.enhancedKGs.has(kg) && G.lidarKGTerrain[kg]);
 }
+/** Share (0..1, by parcel area) of the loaded parcels in view that carry
+ *  measured terrain / NE enrichment. The badge only stays while *most* of
+ *  what the player sees is enhanced — a strip of an enhanced neighbour KG at
+ *  the edge must not advertise LiDAR trees for the unprocessed KG in the
+ *  middle (Wolfsbach 03225 next to Meilersdorf 03215). Throttled: a
+ *  bbox-only pass over the loaded polygons, at most every 400 ms. */
+let _enhShareT = 0, _enhShare = { v: -1, cam: '' };
+function enhancedViewShare() {
+  const camKey = G.cam.lon.toFixed(4) + ',' + G.cam.lat.toFixed(4) + ',' + G.cam.zoom.toFixed(1) + ':' + G.parcelPolys.length;
+  if (camKey === _enhShare.cam) return _enhShare.v;
+  const now = performance.now();
+  if (_enhShare.v >= 0 && now - _enhShareT < 400) {
+    // throttled: answer with the last value, but make sure the badge gets a
+    // fresh look once the window is over (otherwise a fast pan could park it
+    // in the wrong state until the next event)
+    if (!_enhShare.t) _enhShare.t = setTimeout(() => { _enhShare.t = 0; updateEnhancedBadge(); }, 450);
+    return _enhShare.v;
+  }
+  _enhShareT = now; _enhShare.cam = camKey;
+  const v = viewBounds();
+  let tot = 0, enh = 0;
+  for (const f of G.parcelPolys) {
+    const b = f._bb || (f._bb = geoBounds(f.geometry));
+    if (b.e < v.w || b.w > v.e || b.n < v.s || b.s > v.n) continue;
+    // clipped bbox area in deg² — crude but monotone, and the forest Alm that
+    // fills the screen should outweigh fifty garden plots
+    const a = (Math.min(b.e, v.e) - Math.max(b.w, v.w)) * (Math.min(b.n, v.n) - Math.max(b.s, v.s));
+    tot += a;
+    const t = G.terrainParcels[f.properties.parcel_id];
+    if (t && (t.ne || t.elev_m != null || t.dom_terrain)) enh += a;
+  }
+  _enhShare.v = tot > 0 ? enh / tot : (camOverEnhancedKG() ? 1 : 0);
+  return _enhShare.v;
+}
+
+/** Show/hide with the 2000s-style fade (CSS .fade-out → display:none on
+ *  transitionend); pure CSS transitions, nothing per frame. */
+function badgeVisible(el, on) {
+  if (on) {
+    if (el._hideT) { clearTimeout(el._hideT); el._hideT = 0; }
+    if (el.style.display === 'none') { el.style.display = ''; void el.offsetWidth; }
+    el.classList.remove('fade-out');
+    return;
+  }
+  if (el.style.display === 'none' || el.classList.contains('fade-out')) return;
+  el.classList.add('fade-out');
+  el._hideT = setTimeout(() => { el._hideT = 0; if (el.classList.contains('fade-out')) el.style.display = 'none'; }, 650);
+}
 
 function updateEnhancedBadge() {
   const el = document.getElementById('enhanced-badge');
   if (!el) return;
-  const onEnh = camOverEnhancedKG() && insideAustria(G.cam.lon, G.cam.lat);
-  el.style.display = onEnh ? '' : 'none';
+  const share = enhancedViewShare();
+  // majority rule with a little hysteresis (appear ≥ 60 %, vanish < 50 %) so a pan along a KG border doesn’t flicker
+  const shown = el.style.display !== 'none' && !el.classList.contains('fade-out');
+  const majority = shown ? share >= 0.5 : share >= 0.6;
+  const onEnh = majority && insideAustria(G.cam.lon, G.cam.lat);
+  badgeVisible(el, onEnh);
   if (onEnh) Herald.hint('enhanced');
   if (G.enhancedKGs.size && G._questEnh !== enhancedLoaded()) { G._questEnh = enhancedLoaded(); renderQuests(); }
   // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
@@ -3096,9 +3149,25 @@ function render() {
   if (_renderRaf || !gctx) return;
   _renderRaf = requestAnimationFrame(() => { _renderRaf = 0; renderNow(); });
 }
+/** Keep the camera in the URL hash (#v=lon,lat,zoom) — no cookies, no storage:
+ *  the URL *is* the save game, so reload / "Weiter ▸" restore the exact viewport. */
+let _vhTimer = 0, _vhLast = '';
+function syncViewHash() {
+  if (!G.cam || !G.session) return;
+  const v = G.cam.lon.toFixed(5) + ',' + G.cam.lat.toFixed(5) + ',' + (Math.round(G.cam.zoom * 10) / 10);
+  if (v === _vhLast || _vhTimer) return;
+  _vhTimer = setTimeout(() => {
+    _vhTimer = 0;
+    const nv = G.cam.lon.toFixed(5) + ',' + G.cam.lat.toFixed(5) + ',' + (Math.round(G.cam.zoom * 10) / 10);
+    if (nv === _vhLast) return;
+    _vhLast = nv;
+    try { history.replaceState(null, '', location.pathname + location.search + '#v=' + nv); } catch (e) {}
+  }, 600);
+}
 function renderNow() {
   if (!gctx) return;
   if (_renderRaf) { cancelAnimationFrame(_renderRaf); _renderRaf = 0; }
+  syncViewHash();
   const ctx = gctx;
   const W = gc.width, H = gc.height;
 
@@ -6962,7 +7031,8 @@ function neApexScale(t) {
   }
   return Math.max(0.6, Math.min(1.4, 0.45 + t.h / 30));
 }
-/** Every NE apex ≥ 8 m in view, tallest first, under a per-build sprite budget.
+/** Every NE apex in view (≥ 10 m below z16, ≥ 6 m below z17, all ≥ 4 m at street level),
+ *  tallest first, under a per-build sprite budget.
  *  Trees sit on their measured position; at z ≥ 16 the crown is to scale. */
 function drawNEApices(ctx) {
   const t0 = performance.now();
@@ -6987,7 +7057,7 @@ function drawNEApices(ctx) {
   const densCap = Math.floor(pxArea / 90);
   const keepFrac = Math.min(frac, densCap / total);
   let drawn = 0;
-  const minH = G.cam.zoom < 16 ? 10 : 8;
+  const minH = G.cam.zoom < 16 ? 10 : G.cam.zoom < 17 ? 6 : 4;
   // Draw back-to-front (north first) so southern canopies overlap northern trunks.
   const rows = [];
   for (const arr of lists) {
@@ -12622,7 +12692,7 @@ function loadLandmarks(b) {
   });
 }
 G.apexByParcel = {};      // parcel_id → [{lon,lat,h,crown,broad}] (≤5 tallest measured trees; unbounded for NE cells)
-G.neTreeCells = new Map(); // cell key → every NE apex ≥ 8 m of that 0.02° cell, tallest first
+G.neTreeCells = new Map(); // cell key → every NE apex ≥ 4 m of that 0.02° cell, tallest first
 G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts = {};
 G.reliefOn = localStorage.getItem('reliefOn') !== '0';
 
@@ -12815,7 +12885,7 @@ function loadTrees(b) {
     url: '/api/trees', key: 'trees', tiles: G.apexTiles, ids: G.apexIds, attempts: G.apexAttempts,
     idOf: it => it.lon.toFixed(6) + ',' + it.lat.toFixed(6),
     onPoint: it => {
-      const h = +it.h_m || 0; if (h < 8 || h > 60) return;
+      const h = +it.h_m || 0; if (h < 4 || h > 60) return;   // NE cells carry apices from 4 m; legacy rows are ≥ 20 m anyway
       const crown = +it.crown_d_m || 0;
       // crown/height ratio → broadleaf; merged multi-crown blobs (>40 m) tell nothing
       const t = { lon: it.lon, lat: it.lat, h, crown, pid: '', broad: crown > 0 && crown < 40 && crown / h > 0.62 };
@@ -12824,8 +12894,8 @@ function loadTrees(b) {
       G.apexTrees.push(t); G.apexUnassigned.push(t); batch.push(t);
     },
     done: (added, data) => {
-      // NE cell (srtm v2.4): the answer is *every* apex ≥ 8 m of the 0.02° cell,
-      // tallest first. Keep them per cell so drawNEApices() can draw the whole
+      // NE cell (srtm v2.4): the answer is every apex ≥ 4 m of the 0.02° cell
+      // (spatially thinned above 6000), tallest first. Keep them per cell so drawNEApices() can draw the whole
       // measured stand at its real position/size instead of the procedural filler.
       if (data && data.source === 'ne-cells') {
         const c = cellOf((b.w + b.e) / 2, (b.s + b.n) / 2);

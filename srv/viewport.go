@@ -435,7 +435,10 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		// product yet.
 		if ne != nil && neEnrichParcel(p, ne) {
 			kgSeen[p.KG].Enhanced = true
-			kgSeen[p.KG].NE = true
+			// A parcel of an unprocessed KG can still be enriched from the
+			// neighbour KG's cells along the boundary — that does not make
+			// the KG "observed".
+			kgSeen[p.KG].NE = !neKGMissing(ne, p.KG)
 			neParcels++
 		} else if hf != nil {
 			if enrichParcel(p, hf) {
@@ -831,3 +834,13 @@ func bboxOfRaw(raw json.RawMessage) (bbox, bool) {
 }
 
 var _ = strings.TrimSpace
+
+// neKGMissing: srtm lists KGs without an NE product in meta.kgs_missing.
+func neKGMissing(ne *neCols, kg string) bool {
+	for _, m := range ne.Meta.KGsMissing {
+		if m == kg {
+			return true
+		}
+	}
+	return false
+}

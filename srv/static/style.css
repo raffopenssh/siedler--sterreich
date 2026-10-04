@@ -884,7 +884,12 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   pointer-events:auto; cursor:pointer; user-select:none; -webkit-user-select:none;
   white-space:nowrap;
   box-shadow:2px 2px 0 #000;
+  transition: opacity .55s ease-out, transform .55s cubic-bezier(.4,0,.8,.4);
+  will-change: opacity, transform;
 }
+/* leaving the enhanced area: the badge "sinks" and fades like an old status pane */
+.enhanced-badge.fade-out { opacity:0; pointer-events:none; }
+@media (prefers-reduced-motion: reduce) { .enhanced-badge { transition:none; } }
 
 /* "You are outside Austria" banner — cadastre data simply doesn't exist there,
    so without this the shaded/hatched area reads as a loading bug. */
@@ -1146,6 +1151,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 }
 .hud-badges > * { pointer-events:auto; }
 .enhanced-badge { position:static; transform:none; left:auto; top:auto; }
+.enhanced-badge.fade-out { transform:translateY(-6px) scale(.92); }
 .water-chip {
   background:rgba(20,30,15,0.88); border:2px solid var(--panel-border);
   color:var(--text-dim); font:8px var(--font-pixel); line-height:1.2;

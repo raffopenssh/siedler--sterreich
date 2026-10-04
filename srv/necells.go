@@ -762,8 +762,13 @@ func neEnrichFootprint(f *bevFootprint, ne *neCols) bool {
 // ---------------------------------------------------------------------------
 // /api/trees and /api/buildings from NE cells
 
-// neTreeRows: every apex ≥ minH (tallest first, ≤ limit) with species /
-// vitality.
+// neTreeRows: every apex ≥ minH with species / vitality, tallest first.
+// Above `limit` the set is thinned *spatially*, not by height: trees are
+// ranked within their H3 res-12 cell (~307 m²) and the k-th tallest of every
+// cell comes before the (k+1)-th of any cell. A hedgerow or orchard (1–3 apices
+// per cell) therefore survives intact while a closed forest stand with 20+
+// apices per cell is thinned — tallest-first would have dropped every 6 m
+// hedge tree in favour of the forest.
 func neTreeRows(ne *neCols, minH float64, limit int) []map[string]any {
 	t := &ne.Trees
 	var idx []int
@@ -774,11 +779,31 @@ func neTreeRows(ne *neCols, minH float64, limit int) []map[string]any {
 	}
 	sort.Slice(idx, func(a, b int) bool { return t.HM[idx[a]] > t.HM[idx[b]] })
 	if len(idx) > limit {
-		idx = idx[:limit]
+		rank := make([]int, len(idx))
+		seen := map[int32]int{}
+		for k, i := range idx {
+			var c int32 = -1
+			if i < len(t.CellIndex) {
+				c = t.CellIndex[i]
+			}
+			rank[k] = seen[c]
+			seen[c]++
+		}
+		order := make([]int, len(idx))
+		for k := range order {
+			order[k] = k
+		}
+		sort.SliceStable(order, func(a, b int) bool { return rank[order[a]] < rank[order[b]] })
+		kept := make([]int, 0, limit)
+		for _, k := range order[:limit] {
+			kept = append(kept, idx[k])
+		}
+		sort.Slice(kept, func(a, b int) bool { return t.HM[kept[a]] > t.HM[kept[b]] })
+		idx = kept
 	}
 	out := make([]map[string]any, 0, len(idx))
 	for _, i := range idx {
-		row := map[string]any{"lon": t.Lon[i], "lat": t.Lat[i], "h_m": t.HM[i]}
+		row := map[string]any{"lon": math.Round(t.Lon[i]*1e6) / 1e6, "lat": math.Round(t.Lat[i]*1e6) / 1e6, "h_m": t.HM[i]}
 		if i < len(t.CrownM2) && t.CrownM2[i] > 0 {
 			row["crown_d_m"] = math.Round(2*math.Sqrt(t.CrownM2[i]/math.Pi)*10) / 10
 		}
@@ -824,6 +849,14 @@ func neBuildingRows(ne *neCols) []map[string]any {
 	return out
 }
 
+// /api/trees from NE cells: every apex ≥ 4 m (the NE layer detects from 3 m;
+// 3–4 m is shrub/sapling noise), at most neTreeLimit per 0.02° cell (spatially
+// thinned, see neTreeRows). Cache key trees:ne:v2 / buildings:ne:v2.
+const (
+	neTreeMinH  = 4.0
+	neTreeLimit = 6000
+)
+
 // neLayer serves /api/trees or /api/buildings for an aligned grid cell from
 // NE cells when the KG is processed; partial cells merge the legacy srtm rows
 // for the uncovered part; unprocessed cells fall back entirely (returns
@@ -833,11 +866,11 @@ func (s *Server) neLayer(w http.ResponseWriter, c cellID, kind string, legacy fu
 	if st != 200 || ne == nil {
 		return false
 	}
-	key := fmt.Sprintf("%s:ne:v1:%d:%d", kind, c.I, c.J)
+	key := fmt.Sprintf("%s:ne:v2:%d:%d", kind, c.I, c.J)
 	s.cachedFetch(w, key, func() ([]byte, int) {
 		var rows []map[string]any
 		if kind == "trees" {
-			rows = neTreeRows(ne, 8, 2500)
+			rows = neTreeRows(ne, neTreeMinH, neTreeLimit)
 		} else {
 			rows = neBuildingRows(ne)
 		}
@@ -1020,8 +1053,8 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 			continue
 		}
 		for _, c := range cellsForBBox(a.MinLon, a.MinLat, a.MaxLon, a.MaxLat) {
-			for _, k := range []string{fmt.Sprintf("vp:v1:%d:%d", c.I, c.J), neKey(c), fmt.Sprintf("trees:ne:v1:%d:%d", c.I, c.J),
-				fmt.Sprintf("buildings:ne:v1:%d:%d", c.I, c.J), fmt.Sprintf("neheat:v2:%d:%d", c.I, c.J)} {
+			for _, k := range []string{fmt.Sprintf("vp:v1:%d:%d", c.I, c.J), neKey(c), fmt.Sprintf("trees:ne:v2:%d:%d", c.I, c.J),
+				fmt.Sprintf("buildings:ne:v2:%d:%d", c.I, c.J), fmt.Sprintf("neheat:v2:%d:%d", c.I, c.J)} {
 				s.Q.DeleteCacheLike(ctx, k)
 				hotCellDrop(k)
 			}
