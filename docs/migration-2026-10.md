@@ -74,3 +74,35 @@ Steps: Session → Landschaft (srtm: `/api/lidar/kg` terrain + hillshade tiles +
 * **Session create** no longer touches the cadastre: ~20–100 ms warm, ~0.6 s when the Gemeinde's
   settlement centre is not memoised yet (one umfeld `/search/address_osm` call, 2.5 s cap, cached 24 h).
   N2K treasures and parcel-based treasure placement run in goroutines (SSE `treasures_updated`).
+
+## 2026-10-04 — NE cells (observed layer) become the parcel enrichment source
+srtm-lidar-at (product v2.4) and umfeld-at jointly publish **NE cells**: H3 res-12 statistics per cell,
+same ids on both sides — umfeld `/api/v1/ne/{kg}` = *declared* land use from BEV (frozen `ne-cells-2`,
+epoch 2026-03, manifest `/api/v1/ne/manifest`), srtm `/api/v1/cells` = *observed* (cover groups, canopy,
+LiDAR heights, NDVI, change, terrain, `consistency` verdict, every tree apex ≥ 3 m with species/vitality,
+every structure with type/heights). Contracts: umfeld `docs/ne-cells.md` (public rendering
+`/api/v1/docs/ne.md`), srtm `/api/v1/docs/llm.txt#cells`, `/api/v1/cells/dict`.
+
+What changed here (`srv/necells.go`):
+* `buildCell` fetches the NE columns document for the grid cell (`/cells?bbox&format=columns&centres=1&layers=obs,trees,structures`,
+  30–100 ms, 0.05–1 MB, cached 24 h as `ne:v1:i:j`) in parallel with bevdirect and the heightfield.
+  `neEnrichParcel` (cells whose centre is inside the polygon, nearest centre ≤ 20 m for sub-cell
+  parcels) fills elevation/slope/aspect/`fracs`/`dom_terrain`/`tree_frac` **and** a new `ne{}` block
+  (cover, canopy, heights, trees on the parcel incl. species/vitality, structures, consistency shares,
+  `verdict`, phenology, NDVI, change, ALS years). Footprints get `ne{h_max_m,h_robust_m,stories_est,type,…}`
+  from the structure centroid inside the ring. The heightfield remains the fallback for KGs < v2.4 and
+  for parcels with < 30 % of their expected cells in coverage.
+* `/api/trees` and `/api/buildings` are served from NE rows for aligned cells of processed KGs (partial
+  cells merge legacy rows for the uncovered part); `GET /api/ne` exposes heat-layer columns.
+* Warming prefers v2.4: registry `v24` flag, `neAdoptKGs` purges + re-warms a KG once per product
+  generation, plan seeds v2.4 Gemeinden first, `/api/lucky` prefers them, `/api/warm/status.v24_kgs`.
+* Client popup "👁 Beobachtet" (verdict, Bäume, Bauwerke, Satellit, Veränderung), species-aware tree
+  sprites, NE attribution row; agent inspect `terrain.observed` + narration ("Observation vs cadastre: FOREST LOSS …").
+* Reporting back: `tools/ne-report` builds the frozen `ne_cells` container from our bevdirect v0.2.1 cells
+  and posts epoch reports to umfeld `/ne/{kg}/report` (needs `ne-peer.key`; without it reports are stored
+  locally). 63330 reproduces the contract digest `594025647ec3557e` bit-exactly (v0.2.1 ≡ v0.2.0).
+* bevdirect-serve upgraded 2b7e725 (dev) → release **v0.2.1** (`bevdirect_version` + `coord_decimals:7`
+  in every document, tile sweeper `-tile-ttl 24h`).
+
+Known limitation: NE coverage is per KG (32 of 7 850 on 2026-10-04, growing); a cell straddling
+processed and unprocessed KGs shows both enrichment kinds side by side (`kgs[].ne`).

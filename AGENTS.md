@@ -14,6 +14,7 @@ go generate ./db/...              # after editing db/queries/*.sql
 go build ./... && go vet ./srv/...
 ```
 
+bevdirect-serve: installed from the GitHub release (`bootstrap.sh`, currently **v0.2.1**; `SOURCE.txt` in /opt/bevdirect; unit tuned `-cells 120 -prefetch 0`).
 Live: `https://siedler-oesterreich.exe.xyz:8000/`. DB `./db.sqlite3`. Service
 `/etc/systemd/system/srv.service`. Maintenance mode: `touch MAINTENANCE`
 (bypass cookie `siedler_dev=1` / `?dev=1`). Provider history (Oct 2026):
@@ -28,6 +29,7 @@ srv/viewport.go          /api/viewport: one 0.02° cadastre cell (bevdirect) + s
 srv/cellstore.go         read-side helpers over cached cells (parcelsNear, lookupParcel, ensureCell…)
 srv/upstreams.go         provider base URLs, 0.02° grid helpers (cellOf/cellsForBBox), embedded admin.json.gz
 srv/warm.go              cell prewarming (daily plan, neighbour, session), /api/lucky, /api/warm/status
+srv/necells.go           NE cells (srtm v2.4 observed layer): fetch per cell, parcel/footprint enrichment, NE trees/buildings, /api/ne, v2.4 adoption
 srv/landscape.go         srtm public-tier adapters (/api/enhanced-kgs, /api/lidar/kg, trees/buildings/landmarks,
                          /api/landscape, /api/parcel-context, /api/osm-lines, /api/n2k, /api/municipality…)
 srv/siblings.go          farm/holz layer proxies (bboxProxy, hostSlots), prewarmKGs, kgsAlongPath
@@ -50,6 +52,7 @@ timeout, per-host circuit breaker). Never `http.Get`; never set
 |---|---|---|
 | **cadastre** — parcels, footprints, landuse polygons, EZ, Gemeinde/KG at point | **bevdirect-serve** `http://127.0.0.1:8787` (`bevAPI`, systemd `bevdirect-serve`, /opt/bevdirect) | Assembles live from `kataster.bev.gv.at` vector tiles (CC BY 4.0). World = fixed 0.02° grid `floor(lon/0.02), floor(lat/0.02)`. Endpoints `/viewport?west&south&east&north&layers=parcels,footprints,landuse&wait=s`, `/parcel/{kg}-{gnr}?lon&lat`, `/ez?kg&ez&west..north`, `/municipality?lon&lat`, `/municipalities?q=`, `/kg/{kg}`, `/health`. `ready:false,pending:true,retry_after_s` = still assembling, **never "no parcels"**. Every response carries `notice` (© BEV … CC BY 4.0, bearbeitet) → shown in `#map-attrib`, relayed on agent endpoints. Anything derived is cached **≤ 24 h** (`cadastreTTL`). |
 | **context** around a point | **umfeld-at** `https://umfeld-at.exe.xyz/api/v1` (`umfeldAPI`; alias `cadastreAPI` for legacy non-cadastre call sites), ≤ 5 req/s | `/context` (land price, OSM distances, N2K, toponyms, RIS legal), `/search/municipalities`, `/lookup`, `/search/address_osm`, `/osm/geometry?bbox` (bbox only), `/natura2000/*`, `/toponyms/*`, `/legal/*`, `/land_prices/point…`. Statistik Austria, EEA, OSM, BEV DLM names, RIS. |
+| **observed layer (NE cells)** — primary parcel enrichment | **srtm-lidar-at** `/api/v1/cells?bbox&format=columns&centres=1&layers=obs,trees,structures` (`srv/necells.go`), declared twin **umfeld-at** `/api/v1/ne/{kg}`, `/ne/manifest` | H3 res-12 cells (~307 m²) for KGs with product **v2.4**: cover[9 groups], canopy, LiDAR heights, NDVI, change, terrain, `consistency` (observed vs declared), **every tree apex ≥ 3 m** (species, vitality) and **every structure** (type, heights). One fetch per 0.02° cell (`ne:v1:i:j`, 24 h, hot LRU 24 parsed); 404 = KG not processed (negative 1 h, `retry_after_s`), `meta.partial` for mixed cells. `neEnrichParcel` fills the legacy terrain fields **and** `ne{}` (`neParcel`); heightfield only where no NE. We report cadastre epochs back (`tools/ne-report`, `docs/ne-report.md`). |
 | **landscape** | **srtm-lidar-at** `https://srtm-lidar-at.exe.xyz/api/v1` (`lidarAPI`, public tier: bbox/point/KG-code keyed only) | `/landscape?bbox`, `/trees/bbox`, `/buildings/bbox`, `/landmarks/bbox`, `/heightfield?bbox&cell=25&landcover=1` (404 where no grid25), `/kgs`, `/kg/{code}`, `/tiles/hillshade/{z}/{x}/{y}.png`. **No parcel or footprint ids** — the client assigns by point-in-parcel / centroid grid. |
 | **admin table** | `srv/data/admin.json.gz` (embedded; BEV VGD 1:50 000, CC BY 4.0) | all 7 850 KGs: code, name, Gemeinde, district, state, bbox, area. Drives `/api/kg-geo/{kg}`, KG neighbours, the warm plan, `/api/lucky`, `kgsAlongPath`. |
 | unchanged siblings | holzeinschlag-at, farm-subsidies-austria, groundwater-at | timber prices/history, INVEKOS Schläge/Hofstellen, water. farm host has a 3-slot semaphore (`hostSlots`; busy → 503 `status:"busy"` + `X-Upstream: busy`). |
@@ -114,7 +117,8 @@ G.cellState          // per cell: state (loading|pending|ready|down|error|gaveup
   parcel_id, ns_code, area_sqm, obb_length_m, obb_width_m, orientation_deg,
   geometry`. Landuse: `{code, area_sqm, geometry}`. `kgs[]` carries names +
   `enhanced` flag.
-- `buildCell` fetches bevdirect (`wait=10`) and the srtm heightfield in parallel;
+- Parcel rows of NE-ready KGs also carry `ne{cells, cover{geb,bau,acker,gruen,wald,wasser,verkehr,alpen,sonst}, canopy, h_max_m, tree_n, tree_h_max_m, trees_tall, species{}, vitality{}, structures_n, structures_cover, structure_h_max_m, structure_types{}, consistency{code:share}, verdict, phenology, ndvi, dh_m, forest_loss_year, als_years, epoch}`; footprints `ne{h_max_m, h_robust_m, stories_est, type, area_m2, dh_m}`; `kgs[].ne`, top-level `ne{ready, partial, epoch, kgs_missing, parcels}`. `fracs`/`dom_terrain` then come from the 9 groups (`neGroupLC` → roof/parking/crop/grass/tree/water/road/rock/bare_soil). Parcels with < 30 % of their expected cells (mostly in an unprocessed neighbour KG) fall back to the heightfield.
+- `buildCell` fetches bevdirect (`wait=10`), the NE cell and the srtm heightfield in parallel;
   caches **only when ready**, 24 h. `handleViewport` → `cachedFetchX` (singleflight
   `s.sf`, `X-Cache: HIT|MISS|MISS-SHARED|WARM`) + hot LRU of pre-gzipped cells
   (`hotCellGet/Put`, 80). Foreground builds make the warm loop yield (`warm.fg`).
@@ -151,6 +155,7 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   api_cache so restarts resume.
 - **Neighbour**: first foreground build of a cell enqueues the KGs touching it +
   adjacent KGs (low prio, debounced 1 h per cell).
+- **v2.4 first**: `neReadyKGSet()` (registry `v24` flag = srtm `product_version` v2.4) — the daily plan seeds Gemeinden with NE KGs first (no state quota), `neAdoptKGs` (on every registry refresh, once per KG generation `ne-adopt:v1:<kg>`) purges their `vp:v1`/`ne:`/`trees:ne`/`buildings:ne`/`neheat` caches + `kg_warm` and enqueues them (`reason v24`, prio 1); `warmPlanner` re-queues non-fresh v2.4 KGs every 2 h. `/api/warm/status` → `v24_kgs[]`, `v24_warm`. `/api/lucky` picks a v2.4 destination ~2 of 3 times (`ne:true`).
 - **Session**: `POST /api/session/create` → `warmGemeinde` (medium prio);
   `prewarmKGs` (siblings.go) adds KGs along a water flowpath.
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
@@ -335,6 +340,7 @@ whenever game.js/style.css change.** Gzip middleware level 5.
   `/trees/bbox?min_height=25`, `/landmarks/bbox` (`splitBBox` for big KGs).
   Client `fetchEnhancedKG` → `G.lidarKGTerrain`, `addLidarBuilding` (centroid grid
   `G.lidarBuildingIdx`), `G.topTrees[kg]`, `G.topObjects[kg]`.
+- **NE-backed layers**: for an aligned cell of a v2.4 KG `/api/trees` returns every NE apex ≥ 8 m (≤ 2500, tallest first) with `species`, `vitality` (`source:"ne-cells"`), `/api/buildings` every structure (`type`, `area_m2`, `dh_m`; walls/fences dropped); partial cells merge legacy rows for the uncovered part (`legacy_rows`). `GET /api/ne?west..north` → heat columns (lon/lat, cover, canopy, h_max, consistency, phenology) for overlays. Client: `apexVariant()` uses species/vitality (dead/declining → snag), `lidarForFootprint()` prefers `props.ne`, popup `neRows()` ("👁 Beobachtet" verdict `NE_VERDICT`, Bäume, Bauwerke, Satellit, Veränderung), `#map-attrib-ne` row via `noteNE()`, `DEV.ne(pid?)`. Agent inspect `terrain.observed` + narration.
 - `/api/trees` → `{trees:[{lon,lat,h_m,crown_d_m}]}` per cell → `loadTrees(c)` →
   `G.apexTrees`, `assignApexTrees(newPolys)` (PIP → `G.apexByParcel`);
   `drawApexTree()` at real position, apices ≥ 32 m join `G.topTrees['apex']`.
