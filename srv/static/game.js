@@ -659,7 +659,7 @@ function initPicker() {
   pickCanvas.addEventListener('click', onPickClick);
 
   // Touch support for mobile
-  let pickTouchDist = 0;
+  let pickTouchDist = 0, pickPinch = null;
   pickCanvas.addEventListener('touchstart', e => {
     if (e.touches.length === 1) {
       e.preventDefault();
@@ -670,6 +670,9 @@ function initPicker() {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       pickTouchDist = Math.sqrt(dx*dx + dy*dy);
+      const rect = pickCanvas.getBoundingClientRect();
+      const mx = (e.touches[0].clientX + e.touches[1].clientX)/2 - rect.left, my = (e.touches[0].clientY + e.touches[1].clientY)/2 - rect.top;
+      pickPinch = { zoom0: G.pick.cam.zoom, dist0: pickTouchDist, geo: pickUnproject(mx, my) };
       if (G.pick.drag.active) G.pick.drag.wasPinch = true;
     }
   }, {passive: false});
@@ -679,12 +682,14 @@ function initPicker() {
     if (e.touches.length === 1 && G.pick.drag.active) {
       const touch = e.touches[0];
       onPickMove({clientX: touch.clientX, clientY: touch.clientY});
-    } else if (e.touches.length === 2 && pickTouchDist > 0) {
+    } else if (e.touches.length === 2 && pickPinch) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const d = Math.sqrt(dx*dx + dy*dy);
-      G.pick.cam.zoom += (d/pickTouchDist - 1) * 2;
-      G.pick.cam.zoom = Math.max(5, Math.min(14, G.pick.cam.zoom));
+      const rect = pickCanvas.getBoundingClientRect();
+      const mx = (e.touches[0].clientX + e.touches[1].clientX)/2 - rect.left, my = (e.touches[0].clientY + e.touches[1].clientY)/2 - rect.top;
+      G.pick.cam.zoom = Math.max(5, Math.min(14, pickPinch.zoom0 + Math.log2(Math.max(0.05, d/pickPinch.dist0))));
+      pickAnchorAt(pickPinch.geo, mx, my);
       pickTouchDist = d;
       drawPick();
     }
@@ -698,8 +703,10 @@ function initPicker() {
     }
     onPickUp();
     if (e.touches.length === 0) {
-      pickTouchDist = 0;
+      pickTouchDist = 0; pickPinch = null;
       if (G.pick.drag) G.pick.drag.wasPinch = false;
+    } else if (e.touches.length === 1) {
+      pickPinch = null;
     }
   });
 
@@ -1158,11 +1165,36 @@ function onPickUp() {
   pickCanvas.classList.remove('dragging');
   G.pick.drag.active = false;
 }
+const PZOOM = { target:null, anchor:null, ax:0, ay:0, raf:null, last:0 };
+function pickAnchorAt(geo, x, y) {
+  const cam = G.pick.cam, scale = Math.pow(2, cam.zoom) * 1.8;
+  cam.lon = geo[0] - (x - pickCanvas.width/2) / scale;
+  cam.lat = geo[1] + (y - pickCanvas.height/2) / (scale * 1.35);
+}
 function onPickWheel(ev) {
   ev.preventDefault();
-  G.pick.cam.zoom += ev.deltaY > 0 ? -0.4 : 0.4;
-  G.pick.cam.zoom = Math.max(5, Math.min(14, G.pick.cam.zoom));
+  const rect = pickCanvas.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+  const base = PZOOM.target == null ? G.pick.cam.zoom : PZOOM.target;
+  PZOOM.target = Math.max(5, Math.min(14, base + wheelZoomDelta(ev)));
+  if (!PZOOM.anchor || Math.abs(x - PZOOM.ax) > 2 || Math.abs(y - PZOOM.ay) > 2) {
+    PZOOM.anchor = pickUnproject(x, y); PZOOM.ax = x; PZOOM.ay = y;
+  }
+  if (!PZOOM.raf) { PZOOM.last = performance.now(); PZOOM.raf = requestAnimationFrame(pickZoomStep); }
+}
+function pickZoomStep(now) {
+  PZOOM.raf = null;
+  if (PZOOM.target == null) return;
+  const dt = Math.min(64, now - PZOOM.last); PZOOM.last = now;
+  const k = 1 - Math.exp(-dt / 120);
+  let z = G.pick.cam.zoom + (PZOOM.target - G.pick.cam.zoom) * k;
+  const done = Math.abs(PZOOM.target - z) < 0.002;
+  if (done) z = PZOOM.target;
+  G.pick.cam.zoom = z;
+  if (PZOOM.anchor) pickAnchorAt(PZOOM.anchor, PZOOM.ax, PZOOM.ay);
   drawPick();
+  if (done) { PZOOM.target = null; PZOOM.anchor = null; }
+  else PZOOM.raf = requestAnimationFrame(pickZoomStep);
 }
 function onPickClick(ev, isTouch) {
   if (G.pick.drag.moved) return;
@@ -1421,6 +1453,7 @@ let _animFrame = null; // for smooth camera animation
 /** The user's hand always wins: any pan/zoom gesture cancels programmatic camera flights. */
 function stopCameraAnims() {
   if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
+  if (typeof ZOOM !== 'undefined' && ZOOM.raf) { cancelAnimationFrame(ZOOM.raf); ZOOM.raf = null; ZOOM.target = null; ZOOM.anchor = null; }
   if (typeof flyAnim !== 'undefined' && flyAnim) { cancelAnimationFrame(flyAnim); flyAnim = null; }
 }
 
@@ -2872,6 +2905,61 @@ function toScreen(lon, lat) {
 function toGeo(x, y) {
   const s = mapScale();
   return [(x-gc.width/2)/s + G.cam.lon, G.cam.lat - (y-gc.height/2)/(s*1.35)];
+}
+
+// ---- Smooth zoom (wheel / trackpad / buttons / pinch) ----
+// Wheel events are turned into a zoom *target*; the camera eases toward it every
+// frame and the geo point under the cursor stays put (anchor zoom). Trackpads
+// emit many small pixel deltas, mice a few big line deltas – both are normalised
+// to zoom levels and clamped per event so one notch never jumps half a map.
+const ZOOM = { min:13, max:20, target:null, anchor:null, ax:0, ay:0, raf:null, last:0 };
+function clampZoom(z) { return Math.max(ZOOM.min, Math.min(ZOOM.max, z)); }
+function wheelZoomDelta(e) {
+  let d = e.deltaY;
+  if (e.deltaMode === 1) d *= 16; else if (e.deltaMode === 2) d *= 400; // lines / pages → px
+  // ctrl+wheel is the browser's pinch-to-zoom gesture on trackpads: finer
+  const k = e.ctrlKey ? 1/120 : 1/320;
+  return -Math.max(-0.5, Math.min(0.5, d * k));
+}
+/** Move the camera so that geo [lon,lat] sits at screen (x,y) at the current zoom. */
+function anchorGeoAt(geo, x, y) {
+  const s = mapScale();
+  G.cam.lon = geo[0] - (x - gc.width/2)/s;
+  G.cam.lat = geo[1] + (y - gc.height/2)/(s*1.35);
+}
+function smoothZoomBy(dz, x, y, fromButton) {
+  if (!dz) return;
+  // cancel fly/animateCamera but keep our own ease (stopCameraAnims would reset it)
+  const base = ZOOM.target == null ? G.cam.zoom : ZOOM.target;
+  stopCameraAnims();
+  G.geo.follow = false;
+  if (G.flow) G.flow.follow = false;
+  ZOOM.target = clampZoom(fromButton ? Math.round(base + dz) : base + dz);
+  // a new anchor only when the pointer moved noticeably – keeps the fixed point
+  // stable during a continuous scroll so the map doesn't drift
+  if (!ZOOM.anchor || Math.abs(x - ZOOM.ax) > 2 || Math.abs(y - ZOOM.ay) > 2) {
+    ZOOM.anchor = toGeo(x, y); ZOOM.ax = x; ZOOM.ay = y;
+  }
+  if (!ZOOM.raf) { ZOOM.last = performance.now(); ZOOM.raf = requestAnimationFrame(zoomStep); }
+}
+function zoomStep(now) {
+  ZOOM.raf = null;
+  if (ZOOM.target == null) return;
+  const dt = Math.min(64, now - ZOOM.last); ZOOM.last = now;
+  // exponential ease: ~120 ms time constant, frame-rate independent
+  const k = 1 - Math.exp(-dt / 120);
+  let z = G.cam.zoom + (ZOOM.target - G.cam.zoom) * k;
+  const done = Math.abs(ZOOM.target - z) < 0.002;
+  if (done) z = ZOOM.target;
+  G.cam.zoom = z;
+  if (ZOOM.anchor) anchorGeoAt(ZOOM.anchor, ZOOM.ax, ZOOM.ay);
+  render(); renderMini();
+  if (done) {
+    ZOOM.target = null; ZOOM.anchor = null;
+    clearTimeout(loadTimer); loadTimer = setTimeout(loadMoreParcels, 250);
+  } else {
+    ZOOM.raf = requestAnimationFrame(zoomStep);
+  }
 }
 
 
@@ -8639,9 +8727,7 @@ function initMiniInput() {
   });
   mc.addEventListener('wheel', e => {
     e.preventDefault();
-    G.cam.zoom = Math.max(13, Math.min(20, G.cam.zoom + (e.deltaY > 0 ? -0.4 : 0.4)));
-    render(); renderMini();
-    schedLoad(600);
+    smoothZoomBy(wheelZoomDelta(e), gc.width/2, gc.height/2);
   }, { passive: false });
   mc.addEventListener('contextmenu', e => e.preventDefault());
   document.getElementById('mini-back')?.addEventListener('click', miniBack);
@@ -8677,17 +8763,19 @@ function initGameInput() {
   gc.addEventListener('mouseleave', () => { gc.classList.remove('dragging'); G.drag.active=false; });
   gc.addEventListener('wheel', e => {
     e.preventDefault();
-    stopCameraAnims();
-    G.cam.zoom += e.deltaY > 0 ? -0.4 : 0.4;
-    G.cam.zoom = Math.max(13, Math.min(20, G.cam.zoom));
-    render(); renderMini();
-    clearTimeout(loadTimer);
-    loadTimer = setTimeout(loadMoreParcels, 600);
+    const rect = gc.getBoundingClientRect();
+    smoothZoomBy(wheelZoomDelta(e), e.clientX - rect.left, e.clientY - rect.top);
   }, {passive:false});
   gc.addEventListener('click', onGameClick);
+  gc.addEventListener('dblclick', e => {
+    if (G.drag.moved) return;
+    e.preventDefault();
+    const rect = gc.getBoundingClientRect();
+    smoothZoomBy(1, e.clientX - rect.left, e.clientY - rect.top, true);
+  });
 
   // Touch
-  let touchDist = 0;
+  let touchDist = 0, pinch = null, lastTap = null;
   gc.addEventListener('touchstart', e => {
     stopCameraAnims();
     if (e.touches.length===1) {
@@ -8696,8 +8784,12 @@ function initGameInput() {
       G.geo.follow = false; // manual pan disables GPS follow-mode
       if (G.flow) G.flow.follow = false;
     } else if (e.touches.length===2) {
+      e.preventDefault();
+      const rect = gc.getBoundingClientRect();
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       touchDist = Math.sqrt(dx*dx+dy*dy);
+      const mx=(e.touches[0].clientX+e.touches[1].clientX)/2-rect.left, my=(e.touches[0].clientY+e.touches[1].clientY)/2-rect.top;
+      pinch = { zoom0:G.cam.zoom, dist0:touchDist, geo:toGeo(mx,my) };
       // Mark that we started a pinch gesture
       if (G.drag.active) G.drag.wasPinch = true;
     }
@@ -8710,12 +8802,16 @@ function initGameInput() {
       const s=mapScale();
       G.cam.lon=G.drag.slon-dx/s; G.cam.lat=G.drag.slat+dy/(s*1.35);
       render();
-    } else if (e.touches.length===2 && touchDist>0) {
+    } else if (e.touches.length===2 && pinch) {
+      const rect = gc.getBoundingClientRect();
       const dx=e.touches[0].clientX-e.touches[1].clientX, dy=e.touches[0].clientY-e.touches[1].clientY;
       const d=Math.sqrt(dx*dx+dy*dy);
-      G.cam.zoom += (d/touchDist-1)*2;
-      G.cam.zoom = Math.max(13,Math.min(20,G.cam.zoom));
-      touchDist=d; render();
+      const mx=(e.touches[0].clientX+e.touches[1].clientX)/2-rect.left, my=(e.touches[0].clientY+e.touches[1].clientY)/2-rect.top;
+      // true pinch: zoom = log2 of the finger-distance ratio, the geo point under the
+      // initial midpoint stays glued to the (moving) midpoint → zoom + pan in one gesture
+      G.cam.zoom = clampZoom(pinch.zoom0 + Math.log2(Math.max(0.05, d/pinch.dist0)));
+      anchorGeoAt(pinch.geo, mx, my);
+      touchDist=d; render(); renderMini();
     }
   }, {passive:false});
   gc.addEventListener('touchend', (e) => {
@@ -8726,19 +8822,31 @@ function initGameInput() {
     loadTimer=setTimeout(loadMoreParcels,600);
     // Trigger click logic for taps (touch without drag or pinch)
     if (wasTap && e.changedTouches && e.changedTouches[0]) {
-      const touch = e.changedTouches[0];
+      const touch = e.changedTouches[0], now = performance.now();
+      const rect = gc.getBoundingClientRect();
+      if (lastTap && now - lastTap.t < 300 && Math.hypot(touch.clientX - lastTap.x, touch.clientY - lastTap.y) < 30) {
+        // double-tap → zoom in one level around the tapped spot (maps convention)
+        lastTap = null;
+        smoothZoomBy(1, touch.clientX - rect.left, touch.clientY - rect.top, true);
+        return;
+      }
+      lastTap = { t: now, x: touch.clientX, y: touch.clientY };
       // Create a synthetic event with clientX/clientY for onGameClick
       onGameClick({clientX: touch.clientX, clientY: touch.clientY});
     }
     // Reset pinch zoom tracking when all touches end
     if (e.touches.length === 0) {
-      touchDist = 0;
+      touchDist = 0; pinch = null;
+    } else if (e.touches.length === 1 && pinch) {
+      // one finger lifted after a pinch: continue as a pan from here, no jump
+      pinch = null;
+      G.drag = {active:true,sx:e.touches[0].clientX,sy:e.touches[0].clientY,slon:G.cam.lon,slat:G.cam.lat,moved:true,wasPinch:true};
     }
   });
 
   // Zoom buttons
-  document.getElementById('btn-zoomin').onclick = () => { G.cam.zoom=Math.min(20,G.cam.zoom+0.5); render(); renderMini(); };
-  document.getElementById('btn-zoomout').onclick = () => { G.cam.zoom=Math.max(13,G.cam.zoom-0.5); render(); renderMini(); };
+  document.getElementById('btn-zoomin').onclick = () => smoothZoomBy(1, gc.width/2, gc.height/2, true);
+  document.getElementById('btn-zoomout').onclick = () => smoothZoomBy(-1, gc.width/2, gc.height/2, true);
   document.getElementById('btn-gearth').onclick = () => {
     // Open Google Maps satellite view at current camera position
     // Map game zoom (13-20) to Google Maps zoom: game z13→GM z13, game z20→GM z18
