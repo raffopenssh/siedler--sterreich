@@ -686,7 +686,9 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 
   /* Zoom controls */
   .zoom-controls { top:8px; right:8px; }
-  .zoom-controls .btn { width:48px; height:48px; font-size:20px; }
+  .zoom-controls { gap:3px; }
+  .zoom-controls .btn { width:42px; height:42px; font-size:18px; }
+  .zoom-controls .btn svg { width:28px; height:28px; }
 
   /* Popup */
   .popup {
@@ -984,6 +986,18 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 }
 
 #btn-n2k.off, #btn-topo.off { opacity:0.45; }
+/* 👁 observed-layer toggle: pixel eye. off = lid only (dim); consistency = open
+   gold eye; canopy = green iris. Colour carries the state, no emoji fallback. */
+#btn-ne { color:var(--gold); }
+#btn-ne.off { color:#b8ab8c; }
+#btn-ne.off .ne-white, #btn-ne.off .ne-iris, #btn-ne.off .ne-pupil, #btn-ne.off .ne-hl { display:none; }
+#btn-ne.off .ne-lid { display:none; }
+#btn-ne .ne-closed { display:none; }
+#btn-ne.off .ne-closed { display:block; }
+#btn-ne.mode-consistency { background:#5a4210; border-color:var(--gold); }
+#btn-ne.mode-canopy { background:#1f4a2a; border-color:#5a9; }
+#btn-ne.mode-canopy .ne-iris { fill:#7fd36a; }
+#btn-ne.mode-consistency .ne-iris { fill:#e0a040; }
 .pp-flur-name { color:var(--gold); }
 .pp-flur-sub { display:block; font-size:14px; color:var(--text-dim); line-height:1.1; }
 @media (max-width:768px) {

@@ -341,7 +341,7 @@ type neParcel struct {
 	StructHMaxM  float64            `json:"structure_h_max_m,omitempty"`
 	StructTypes  map[string]int     `json:"structure_types,omitempty"`
 	Consistency  map[string]float64 `json:"consistency"` // code → cell share
-	Verdict      string             `json:"verdict"`     // dominant non-consistent code (≥ 20 %) | consistent | unknown
+	Verdict      string             `json:"verdict"`     // dominant non-consistent code (land-use ≥ 35 % & ≥ 3 cells, built ≥ 15 % & ≥ 2 cells) | consistent | unknown
 	Phenology    string             `json:"phenology,omitempty"`
 	NDVI         *float64           `json:"ndvi,omitempty"`
 	NDVIAmp      *float64           `json:"ndvi_amp,omitempty"`
@@ -585,18 +585,25 @@ func neEnrichParcel(p *bevParcel, ne *neCols) bool {
 		}
 	}
 	out.ForestLossYr = lossYr
-	bestCode, bestShare := "", 0.0
+	// Verdict = the dominant non-consistent code, but only when something *big*
+	// happened: a land-use change must cover ≥ 35 % of the parcel and at least
+	// 3 cells (~900 m²) — a single stray cell on a forest edge is noise, not a
+	// Waldverlust. New structures / sealing are small by nature (one house ≈
+	// 1–2 cells on a 3 000 m² plot), so they count from 2 cells and 15 %.
+	bestCode, bestShare, bestCnt := "", 0.0, 0
 	for c, cnt := range consCnt {
 		if c < len(neConsistency) {
 			sh := float64(cnt) / n
 			out.Consistency[neConsistency[c]] = r2(sh)
 			if c != 0 && c != 6 && sh > bestShare {
-				bestCode, bestShare = neConsistency[c], sh
+				bestCode, bestShare, bestCnt = neConsistency[c], sh, cnt
 			}
 		}
 	}
+	built := bestCode == "sealed_new" || bestCode == "structure_new"
 	switch {
-	case bestShare >= 0.2:
+	case built && bestCnt >= 2 && bestShare >= 0.15,
+		!built && bestCnt >= 3 && bestShare >= 0.35:
 		out.Verdict = bestCode
 	case out.Consistency["consistent"] >= 0.5:
 		out.Verdict = "consistent"

@@ -1676,6 +1676,8 @@ function noteNE(ne) {
   if (ne.epoch) G.neEpoch = ne.epoch;
   const row = document.getElementById('map-attrib-ne');
   if (row) row.style.display = '';
+  const b = document.getElementById('btn-ne');   // the toggle only exists where there is something to observe
+  if (b) b.style.display = '';
 }
 
 /** Load one grid cell of cadastre (+ per-parcel 25 m terrain + landuse polygons)
@@ -8261,6 +8263,21 @@ function renderMiniBase(mctx, w, dpr) {
     mctx.fillRect(mx-1, my-1, 3, 3);
   }
 
+  // ---- Observed-layer findings as tiny dots (one per discrepant parcel) ----
+  // Parcel-level, not cell-level: a sparse scatter of 1–2 px specks — orange
+  // forest loss, red new sealing/structure, green regrowth — so the minimap
+  // hints where the cadastre and the observation disagree without a heat wash.
+  if (G.neCells > 0) {
+    const px = sc > 60000 ? 2 : 1;
+    for (const f of all) {
+      const ne = f.properties.ne; if (!ne || !NE_HEAT_COL[ne.verdict]) continue;
+      const lon = f.properties.lon, lat = f.properties.lat;
+      if (!lon || !lat || lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) continue;
+      const rgb = NE_HEAT_COL[ne.verdict];
+      mctx.fillStyle = 'rgba(' + rgb.join(',') + ',0.9)';
+      mctx.fillRect(Math.round(pad + (lon-minLon)*sc) - (px >> 1), Math.round(pad + (maxLat-lat)*sc) - (px >> 1), px, px);
+    }
+  }
 
   // ---- Austrian border on the minimap ----
   // Clipped to the minimap extent; makes it obvious when the play area butts
@@ -12778,7 +12795,7 @@ function neDiscrepant(v) { return !!v && v !== 'consistent' && v !== 'unknown'; 
 function setNEHeat(mode) {
   G.neHeatMode = mode || null;
   const b = document.getElementById('btn-ne');
-  if (b) { b.classList.toggle('off', !G.neHeatMode); b.textContent = G.neHeatMode === 'canopy' ? '🌳' : '👁'; }
+  if (b) { b.classList.toggle('off', !G.neHeatMode); b.classList.toggle('mode-consistency', G.neHeatMode === 'consistency'); b.classList.toggle('mode-canopy', G.neHeatMode === 'canopy'); }
   if (G.neHeatMode) {
     for (const c of tilesInAustria(gridTiles(viewBounds(), 12))) loadNEHeat(c);
     if (!(G.neCells > 0)) toast('👁 ' + tr('In dieser Gegend gibt es noch keine Beobachtungsdaten (srtm v2.4).'), '');
@@ -12813,41 +12830,55 @@ function loadNEHeat(c) {
  *  grid duplicating the parcels. Cell-level detail is reserved for the
  *  selected parcel (drawNEParcelDetail). */
 let _neOff = null, _neOffSel = null;
+const _neSplats = {};
+/** Cached soft splat sprite (radial falloff) for one rgb colour, 32 px. */
+function neSplat(rgb) {
+  const key = rgb.join(',');
+  let c = _neSplats[key]; if (c) return c;
+  c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  gr.addColorStop(0, 'rgba(' + key + ',0.85)'); gr.addColorStop(0.55, 'rgba(' + key + ',0.35)'); gr.addColorStop(1, 'rgba(' + key + ',0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 32, 32);
+  return (_neSplats[key] = c);
+}
+const NE_CANOPY_RGB = [60, 190, 140];
 function drawNEHeat(ctx) {
   const mode = G.neHeatMode; if (!mode) return;
   const W = gc.width, H = gc.height;
   const cellPx = 10.5 * mapScale() / 111320 * 1.4 * 2; // ≈ one H3 cell in px
-  const k = Math.max(1, Math.min(10, cellPx / 1.15));  // texel size: ~1 texel per cell, ≥ 1 px
+  const k = Math.max(1, Math.min(8, cellPx / 2));       // texel size: ~2 texels per cell
   const ow = Math.ceil(W / k) + 2, oh = Math.ceil(H / k) + 2;
   if (!_neOff) _neOff = document.createElement('canvas');
   if (_neOff.width !== ow || _neOff.height !== oh) { _neOff.width = ow; _neOff.height = oh; }
   const oc = _neOff.getContext('2d');
   oc.clearRect(0, 0, ow, oh);
   const span = 0.02 * mapScale() * 1.2;
-  let drew = 0, lastCol = null;
+  const rr = Math.max(1.2, cellPx / k * 0.95); // splat radius in texels — neighbours overlap into one soft field
+  const canSplat = neSplat(NE_CANOPY_RGB);
+  let drew = 0;
   for (const key in G.neHeat) {
     const h = G.neHeat[key]; if (!h.n) continue;
     const [x0, y0] = toScreen(h.lon[0], h.lat[0]); // cheap cell cull via its first centre + cell size
     if (x0 < -span - W || y0 < -span - H || x0 > W + span || y0 > H + span) continue;
     for (let i = 0; i < h.n; i++) {
-      let fs;
+      let sp;
       if (mode === 'canopy') {
         const c = h.can[i]; if (c === 255 || c < 25) continue; // null or < 10 %
-        fs = 'rgba(60,190,140,' + Math.min(1, c / 220).toFixed(2) + ')';
+        oc.globalAlpha = Math.min(1, c / 220); sp = canSplat;
       } else {
         const rgb = NE_HEAT_COL[h.codes[h.cons[i]]]; if (!rgb) continue;
-        fs = 'rgb(' + rgb.join(',') + ')';
+        oc.globalAlpha = 1; sp = neSplat(rgb);
       }
       const [x, y] = toScreen(h.lon[i], h.lat[i]);
-      if (x < -k || y < -k || x > W + k || y > H + k) continue;
-      if (fs !== lastCol) { oc.fillStyle = fs; lastCol = fs; }
-      oc.fillRect(x / k + 0.5, y / k + 0.5, 1, 1); drew++;
+      if (x < -cellPx || y < -cellPx || x > W + cellPx || y > H + cellPx) continue;
+      oc.drawImage(sp, x / k - rr, y / k - rr, rr * 2, rr * 2); drew++;
     }
   }
+  oc.globalAlpha = 1;
   if (!drew) return;
   ctx.save();
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-  ctx.globalAlpha = mode === 'canopy' ? 0.22 : (G.cam.zoom >= 16 ? 0.30 : 0.36);
+  ctx.globalAlpha = mode === 'canopy' ? 0.16 : (G.cam.zoom >= 16 ? 0.20 : 0.24);
   ctx.drawImage(_neOff, 0, 0, ow, oh, 0, 0, ow * k, oh * k);
   ctx.restore();
 }
@@ -12893,21 +12924,18 @@ function drawNEParcelDetail(ctx, f) {
   if (!_neOffSel) _neOffSel = document.createElement('canvas');
   if (_neOffSel.width !== ow || _neOffSel.height !== oh) { _neOffSel.width = ow; _neOffSel.height = oh; }
   const oc = _neOffSel.getContext('2d'); oc.clearRect(0, 0, ow, oh);
-  const rr = cellPx / k * 0.62; // splat radius in texels (overlapping neighbours → smooth field)
+  const rr = cellPx / k * 0.95; // splat radius in texels (overlapping neighbours → smooth field)
   for (const it of items) {
     const [x, y] = toScreen(it.lon, it.lat);
     if (x < -cellPx || y < -cellPx || x > W + cellPx || y > H + cellPx) continue;
-    const rgb = NE_HEAT_COL[it.code], tx = x / k, ty = y / k;
-    const g = oc.createRadialGradient(tx, ty, 0, tx, ty, rr);
-    g.addColorStop(0, 'rgba(' + rgb.join(',') + ',0.9)'); g.addColorStop(1, 'rgba(' + rgb.join(',') + ',0)');
-    oc.fillStyle = g; oc.beginPath(); oc.arc(tx, ty, rr, 0, Math.PI * 2); oc.fill();
+    oc.drawImage(neSplat(NE_HEAT_COL[it.code]), x / k - rr, y / k - rr, rr * 2, rr * 2);
   }
   ctx.save();
   ctx.beginPath();
   for (const ring of geomAllRings(f.geometry)) { ring.forEach((c, i) => { const q = toScreen(c[0], c[1]); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath(); }
   ctx.clip('evenodd');
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-  ctx.globalAlpha = 0.55;
+  ctx.globalAlpha = 0.42;
   ctx.drawImage(_neOffSel, 0, 0, ow, oh, 0, 0, ow * k, oh * k);
   ctx.restore();
 }
