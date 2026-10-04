@@ -2902,7 +2902,7 @@ function baseSignature(W, H) {
     G.parcelPolys.length, G.parcels.length, G.buildingFootprints.length, G.landusePolys.length,
     G.claimed.length, conv, G.lidarGen, G.n2kVisible ? 1 : 0, Object.keys(G.n2kSites).length, G.wpZones.length,
     Object.keys(G.osmLines).length, Object.keys(G.waterAreas || {}).length,
-    G.atBorder ? 1 : 0, G.baseGen || 0, G.neHeatMode || '', Object.keys(G.neHeat || {}).length].join('|');
+    G.atBorder ? 1 : 0, G.baseGen || 0, G.neHeatMode || '', Object.keys(G.neHeat || {}).length, (G.sel && G.sel.properties.ne) ? G.sel.properties.parcel_id : ''].join('|');
 }
 /** Synchronous full base render (first frame / resize only). */
 function drawBaseLayers(ctx, W, H, claimMap) { for (const _ of baseLayerSteps(ctx, W, H, claimMap)) { /* run to completion */ } }
@@ -3037,7 +3037,7 @@ function renderNow() {
   if (G.ezHighlight) drawEZHighlight(ctx);
 
   // ---- Selected parcel highlight ----
-  if (G.sel) { drawNEParcelDetail(ctx, G.sel); drawSelection(ctx, G.sel); }
+  if (G.sel) drawSelection(ctx, G.sel);
 
   // ---- Tapped building highlight ----
   if (G.selFp) drawFpHighlight(ctx, G.selFp);
@@ -4726,6 +4726,10 @@ function drawParcelPoly(ctx, f, claimMap) {
     : (G.landusePolys.length > 0 ? 0.35 : 0.85);
   ctx.fill();
   ctx.globalAlpha = 1;
+
+  // Observation detail of the selected parcel: soft NE-cell wash under every
+  // texture/sprite (field pattern, hillshade, trees, buildings) — see drawNEParcelDetail.
+  if (G.sel && G.sel.properties.parcel_id === parcelId && p.ne) drawNEParcelDetail(ctx, f);
 
   // Worked-field texture (harvest tracks / furrows / mowing swaths) aligned to
   // the parcel's longest edge — see drawFieldPattern.
@@ -8257,7 +8261,6 @@ function renderMiniBase(mctx, w, dpr) {
     mctx.fillRect(mx-1, my-1, 3, 3);
   }
 
-  drawMiniNEHeat(mctx, w);
 
   // ---- Austrian border on the minimap ----
   // Clipped to the minimap extent; makes it obvious when the play area butts
@@ -8297,7 +8300,7 @@ function renderMini() {
   // Static part (parcels + border) is cached per camera/data state: render()
   // calls renderMini() on every animation frame, the polygons only change on
   // pan/zoom or when new cells/claims arrive.
-  const baseKey = [G.cam.lon.toFixed(6), G.cam.lat.toFixed(6), G.cam.zoom.toFixed(3), G.parcelPolys.length, G.parcels.length, G.claimed.length, G.lidarGen, G.atBorder ? 1 : 0, dpr, G.neHeatMode || '', G.neHeatMode ? Object.keys(G.neHeat).length : 0].join('|');
+  const baseKey = [G.cam.lon.toFixed(6), G.cam.lat.toFixed(6), G.cam.zoom.toFixed(3), G.parcelPolys.length, G.parcels.length, G.claimed.length, G.lidarGen, G.atBorder ? 1 : 0, dpr].join('|');
   if (MINI.baseKey !== baseKey || !MINI.base) {
     if (!MINI.base) MINI.base = document.createElement('canvas');
     const bc = MINI.base;
@@ -12800,37 +12803,8 @@ function loadNEHeat(c) {
     const n = d.n | 0, lon = new Float64Array(d.lon), lat = new Float64Array(d.lat);
     const cons = Uint8Array.from(d.consistency || []), can = Uint8Array.from(d.canopy || []);
     G.neHeat[c.key] = { n, lon, lat, cons, can, codes: (d.codes && d.codes.consistency) || [], epoch: d.epoch };
-    if (G.neHeatMode) { invalidateBase(); render(); }
+    if (G.neHeatMode || G.sel) { invalidateBase(); render(); }
   }).catch(() => G.neHeatTiles.delete(c.key));
-}
-/** Minimap twin of drawNEHeat: while the 👁 overlay is on, the observed layer
- *  is binned to minimap pixels (max discrepancy / mean canopy per 2×2 px) so
- *  the whole loaded area reads at a glance — where the cadastre and the
- *  observation disagree, and how much canopy there is around the view. */
-function drawMiniNEHeat(mctx, w) {
-  const mode = G.neHeatMode; if (!mode) return;
-  const px = 3, cols = Math.ceil(MINI.W / px), rows = Math.ceil(MINI.H / px);
-  const acc = new Float32Array(cols * rows), cnt = new Uint16Array(cols * rows), code = new Uint8Array(cols * rows);
-  const codeRank = { forest_loss: 5, structure_new: 4, sealed_new: 3, forest_gain: 2, green_new: 1 };
-  for (const key in G.neHeat) {
-    const h = G.neHeat[key]; if (!h.n) continue;
-    for (let i = 0; i < h.n; i++) {
-      const lon = h.lon[i], lat = h.lat[i];
-      if (lon < w.minLon || lon > w.maxLon || lat < w.minLat || lat > w.maxLat) continue;
-      const gx = ((w.pad + (lon - w.minLon) * w.sc) / px) | 0, gy = ((w.pad + (w.maxLat - lat) * w.sc) / px) | 0;
-      if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) continue;
-      const k = gy * cols + gx;
-      if (mode === 'canopy') { const c = h.can[i]; if (c === 255) continue; acc[k] += c / 254; cnt[k]++; }
-      else { const r = codeRank[h.codes[h.cons[i]]] || 0; cnt[k]++; if (r > code[k]) code[k] = r; }
-    }
-  }
-  const rankCol = ['', NE_HEAT_COL.green_new, NE_HEAT_COL.forest_gain, NE_HEAT_COL.sealed_new, NE_HEAT_COL.structure_new, NE_HEAT_COL.forest_loss];
-  for (let k = 0; k < cols * rows; k++) {
-    if (!cnt[k]) continue;
-    if (mode === 'canopy') { const c = acc[k] / cnt[k]; if (c < 0.05) continue; mctx.fillStyle = 'rgba(70,210,150,' + (0.45 * c).toFixed(2) + ')'; }
-    else { if (!code[k]) continue; mctx.fillStyle = 'rgba(' + rankCol[code[k]].join(',') + ',0.5)'; }
-    mctx.fillRect((k % cols) * px, ((k / cols) | 0) * px, px, px);
-  }
 }
 
 /** Soft observed-layer field. The H3 cells are splatted into a low-resolution
@@ -12838,7 +12812,7 @@ function drawMiniNEHeat(mctx, w) {
  *  so the layer reads as a gentle wash — like the relief — instead of a hex
  *  grid duplicating the parcels. Cell-level detail is reserved for the
  *  selected parcel (drawNEParcelDetail). */
-let _neOff = null;
+let _neOff = null, _neOffSel = null;
 function drawNEHeat(ctx) {
   const mode = G.neHeatMode; if (!mode) return;
   const W = gc.width, H = gc.height;
@@ -12909,21 +12883,31 @@ function featureBBox(f) {
 }
 function drawNEParcelDetail(ctx, f) {
   const p = f.properties; if (!p.ne || !isAreaGeom(f.geometry)) return;
-  const r = 10.5 * mapScale() / 111320 * 1.4; if (r < 3) return; // zoom ≳ 15.7
+  const cellPx = 10.5 * mapScale() / 111320 * 1.4 * 2; if (cellPx < 6) return; // zoom ≳ 15.7
   const cell = cellOf(p.lon, p.lat); if (!G.neHeat[cell.key]) { loadNEHeat(cell); return; }
-  const items = neParcelCells(f); if (!items.length) return;
+  const items = neParcelCells(f).filter(it => NE_HEAT_COL[it.code]); if (!items.length) return;
+  // Splat into a low-res texture (1 texel ≈ ½ cell) and upscale bilinearly:
+  // the cells blend into a soft, continuous stain with no edges or grid.
+  const W = gc.width, H = gc.height, k = Math.max(2, Math.min(12, cellPx / 2));
+  const ow = Math.ceil(W / k) + 2, oh = Math.ceil(H / k) + 2;
+  if (!_neOffSel) _neOffSel = document.createElement('canvas');
+  if (_neOffSel.width !== ow || _neOffSel.height !== oh) { _neOffSel.width = ow; _neOffSel.height = oh; }
+  const oc = _neOffSel.getContext('2d'); oc.clearRect(0, 0, ow, oh);
+  const rr = cellPx / k * 0.62; // splat radius in texels (overlapping neighbours → smooth field)
+  for (const it of items) {
+    const [x, y] = toScreen(it.lon, it.lat);
+    if (x < -cellPx || y < -cellPx || x > W + cellPx || y > H + cellPx) continue;
+    const rgb = NE_HEAT_COL[it.code], tx = x / k, ty = y / k;
+    const g = oc.createRadialGradient(tx, ty, 0, tx, ty, rr);
+    g.addColorStop(0, 'rgba(' + rgb.join(',') + ',0.9)'); g.addColorStop(1, 'rgba(' + rgb.join(',') + ',0)');
+    oc.fillStyle = g; oc.beginPath(); oc.arc(tx, ty, rr, 0, Math.PI * 2); oc.fill();
+  }
   ctx.save();
   ctx.beginPath();
   for (const ring of geomAllRings(f.geometry)) { ring.forEach((c, i) => { const q = toScreen(c[0], c[1]); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.closePath(); }
   ctx.clip('evenodd');
-  const hexPath = (x, y, rr) => { ctx.beginPath(); for (let k = 0; k < 6; k++) { const t = Math.PI / 6 + k * Math.PI / 3; const px = x + rr * Math.cos(t), py = y + rr * Math.sin(t); k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); } ctx.closePath(); };
-  ctx.lineWidth = 1;
-  for (const it of items) {
-    const [x, y] = toScreen(it.lon, it.lat);
-    if (x < -r || y < -r || x > gc.width + r || y > gc.height + r) continue;
-    const rgb = NE_HEAT_COL[it.code];
-    if (rgb) { hexPath(x, y, r * 0.92); ctx.fillStyle = 'rgba(' + rgb.join(',') + ',0.42)'; ctx.fill(); ctx.strokeStyle = 'rgba(' + rgb.join(',') + ',0.8)'; ctx.stroke(); }
-    else { hexPath(x, y, r * 0.86); ctx.strokeStyle = 'rgba(255,245,210,0.22)'; ctx.stroke(); }
-  }
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.globalAlpha = 0.55;
+  ctx.drawImage(_neOffSel, 0, 0, ow, oh, 0, 0, ow * k, oh * k);
   ctx.restore();
 }
