@@ -3400,24 +3400,24 @@ function drawLandusePolygons(ctx) {
       }
       if (f._yard) colors = LANDUSE_YARD;
     }
-    const rings = geom.type === 'MultiPolygon'
-      ? geom.coordinates.flatMap(p => p)
-      : geom.coordinates;
+    const rings = geomAllRings(geom);
 
-    // Project first ring to check visibility
-    const outerPts = rings[0].map(c => toScreen(c[0], c[1]));
-    let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-    for (const pt of outerPts) {
-      if (pt[0]<minX) minX=pt[0]; if (pt[0]>maxX) maxX=pt[0];
-      if (pt[1]<minY) minY=pt[1]; if (pt[1]>maxY) maxY=pt[1];
-    }
+    // Visibility: bbox over *all* rings (geo bbox cached per feature). bevdirect
+    // hands out landuse polygons split along z16 vector-tile borders, so a
+    // field is often a MultiPolygon whose first part is a sliver far from the
+    // rest — culling on ring 0 alone dropped the whole feature as soon as that
+    // sliver left the screen, which painted tile-shaped darker/lighter
+    // rectangles that came and went while panning.
+    const bb = f._bb || (f._bb = geoBounds(geom));
+    const [x0, y0] = toScreen(bb.w, bb.n), [x1, y1] = toScreen(bb.e, bb.s);
+    const minX = Math.min(x0, x1), maxX = Math.max(x0, x1), minY = Math.min(y0, y1), maxY = Math.max(y0, y1);
     if (maxX < -20 || minX > W+20 || maxY < -20 || minY > H+20) continue;
     // Skip tiny polygons
     if ((maxX-minX) < 2 && (maxY-minY) < 2) continue;
 
+    const projected = rings.map(r => r.map(c => toScreen(c[0], c[1])));
     ctx.beginPath();
-    for (let ri = 0; ri < rings.length; ri++) {
-      const pts = ri === 0 ? outerPts : rings[ri].map(c => toScreen(c[0], c[1]));
+    for (const pts of projected) {
       for (let i = 0; i < pts.length; i++) {
         i === 0 ? ctx.moveTo(pts[i][0], pts[i][1]) : ctx.lineTo(pts[i][0], pts[i][1]);
       }
@@ -3425,11 +3425,26 @@ function drawLandusePolygons(ctx) {
     }
     ctx.fillStyle = colors.fill;
     ctx.globalAlpha = colors.a || 0.55;
-    ctx.fill();
+    ctx.fill('evenodd');   // holes regardless of ring winding
     ctx.globalAlpha = 1;
 
-    // Subtle stroke for terrain borders
+    // Subtle stroke for terrain borders — but not along the tile seams: an
+    // edge that runs exactly N–S or E–W in geo coordinates for more than a
+    // few metres is a vector-tile cut, not a field boundary.
     if ((maxX-minX) > 5 || (maxY-minY) > 5) {
+      ctx.beginPath();
+      for (let ri = 0; ri < rings.length; ri++) {
+        const r = rings[ri], pts = projected[ri];
+        let open = false;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = r[i], b = r[i + 1];
+          const seam = (Math.abs(a[0] - b[0]) < 2e-7 && Math.abs(a[1] - b[1]) > 5e-5) ||
+                       (Math.abs(a[1] - b[1]) < 2e-7 && Math.abs(a[0] - b[0]) > 7e-5);
+          if (seam) { open = false; continue; }
+          if (!open) { ctx.moveTo(pts[i][0], pts[i][1]); open = true; }
+          ctx.lineTo(pts[i + 1][0], pts[i + 1][1]);
+        }
+      }
       ctx.strokeStyle = colors.stroke;
       ctx.lineWidth = code === '48' ? 1 : 0.5;  // Roads get thicker border
       ctx.globalAlpha = code === '48' ? 0.6 : 0.4;
@@ -7002,7 +7017,7 @@ function neApexBudget() {
   if (NE_APEX.slow) b = Math.round(b * 0.5);   // last build overran — halve until it recovers
   return b;
 }
-const NE_APEX = { slow: false, lastMs: 0, drawn: 0, visible: 0, sprites: new Map() };
+const NE_APEX = { slow: false, wantSlow: false, lastMs: 0, drawn: 0, visible: 0, sprites: new Map() };
 /** Pre-rendered tree sprite (variant × size step). drawTree() paints ~8 paths per
  *  tree — with thousands of apices per view we blit one cached bitmap instead. */
 function neTreeSprite(variant, k) {
@@ -7047,21 +7062,29 @@ function drawNEApices(ctx) {
   }
   NE_APEX.visible = total;
   if (!total) { NE_APEX.drawn = 0; return; }
-  // Phone / low zoom: skip the small stuff first (lists are tallest-first, so a
-  // per-list prefix keeps the stand's dominant trees and drops the understorey).
-  const budget = neApexBudget();
-  const frac = Math.min(1, budget / total);
-  // Density floor: never more than one sprite per ~90 px² — under that the
-  // sprites overlap into a green blob and the extra work is invisible.
-  const pxArea = W * H;
-  const densCap = Math.floor(pxArea / 90);
-  const keepFrac = Math.min(frac, densCap / total);
+  // Thinning must be a function of zoom and of each cell alone — never of
+  // which neighbouring cells happen to be loaded or on screen. The earlier
+  // "budget / total trees in view" rule changed the per-cell prefix with every
+  // pan, so trees popped in and out while the camera moved (confusing: a
+  // hedgerow that vanishes when you look at it). Now:
+  //  • density floor: one sprite per ~90 px² of a *whole* 0.02° cell at this
+  //    zoom → per-cell cap that only moves with zoom;
+  //  • sprite budget: shared among the cells a viewport of this size can
+  //    intersect at this zoom (continuous in zoom, independent of pan).
+  // Lists are tallest-first, so a per-cell prefix keeps the dominant trees.
+  const s = mapScale();
+  const cellPx = (0.02 * s) * (0.02 * s * 1.35);                 // px² of one cell
+  // (< 1 at street level: only a fraction of the cell is on screen, so the
+  // whole cell may keep correspondingly more trees and still stay in budget)
+  const cellsInView = (W * H) / cellPx;
+  const perCellBudget = neApexBudget() / cellsInView;
+  const perCellCap = Math.min(perCellBudget, cellPx / 90);
   let drawn = 0;
   const minH = G.cam.zoom < 16 ? 10 : G.cam.zoom < 17 ? 6 : 4;
   // Draw back-to-front (north first) so southern canopies overlap northern trunks.
   const rows = [];
   for (const arr of lists) {
-    const n = Math.ceil(arr.length * keepFrac);
+    const n = Math.min(arr.length, Math.ceil(perCellCap));
     for (let i = 0; i < n; i++) {
       const t = arr[i];
       if (t.drop || t.h < minH) continue;
@@ -7092,7 +7115,10 @@ function drawNEApices(ctx) {
   NE_APEX.lastMs = performance.now() - t0;
   // Self-tune: a build that spends > 14 ms on trees halves the budget next time;
   // a quick one (< 5 ms) lifts the cap again.
-  if (NE_APEX.lastMs > 14) NE_APEX.slow = true; else if (NE_APEX.lastMs < 5) NE_APEX.slow = false;
+  // Flipping the budget mid-pan would make trees pop, so the flag may only
+  // change while the camera is still (zoom/pan pauses) — checked in renderNow.
+  if (NE_APEX.lastMs > 14) NE_APEX.wantSlow = true; else if (NE_APEX.lastMs < 5) NE_APEX.wantSlow = false;
+  if (NE_APEX.wantSlow !== NE_APEX.slow && performance.now() - _camMovedAt > 400) NE_APEX.slow = NE_APEX.wantSlow;
 }
 
 function drawSprout(ctx, x, y, seed) {
