@@ -471,6 +471,26 @@ z15 plain sprites (`getTreeStyle`, `'young'`). Popup `forestPopupRows()`,
 - Popup rows appended in `waterPopupRows(pid, rows)`. DEV: `DEV.dossier`,
   `DEV.station`, `DEV.water()`. Glitch log `docs/glitches.md`.
 
+## Schildersturm — smashable labels (hidden feature, `SMASH` in game.js, `srv/smash.go`)
+
+Decorative canvas labels (toponyms, giant-tree tags, treasure name tags, the Natura-2000
+chip, Messstellen/gauge names) go through `smashDraw(ctx, id, bx, by, w, h, paint)`:
+it registers the **exact** box for the frame (`SMASH.reg`) and calls `paint(ctx)` unless
+the label is shattered (`SMASH.gone`). A precise tap (no slop; smallest box wins,
+checked in `onGameClick` **after every real tappable** — treasures, markers, stations,
+trees — and before footprints/parcels) → `smashHit`: Mario-brick debris (label painted
+once off-screen, cut into chunks, gravity), impact flash + sparks, spinning coin, "+N".
+Coins = `smashCoinsFor(visible_ms)` = `max(1, round(12·e^(−ms/6000)))` — the fresher
+the sign, the more (server mirror `smashCoins`, keep in sync). `POST /api/smash-label`
+`{player_id, session_id, visible_ms, label}` → `{coins, today, cap, capped, player}`;
+in-memory guard: ≥ 300 ms between smashes (429), 400 coins/player/UTC day. Labels regrow
+after 45–60 s **or** as soon as the camera pans ≥ 55 % of the screen / zooms ≥ ½ level
+(`smashCamMoved`, evaluated eagerly in `smashFrameBegin`); the toponym slot stays
+reserved while shattered so no neighbour pops in. Only labels drawn live in `renderNow`
+are smashable — never register from the cached base layer (coordinates differ).
+Debris runs the anim loop at 16 ms while `SMASH.fx.length`. `DEV.smash()` /
+`DEV.smash(true)` / `DEV.smash('reset')`, xbrowser scene `smash`.
+
 ## Quests → Herald
 
 Built-in quests live in `generateChallenges` + `backfillChallenges` (+ `questProgressFor`/`questSatisfied`/`questProgress` counters). `GET /api/session/{id}/challenges` returns live `progress/goal`
