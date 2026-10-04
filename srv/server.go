@@ -708,6 +708,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		MunicipalityName string  `json:"municipality_name"`
 		CenterLon        float64 `json:"center_lon"`
 		CenterLat        float64 `json:"center_lat"`
+		SpawnExact       bool    `json:"spawn_exact"` // lucky cluster pick: the point was chosen deliberately, never re-snap
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -724,9 +725,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Glitch #5: the picker sends the Gemeinde centroid, which for elongated
 	// municipalities sits in the forest 2 km from the village. Snap to the
-	// settlement (OSM place) when one is close by.
-	if lon, lat, ok := s.settlementCenter(req.MunicipalityName, req.CenterLon, req.CenterLat); ok {
-		req.CenterLon, req.CenterLat = lon, lat
+	// settlement (OSM place) when one is close by — but never from an
+	// enhanced (srtm v2.4) KG into a bare one: /api/lucky spawns in the
+	// middle of a warm+enhanced cluster, and the village centre of the same
+	// Gemeinde may well lie in an unprocessed KG (Hafnerbach 19469 vs Korning 19500).
+	if !req.SpawnExact {
+		if lon, lat, ok := s.settlementCenter(req.MunicipalityName, req.CenterLon, req.CenterLat); ok {
+			if s.snapDowngrades(req.CenterLon, req.CenterLat, lon, lat) {
+				slog.Info("session: settlement snap skipped (would leave enhanced KG)", "gemeinde", req.MunicipalityCode)
+			} else {
+				req.CenterLon, req.CenterLat = lon, lat
+			}
+		}
 	}
 
 	err := s.Q.CreateSession(r.Context(), dbgen.CreateSessionParams{
@@ -3225,6 +3235,63 @@ func (s *Server) autoCompleteChallenges(ctx context.Context, sessionID, playerID
 		done = append(done, map[string]any{"id": c.id, "title": c.title, "coins": c.coins, "xp": c.xp})
 	}
 	return done
+}
+
+// snapDowngrades reports whether moving the spawn from (lon0,lat0) to
+// (lon1,lat1) leaves an enhanced KG for a non-enhanced one (admin bbox
+// lookup; unknown registry = never a downgrade).
+func (s *Server) snapDowngrades(lon0, lat0, lon1, lat1 float64) bool {
+	enh := s.enhancedKGSet()
+	if len(enh) == 0 {
+		return false
+	}
+	k0, k1 := s.kgCodeAt(lon0, lat0), s.kgCodeAt(lon1, lat1)
+	if k0 == "" || k1 == "" || k0 == k1 {
+		return false
+	}
+	return enh[k0] && !enh[k1]
+}
+
+// kgCodeAt: the KG containing a point. Our cached viewport cell first
+// (point-in-parcel over the cell's parcel polygons — no network; lucky
+// spawns are warm by definition), then bevdirect /municipality (memoised
+// 24 h like /api/municipality), finally the embedded register's bbox
+// heuristic (smallest bbox — wrong near KG borders: Hafnerbach village lies
+// in 19469 but the smaller 19624 bbox also covers it).
+func (s *Server) kgCodeAt(lon, lat float64) string {
+	if d := s.cachedCell(cellOf(lon, lat)); d != nil {
+		for _, p := range d.Parcels {
+			if p.Geometry != nil && pipRingsGo(lon, lat, geomRings(p.Geometry)) {
+				return p.KG
+			}
+		}
+	}
+	key := fmt.Sprintf("muni:at:v1:%.4f,%.4f", math.Round(lon*2500)/2500, math.Round(lat*2500)/2500)
+	var raw []byte
+	if c, err := s.Q.GetCachedData(context.Background(), key); err == nil {
+		raw = []byte(c)
+	} else {
+		u := fmt.Sprintf("%s/municipality?lon=%.6f&lat=%.6f", bevAPI, lon, lat)
+		code, _, body, err := upstreamGetWait(u, 2*time.Second, 1<<20)
+		if err == nil && code == 200 {
+			raw = body
+			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(raw), ExpiresAt: time.Now().Add(time.Duration(cadastreTTL))})
+		}
+	}
+	if len(raw) > 0 {
+		var d struct {
+			KG struct {
+				Code string `json:"kg_code"`
+			} `json:"kg"`
+		}
+		if json.Unmarshal(raw, &d) == nil && d.KG.Code != "" {
+			return d.KG.Code
+		}
+	}
+	if k := admin().kgAt(lon, lat); k != nil {
+		return k.KG
+	}
+	return ""
 }
 
 // settlementCenter resolves the main settlement of a municipality via the

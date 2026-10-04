@@ -1305,6 +1305,9 @@ async function startSinglePlayer() {
     player_id:G.player.id, name:m.name+' Siedlung',
     municipality_code:m.code, municipality_name:m.name,
     center_lon:m.lon, center_lat:m.lat,
+    // Lucky cluster pick: the point sits in the middle of warm+enhanced KGs — the
+    // server must not re-snap it to the OSM village (may be an unprocessed KG).
+    spawn_exact: !!(G.luckyPick && G.luckyPick.spawn_kg && G.luckyPick.lon === m.lon && G.luckyPick.lat === m.lat),
   });
   if (res.error) { toast(res.error,'err'); show('pick'); return; }
   G.session = res.session;

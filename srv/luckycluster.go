@@ -156,6 +156,17 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 			continue // KG centre outside its own (concave) KG and no better point
 		}
 		spawnKG := best.kg
+		// clusterAt uses the register's bbox heuristic; confirm with the real
+		// KG polygon (bevdirect) that the spawn point is in a playable KG.
+		if real := s.kgCodeAt(best.lon, best.lat); real != "" && real != spawnKG.KG {
+			if !playable[real] {
+				slog.Info("lucky: spawn rejected, real KG not playable", "bbox_kg", spawnKG.KG, "real_kg", real)
+				continue
+			}
+			if k := adm.KGs[real]; k != nil {
+				spawnKG = k
+			}
+		}
 		g = adm.Gemeinde[spawnKG.Gemeinde]
 		if g == nil {
 			continue
