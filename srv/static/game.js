@@ -383,12 +383,58 @@ function updateMapLoadingText() {
 const GET = url => api('GET', url);
 const POST = (url, body) => api('POST', url, body);
 
-function toast(msg, type) {
+// Toasts: identical messages collapse into one (bumped, with a ×N counter),
+// at most TOAST_MAX stay on screen (oldest leaves first), and every toast
+// fades out instead of popping away. `type`: 'ok' | 'err' | '' ; opts.ms = lifetime.
+const TOAST_MAX = 3, TOAST_GAP = 1500;
+let _toastLastAt = 0, _toastQ = [], _toastQT = 0;
+function toast(msg, type, opts) {
+  const box = document.getElementById('toast-container');
+  if (!box) return;
+  // Bursts are paced: informational toasts keep ≥ TOAST_GAP between them so
+  // several events landing at once read one after another (errors jump the queue).
+  const now = Date.now();
+  const dup = [...box.children].some(el => el._msg === msg && !el._gone) || _toastQ.some(q => q.msg === msg);
+  if (type !== 'err' && !dup && !(opts && opts.now) && now - _toastLastAt < TOAST_GAP) {
+    _toastQ.push({ msg, type, opts });
+    if (!_toastQT) _toastQT = setTimeout(function pump() {
+      _toastQT = 0; const q = _toastQ.shift(); if (!q) return;
+      toast(q.msg, q.type, Object.assign({}, q.opts, { now: true }));
+      if (_toastQ.length) _toastQT = setTimeout(pump, TOAST_GAP);
+    }, TOAST_GAP - (now - _toastLastAt));
+    return null;
+  }
+  if (_toastQ.some(q => q.msg === msg)) return null;   // already queued → it will show once
+  _toastLastAt = now;
+  const ms = (opts && opts.ms) || (msg.length > 90 ? 6500 : 4000);
+  const dismiss = el => {
+    if (el._gone) return; el._gone = true;
+    clearTimeout(el._t);
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 320);
+  };
+  const arm = el => { clearTimeout(el._t); el._t = setTimeout(() => dismiss(el), ms); };
+  // Same text already showing → bump it instead of stacking a twin.
+  for (const el of box.children) {
+    if (el._msg === msg && !el._gone) {
+      el._n = (el._n || 1) + 1;
+      el.textContent = msg;
+      const n = document.createElement('span'); n.className = 'toast-n'; n.textContent = '×' + el._n; el.appendChild(n);
+      el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump');
+      arm(el);
+      return el;
+    }
+  }
   const el = document.createElement('div');
   el.className = 'toast' + (type === 'ok' ? ' ok' : type === 'err' ? ' err' : '');
   el.textContent = msg;
-  document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 4000);
+  el._msg = msg;
+  el.onclick = () => dismiss(el);
+  box.appendChild(el);
+  const live = [...box.children].filter(c => !c._gone);
+  while (live.length > TOAST_MAX) dismiss(live.shift());
+  arm(el);
+  return el;
 }
 
 function show(id) {
@@ -2046,6 +2092,7 @@ async function fetchKGPolygonsBlocking(budgetMs) {
   loadEnhancedForKGs();
   // Neighbouring cells stream in the background, nearest first, ≤4 in flight.
   centrePromise.finally(() => {
+    updateWaterChip();   // first reading for the spawn KG (otherwise only the first pan shows it)
     runPool(ring.filter(c => c.key !== centre.key), c => loadTileResilient(c), 4).then(a => {
       if (a > 0) { buildEZIndex(); loadEnhancedForKGs(); render(); renderMini(); }
     }).catch(()=>{});
@@ -3785,7 +3832,7 @@ function saveTallSeen() {
     try { localStorage.setItem(tallSeenKey(), JSON.stringify([...G.tallSeen].slice(-TALL_SEEN_MAX))); } catch (e) {}
   }, 800);
 }
-let _discPending = 0, _discToastT = 0;
+let _discPending = 0, _discToastT = 0, _discToastAt = 0;
 function discoverTrees(list, stagger) {
   let n = 0; const now = Date.now();
   for (const t of list) {
@@ -3794,12 +3841,13 @@ function discoverTrees(list, stagger) {
   }
   if (n) {
     saveTallSeen(); _discPending += n;
+    // One Chronik toast per ≥ 25 s while exploring — discoveries accumulate into it.
     clearTimeout(_discToastT);
     _discToastT = setTimeout(() => {
       const c = giantChronik();
       toast('🌲 +' + _discPending + ' ' + tr('Riesen entdeckt') + ' · ' + tr('Chronik') + ' ' + c.seen + '/' + c.total, 'ok');
-      _discPending = 0;
-    }, 1800);
+      _discPending = 0; _discToastAt = Date.now();
+    }, Math.max(1800, 25000 - (Date.now() - _discToastAt)));
     updateEnhancedBadge();
   }
   return n;
@@ -4275,6 +4323,34 @@ let fogHintPos = null; // {x, y, lon, lat} for tap handling
 // hide a roaming cache near the camera (POST …/treasures/roam) — "treasures
 // should be somewhere" — and the compass then points at that.
 let treasureHintSince = 0, treasureHintPos = null, _roamAskedAt = 0, _roamKey = '';
+// ---- Beacon arbiter: the giant-tree mist and the treasure compass never
+// share the screen. Each candidate asks `beaconTurn(id)` per frame; the
+// arbiter grants one at a time (BEACON.show ms), then a quiet gap, then the
+// other — so the hints arrive spaced out instead of all at once. Returns the
+// opacity (0 = not this one's turn) incl. fade-in/out. An "on the spot" tree
+// (ep.k ≥ 1) is a contextual marker, not a hint, and is exempt.
+const BEACON = { cur: null, since: 0, last: null, gapUntil: 0, show: 12000, gap: 5000, asked: new Set(), frame: 0 };
+function beaconFrameBegin() {
+  const now = Date.now(), asked = BEACON.asked;
+  if (BEACON.cur && !asked.has(BEACON.cur)) { BEACON.last = BEACON.cur; BEACON.cur = null; BEACON.gapUntil = now + 1500; }
+  if (BEACON.cur && now - BEACON.since > BEACON.show && [...asked].some(a => a !== BEACON.cur)) {
+    BEACON.last = BEACON.cur; BEACON.cur = null; BEACON.gapUntil = now + BEACON.gap;
+  }
+  if (!BEACON.cur && now >= BEACON.gapUntil && asked.size) {
+    const others = [...asked].filter(a => a !== BEACON.last);
+    BEACON.cur = others[0] || [...asked][0]; BEACON.since = now;
+  }
+  BEACON.n = asked.size; asked.clear();
+}
+function beaconTurn(id) {
+  BEACON.asked.add(id);
+  if (BEACON.cur !== id) return 0;
+  const age = Date.now() - BEACON.since;
+  const fin = Math.min(1, age / 1200);
+  const alone = (BEACON.n || 0) <= 1;   // nobody waiting (last frame) → no need to leave
+  const fout = alone ? 1 : Math.max(0, Math.min(1, (BEACON.show + 400 - age) / 800));
+  return Math.min(fin, fout);
+}
 function unfoundTreasures() { return (G.treasures || []).filter(t => !t.found_by); }
 function treasureDistM(t) { const mLon = 111320 * Math.cos(G.cam.lat * Math.PI / 180); return Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540); }
 async function maybeRoamTreasures(nearestM) {
@@ -4391,7 +4467,9 @@ function drawTreasureHint(ctx) {
   for (const t of list) { const d = treasureDistM(t); if (d < bd) { bd = d; best = t; } }
   if (age > 4000) maybeRoamTreasures(best ? bd : null);
   if (!best || age < 6000) { treasureHintPos = null; return; }
-  const fade = Math.min(1, (age - 6000) / 1200);
+  const turn = beaconTurn('treasure');
+  if (turn <= 0) { treasureHintPos = null; return; }
+  const fade = Math.min(1, (age - 6000) / 1200) * turn;
   const [tx, ty] = toScreen(best.lon, best.lat);
   let ep = edgePoint(tx, ty);
   // keep the two beacons apart: if the tree mist already sits here, slide along the edge
@@ -4425,7 +4503,7 @@ function drawTallTreeFogHint(ctx) {
   if (!fogHintSince) { fogHintSince = now; fogHintPos = null; return; }
   const age = now - fogHintSince;
   if (age < 3000) { fogHintPos = null; return; }   // patience: let them explore first
-  const fade = Math.min(1, (age - 3000) / 1500);
+  let fade = Math.min(1, (age - 3000) / 1500);
   const W = gc.width, H = gc.height;
   // Nearest tree to screen center
   let best = null, bd = Infinity;
@@ -4439,6 +4517,11 @@ function drawTallTreeFogHint(ctx) {
   // k=1: an undiscovered giant hides right here → mist gathers on the spot.
   const ep = edgePoint(best.x, best.y);
   const onSpot = ep.k >= 1;
+  if (!onSpot) {
+    const turn = beaconTurn('tree');
+    if (turn <= 0) { fogHintPos = null; return; }
+    fade *= turn;
+  }
   const ex = onSpot ? best.x : ep.x, ey = onSpot ? best.y : ep.y;
   fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat };
   const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
@@ -4526,6 +4609,7 @@ function drawTopLandmarks(ctx) {
     drawTallTreeFogHint(ctx);
   }
   drawTreasureHint(ctx);
+  beaconFrameBegin();   // settle turns for the next frame
 
   // Dev-mode tree (5-tap badge easter egg): always visible once unlocked,
   // even before treasures/reveal. With GPS active, show distance + bearing
@@ -9221,6 +9305,7 @@ function initGameInput() {
   // viewport center and fly to it.
   const enhBadge = document.getElementById('enhanced-badge');
   if (enhBadge) {
+    let _lastFlyTree = null;
     const flyToNearestTree = (unlockMsg) => {
       const trees = allTallTrees();
       if (!trees.length) { toast('🌲 Noch keine Riesenbäume geladen …', 'err'); return; }
@@ -9233,6 +9318,9 @@ function initGameInput() {
       G.devTree = best;
       updateEnhancedBadge();
       flyTo(best.lon, best.lat, Math.max(G.cam.zoom, 16.5));
+      // Repeated taps while already standing at the tree stay silent.
+      if (!unlockMsg && best === _lastFlyTree && bd < 60) return;
+      _lastFlyTree = best;
       toast((unlockMsg ? '🔓 Entdeckermodus: ' : '🌲 Nächster Riesenbaum: ') + giantTreeName(best) + ' (' + best.height_m + ' m)' + (unlockMsg ? ' freigeschaltet!' : ''), 'ok');
       render();
     };
@@ -9593,8 +9681,10 @@ function onGameClick(e) {
       const inView = tallTreesInView().slice(0, giantDrawBudget());
       if (!inView.includes(hit.t)) inView.unshift(hit.t);
       discoverTrees(inView, true);
-      const total = allTallTrees().length;
-      toast('🌲 ' + tr('Riesenbaum entdeckt!') + ' ' + inView.length + ' ' + tr('Riesen in Sicht — erkunde das Land und finde alle') + ' ' + total + '. ' + tr('Grundstücke mit Riesenbäumen bringen Bonus-XP!'), 'ok');
+      // One message for the reveal — the "+N Riesen entdeckt" toast would only repeat it.
+      clearTimeout(_discToastT); _discPending = 0;
+      const total = allTallTrees().length, c = giantChronik();
+      toast('🌲 ' + tr('Riesenbaum entdeckt!') + ' ' + inView.length + ' ' + tr('Riesen in Sicht — erkunde das Land und finde alle') + ' ' + total + '. ' + tr('Grundstücke mit Riesenbäumen bringen Bonus-XP!') + ' · ' + tr('Chronik') + ' ' + c.seen + '/' + c.total, 'ok', { ms: 7000 });
       render();
       return;
     }
@@ -10953,12 +11043,14 @@ async function claimTreasure(t) {
   G.player = res.player; updateStats();
   spawnCollectFX(t, '+' + res.value + (res.type === 'xp' ? ' XP' : ' 🪙'), treasureRarity(t));
   G.treasures = G.treasures.filter(tr=>tr.id!==t.id);
-  if (!G.tallUnlocked && enhancedLoaded()) setTimeout(() => Herald.hint('trees_unlocked'), 1200);
+  const heraldTells = !G.tallUnlocked && enhancedLoaded() && !Herald.seen.has('trees_unlocked');
+  if (heraldTells) setTimeout(() => Herald.hint('trees_unlocked'), 1200);
   // First treasure unlocks the giant trees (enhanced mode)
   if (!G.tallUnlocked) {
     G.tallUnlocked = true;
     loadNearbyGiants(true);
-    if (allTallTrees().length > 0) {
+    // The Herald already tells the story — the rumour toast only when he stays quiet.
+    if (allTallTrees().length > 0 && !heraldTells) {
       setTimeout(() => toast('🌲 Gerücht: Irgendwo da steht ein Riesenbaum... Find ihn und tipp ihn an!', 'ok'), 1200);
     }
   }
@@ -12127,12 +12219,22 @@ function updateWaterChip() {
   const known = dr.known !== false && st;
   const stLabel = known ? tr(st.de) : tr('keine Messung');
   const sigma = known && now.sigma != null ? fmtSigma(now.sigma) : '';
-  let txt = '💧 ' + stLabel + (sigma ? ' ' + sigma : '');
+  let txt = stLabel + (sigma ? ' ' + sigma : '');
   if (dr.level >= 1 && dr.label) txt += ' · ' + tr(dr.label);
-  if (innerWidth <= 768 && dr.level >= 1 && dr.label) txt = '💧 ' + tr(dr.label) + (sigma ? ' ' + sigma : '');   // phones: one word + σ
-  chip.className = 'water-chip ' + (known ? st.cls : 'st-unknown') + (dr.level >= 2 ? ' pulse' : '');
-  chip.innerHTML = esc(txt) + (known && d.game ? '<span class="wc-sub">' + tr('Ernte') + ' ×' + (d.game.yield_factor || 1).toFixed(1).replace('.', ',') + '</span>' : '');
-  chip.title = tr('Grundwasser heute') + ' · ' + esc(d.kg_name || kg) + (now.as_of ? ' · ' + now.as_of : '') + ' — ' + tr('Gemeinde-Chronik öffnen');
+  if (innerWidth <= 768 && dr.level >= 1 && dr.label) txt = tr(dr.label) + (sigma ? ' ' + sigma : '');   // phones: one word + σ
+  // The chip only speaks up when the reading changes (status/label/σ); after a
+  // few seconds it folds down to the droplet, which still opens the Chronik.
+  const sig = known ? st.cls + '|' + (dr.label || '') + '|' + sigma : 'unknown';
+  const changed = sig !== G._wcSig;
+  if (changed) {
+    G._wcSig = sig;
+    clearTimeout(G._wcMinT);
+    G._wcMin = false;
+    G._wcMinT = setTimeout(() => { G._wcMin = true; chip.classList.add('min'); invalidateHudInsets(); }, dr.level >= 2 ? 14000 : 8000);
+  }
+  chip.className = 'water-chip ' + (known ? st.cls : 'st-unknown') + (dr.level >= 2 ? ' pulse' : '') + (G._wcMin ? ' min' : '');
+  chip.innerHTML = '<span class="wc-ico">💧</span><span class="wc-txt">' + esc(txt) + (known && d.game ? '<span class="wc-sub">' + tr('Ernte') + ' ×' + (d.game.yield_factor || 1).toFixed(1).replace('.', ',') + '</span>' : '') + '</span>';
+  chip.title = tr('Grundwasser heute') + ' · ' + esc(d.kg_name || kg) + (now.as_of ? ' · ' + now.as_of : '') + (sigma ? ' · ' + stLabel + ' ' + sigma : '') + ' — ' + tr('Gemeinde-Chronik öffnen');
   chip.style.display = '';
   if (sbRow) {
     sbRow.style.display = '';

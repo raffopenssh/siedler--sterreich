@@ -89,12 +89,38 @@ func (s *Server) llmKG(service, kg string) map[string]any {
 	}
 	b, st := s.llmGet("llmkg:"+service+":"+kg, url, 6*time.Hour)
 	if st != 200 {
+		if service == "gw" {
+			return s.gwPointFallback(kg)
+		}
 		return nil
 	}
 	var m map[string]any
 	if json.Unmarshal(b, &m) != nil {
 		return nil
 	}
+	return m
+}
+
+// gwPointFallback: every real KG should have water. When groundwater-at has no
+// KG document (rare: tiny/merged KGs), the point service at the KG's admin
+// centre still answers with today's `now` block (IDW over live stations) and
+// the GWI metrics — enough for the drought chip and the yield factor.
+func (s *Server) gwPointFallback(kg string) map[string]any {
+	k := admin().KGs[kg]
+	if k == nil {
+		return nil
+	}
+	lon, lat := k.center()
+	b, st := s.llmGet("gwpoint:"+q4(lon)+","+q4(lat), gwAPI+"/llm/point?lon="+q4(lon)+"&lat="+q4(lat), 12*time.Hour)
+	if st != 200 {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil || sub(m, "now") == nil {
+		return nil
+	}
+	m["kg_code"], m["kg_name"], m["gemeinde_code"], m["gemeinde_name"] = kg, k.Name, k.Gemeinde, k.GemName
+	m["granularity"] = "point-fallback"
 	return m
 }
 
