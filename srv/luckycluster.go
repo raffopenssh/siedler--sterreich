@@ -120,6 +120,8 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 	for _, c := range pool {
 		sum += float64(c.n * c.n)
 	}
+	var dull *luckyPick
+	var dullCold []string
 	for attempt := 0; attempt < 6; attempt++ {
 		r := rand.Float64() * sum
 		c := pool[len(pool)-1]
@@ -155,6 +157,10 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 		if _, ok := s.clusterAt(best.lon, best.lat, playable, enhanced); !ok {
 			continue // KG centre outside its own (concave) KG and no better point
 		}
+		// Within the cluster, spawn where there is something to see
+		// (luckyinterest.go): brook, forest edge, roofs, relief — not the
+		// middle of a flat field.
+		best, interest := s.luckySpot(best, playable, enhanced)
 		spawnKG := best.kg
 		// clusterAt uses the register's bbox heuristic; confirm with the real
 		// KG polygon (bevdirect) that the spawn point is in a playable KG.
@@ -181,6 +187,17 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 			GemeindeCode: g.Code, Name: g.Name, Lon: best.lon, Lat: best.lat, State: g.State,
 			Enhanced: true, NE: v24[spawnKG.KG], Warm: true, WarmKGs: warm, KGs: g.KGs, Pool: len(pool),
 			SpawnKG: spawnKG.KG, ClusterKGs: best.n, ClusterTotal: best.total, ClusterShare: math.Round(best.share*100) / 100,
+			Interest: interest.Score, InterestWhy: interest.Why,
+		}
+		// Dull surroundings (flat field, nothing in view): draw another
+		// cluster, but remember this one in case all draws are dull.
+		if interest.Score < interestGood && attempt < 5 {
+			if dull == nil || lp.Interest > dull.Interest {
+				cp := lp
+				dull = &cp
+				dullCold = best.cold
+			}
+			continue
 		}
 		// Grow the cluster: enhanced-but-cold KGs around the spawn get
 		// warmed now (neighbour priority), so the player's pans and the
@@ -192,8 +209,16 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 			}
 		}
 		slog.Info("lucky: cluster pick", "gemeinde", g.Code, "name", g.Name, "spawn_kg", spawnKG.KG,
-			"cluster", best.n, "of", best.total, "share", lp.ClusterShare, "pool", len(pool), "cold_queued", queued)
+			"cluster", best.n, "of", best.total, "share", lp.ClusterShare, "pool", len(pool), "cold_queued", queued,
+			"interest", lp.Interest, "why", lp.InterestWhy)
 		return lp, true
+	}
+	if dull != nil {
+		for _, kg := range dullCold {
+			s.enqueueWarm(kg, "lucky-cluster", 1)
+		}
+		slog.Info("lucky: cluster pick (best of dull)", "gemeinde", dull.GemeindeCode, "spawn_kg", dull.SpawnKG, "interest", dull.Interest, "why", dull.InterestWhy)
+		return *dull, true
 	}
 	return luckyPick{}, false
 }

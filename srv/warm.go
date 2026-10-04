@@ -23,6 +23,7 @@ import (
 	"math/rand"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -587,9 +588,19 @@ type luckyPick struct {
 	ClusterKGs   int      `json:"cluster_kgs,omitempty"`   // warm+enhanced KGs within ~1.5 km of the spawn
 	ClusterTotal int      `json:"cluster_total,omitempty"` // all KGs within that box
 	ClusterShare float64  `json:"cluster_share,omitempty"`
+	Interest     float64  `json:"interest"` // luckyInterest 0..1 of the spawn surroundings (luckyinterest.go)
+	InterestWhy  string   `json:"interest_why,omitempty"`
 }
 
 func (s *Server) handleLucky(w http.ResponseWriter, r *http.Request) {
+	// ?lon&lat → only the interest score of that spot (QA, DEV.interest()).
+	if q := r.URL.Query(); q.Get("lon") != "" {
+		lon, _ := strconv.ParseFloat(q.Get("lon"), 64)
+		lat, _ := strconv.ParseFloat(q.Get("lat"), 64)
+		sc, known := s.luckyInterest(lon, lat)
+		jsonResp(w, map[string]any{"lon": lon, "lat": lat, "known": known, "interest": sc})
+		return
+	}
 	jsonResp(w, s.luckyPick())
 }
 
@@ -645,6 +656,7 @@ func (s *Server) luckyPick() luckyPick {
 	}
 	pick := func(pool []cand) (luckyPick, bool) {
 		// Try a few random candidates; skip ones whose centre is not playable.
+		var bestLP *luckyPick
 		order := rand.Perm(len(pool))
 		for i, idx := range order {
 			if i >= 6 {
@@ -656,8 +668,28 @@ func (s *Server) luckyPick() luckyPick {
 				continue
 			}
 			lp := luckyPick{GemeindeCode: c.g.Code, Name: c.g.Name, Lon: lon, Lat: lat, State: c.g.State, Enhanced: enh[c.g.Code], Warm: true, WarmKGs: c.warm, KGs: c.g.KGs, Pool: len(pool)}
-			slog.Info("lucky: pick", "gemeinde", c.g.Code, "name", c.g.Name, "enhanced", lp.Enhanced, "warm_kgs", c.warm, "pool", len(pool))
+			// Nudge the spawn to the most interesting spot nearby (brook,
+			// forest edge, roofs) — never into a non-playable KG.
+			if k := adm.kgAt(lon, lat); k != nil && playable[k.KG] {
+				spot, sc := s.luckySpot(luckyCluster{kg: k, lon: lon, lat: lat}, playable, enhKG)
+				lp.Lon, lp.Lat, lp.Interest, lp.InterestWhy = spot.lon, spot.lat, sc.Score, sc.Why
+				if spot.kg != nil && (spot.lon != lon || spot.lat != lat) {
+					lp.SpawnKG = spot.kg.KG // spawn_exact: session create must not re-snap
+				}
+			}
+			if lp.Interest < interestMin && i < len(order)-1 && i < 5 {
+				if bestLP == nil || lp.Interest > bestLP.Interest {
+					cp := lp
+					bestLP = &cp
+				}
+				continue
+			}
+			slog.Info("lucky: pick", "gemeinde", c.g.Code, "name", c.g.Name, "enhanced", lp.Enhanced, "warm_kgs", c.warm, "pool", len(pool), "interest", lp.Interest, "why", lp.InterestWhy)
 			return lp, true
+		}
+		if bestLP != nil {
+			slog.Info("lucky: pick (best of dull)", "gemeinde", bestLP.GemeindeCode, "interest", bestLP.Interest)
+			return *bestLP, true
 		}
 		return luckyPick{}, false
 	}
