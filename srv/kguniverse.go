@@ -81,6 +81,7 @@ type kgUniverseDoc struct {
 	GeneratedAt  string          `json:"generated_at"`
 	KGCount      int             `json:"kg_count"`
 	UniverseHash string          `json:"universe_hash"`
+	PeerAgree    string          `json:"peer_agree,omitempty"` // X-KG-Universe-Peer-Agree ("true"/"false"/"")
 	KGs          []kgUniverseRow `json:"kgs"`
 }
 
@@ -96,6 +97,7 @@ type kgUniverseState struct {
 	lastErr     string
 	alert       string // "" = all good
 	alertedHash string // fingerprint that was e-mailed
+	epochChange string // sticky: set when umfeld's ETag/hash moved under us (new epoch)
 }
 
 var kgUni kgUniverseState
@@ -134,6 +136,19 @@ func (s *Server) kgUniverseBoot() {
 
 // kgUniverseInit: startup fetch (mirror as fallback), then hourly revalidation.
 func (s *Server) kgUniverseInit() {
+	// Respect umfeld's Cache-Control max-age=3600 across restarts: if the
+	// mirror was (re)validated less than an hour ago, wait out the rest of
+	// the hour instead of hitting /kgs on every restart / test run.
+	kgUni.mu.Lock()
+	if d := kgUni.doc; d != nil && !d.FetchedAt.IsZero() {
+		if age := time.Since(d.FetchedAt); age >= 0 && age < kgUniverseRevalidate {
+			kgUni.mu.Unlock()
+			s.kgUniverseCheck()
+			time.Sleep(kgUniverseRevalidate - age)
+			kgUni.mu.Lock()
+		}
+	}
+	kgUni.mu.Unlock()
 	for {
 		s.kgUniverseRefresh()
 		time.Sleep(kgUniverseRevalidate)
@@ -173,8 +188,17 @@ func (s *Server) kgUniverseRefresh() {
 		kgUni.source = "umfeld"
 		if kgUni.doc != nil {
 			kgUni.doc.FetchedAt = time.Now().UTC()
+			if werr := writeKGUniverseMirror(kgUni.doc); werr != nil { // persist fetched_at
+				slog.Warn("kg universe: mirror write failed", "err", werr)
+			}
 		}
 	default:
+		// A 200 while we hold a verified copy means umfeld's ETag moved:
+		// a new universe epoch. Record it (sticky) — we stop, we don't guess.
+		if prev != nil && prev.ETag != "" && (prev.ETag != doc.ETag || prev.UniverseHash != doc.UniverseHash) {
+			kgUni.epochChange = fmt.Sprintf("umfeld universe epoch changed: etag %q → %q, hash %s… → %s…",
+				prev.ETag, doc.ETag, prev.UniverseHash[:12], doc.UniverseHash[:12])
+		}
 		kgUni.doc, kgUni.source = doc, "umfeld"
 		if werr := writeKGUniverseMirror(doc); werr != nil {
 			slog.Warn("kg universe: mirror write failed", "err", werr)
@@ -238,6 +262,7 @@ func fetchKGUniverse(etag string) (*kgUniverseDoc, int, error) {
 	return &kgUniverseDoc{
 		FetchedAt: time.Now().UTC(), ETag: resp.Header.Get("ETag"), GeneratedAt: d.GeneratedAt,
 		KGCount: d.KGCount, UniverseHash: d.UniverseHash, KGs: d.KGs,
+		PeerAgree: strings.ToLower(strings.TrimSpace(resp.Header.Get("X-KG-Universe-Peer-Agree"))),
 	}, 200, nil
 }
 
@@ -266,6 +291,12 @@ func (s *Server) kgUniverseCheck() {
 		if kgUni.srtmHash != "" && kgUni.srtmHash != d.UniverseHash {
 			problems = append(problems, fmt.Sprintf("srtm-lidar-at universe_hash %s… ≠ umfeld %s…", kgUni.srtmHash[:12], d.UniverseHash[:12]))
 		}
+		if d.PeerAgree == "false" {
+			problems = append(problems, "umfeld reports X-KG-Universe-Peer-Agree: false (umfeld ↔ srtm disagree)")
+		}
+	}
+	if kgUni.epochChange != "" {
+		problems = append(problems, kgUni.epochChange)
 	}
 	if kgUni.ourCount != kgUniverseCount {
 		problems = append(problems, fmt.Sprintf("our admin table has %d KGs ≠ contract %d", kgUni.ourCount, kgUniverseCount))
@@ -295,7 +326,7 @@ func (s *Server) kgUniverseCheck() {
 	if needMail {
 		go sendOwnerMail("[siedler] KG universe alert", "The KG universe check failed on "+s.Hostname+":\n\n  "+
 			strings.ReplaceAll(alert, "; ", "\n  ")+"\n\nContract: kg_count = 7850, universe_hash = sha256(join(sorted(kg_code), \"\\n\")).\n"+
-			"umfeld-at: https://umfeld-at.exe.xyz/api/v1/kgs  ·  our list: srv/data/admin.json.gz (BEV VGD)\n"+
+			"umfeld-at: https://umfeld-at.exe.xyz/api/v1/kgs  ·  srtm: /api/v1/kgs?processed_only=0  ·  our list: srv/data/admin.json.gz (BEV VGD)\n"+
 			"The daily warm plan and v2.4 adoption are paused until the hashes agree (see /api/metrics kg_universe). "+
 			"If the universe really changed: rebuild admin.json.gz, purge vp:v1/ne: caches and kg_warm, then restart.\n")
 	}
@@ -338,6 +369,9 @@ func kgUniverseStatus() map[string]any {
 		m["umfeld_generated_at"] = d.GeneratedAt
 		m["umfeld_etag"] = d.ETag
 		m["fetched_at"] = d.FetchedAt
+		if d.PeerAgree != "" {
+			m["umfeld_peer_agree"] = d.PeerAgree
+		}
 	}
 	return m
 }
