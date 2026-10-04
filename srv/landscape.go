@@ -254,7 +254,7 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 	slim := map[string]any{
 		"kg_code": kg, "kg_name": a.Name, "product_version": product, "bbox": bb,
 		"terrain": terrain, "parcels": []any{}, "buildings": nonNil(bldgs), "top_trees": nonNil(kept), "top_objects": nonNil(objects),
-		"attribution": "Datenquelle: BEV – ALS DTM/DSM & DOP (CC BY 4.0, bearbeitet); srtm-lidar-at landscape segmentation (CC BY 4.0)",
+		"attribution": "Datenquelle: BEV – ALS DGM/DOM 1 m & Orthophoto DOP RGBI (CC BY 4.0, bearbeitet) · Contains modified Copernicus Sentinel data 2022–2025 · © ESA WorldCover 2021 · Hansen/UMD/Google/USGS/NASA GFC · srtm-lidar-at landscape segmentation (CC BY 4.0)",
 	}
 	out, err := json.Marshal(slim)
 	if err != nil {
@@ -775,7 +775,7 @@ func (s *Server) handleGiantsNear(w http.ResponseWriter, r *http.Request) {
 			out = append(out, row)
 		}
 		b, _ := json.Marshal(map[string]any{"lon": lon, "lat": lat, "trees": out,
-			"attribution": "Datenquelle: BEV – ALS DTM/DSM (CC BY 4.0, bearbeitet); srtm-lidar-at (CC BY 4.0)"})
+			"attribution": "Datenquelle: BEV – ALS DGM/DOM 1 m (CC BY 4.0, bearbeitet) · srtm-lidar-at landscape segmentation (CC BY 4.0)"})
 		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(b), ExpiresAt: time.Now().Add(6 * time.Hour)})
 		return b, 200
 	})

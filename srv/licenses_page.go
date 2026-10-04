@@ -98,7 +98,7 @@ func licCards(lang string, t licPageStrings) []licCard {
 			case "Faktendaten (Artname, europäische Gefährdungskategorie); EU-Weiterverwendung / IUCN-Nutzungsbedingungen":
 				c.License = "factual data (species name, European threat category); EU re-use / IUCN terms of use"
 			}
-			c.Provider = strings.NewReplacer("nicht-kommerziell", "non-commercial", "nur Darstellung", "display only", "bearbeitet", "modified", "Dürreindex", "drought index", "Mitwirkende", "contributors", "Geographische Namen", "Geographic Names", "Bundeskanzleramt", "Federal Chancellery", "Fließweg", "flow path", "IUCN im Auftrag der Europäischen Kommission, veröffentlicht über die EEA", "IUCN on behalf of the European Commission, published via the EEA").Replace(c.Provider)
+			c.Provider = strings.NewReplacer("nicht-kommerziell", "non-commercial", "nur Darstellung", "display only", "bearbeitet", "modified", "Dürreindex", "drought index", "Mitwirkende", "contributors", "Geographische Namen", "Geographic Names", "Bundeskanzleramt", "Federal Chancellery", "Fließweg", "flow path", "nur Zählwerte", "counts only", "Segmentierung, Statistik, Zellschicht", "segmentation, statistics, cell layer", "aus BEV", "from BEV", "aus: ", "from: ", "Geofabrik-Auszug", "Geofabrik extract", "Stichtag", "as of", "IUCN im Auftrag der Europäischen Kommission, veröffentlicht über die EEA", "IUCN on behalf of the European Commission, published via the EEA").Replace(c.Provider)
 		}
 		switch {
 		case src.MaxCacheH > 0:

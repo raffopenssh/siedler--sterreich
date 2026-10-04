@@ -34,7 +34,7 @@ const (
 	neTTL         = 24 * time.Hour
 	neMissTTL     = time.Hour
 	neBucketDeg   = 0.0005 // ~37 × 55 m buckets for point-in-polygon scans
-	neAttribution = "srtm-lidar-at landscape segmentation (CC BY 4.0) — NE cells, observed layer"
+	neAttribution = "srtm-lidar-at landscape segmentation (CC BY 4.0) — NE cells, observed layer · Datenquelle: BEV ALS/DOP (CC BY 4.0, bearbeitet) · Contains modified Copernicus Sentinel data 2022–2025 · © ESA WorldCover 2021 · Hansen GFC · Abgleich: BEV Kataster, CC BY 4.0, bearbeitet (Nutzungseinheit-Zellen, keine Objektgeometrie)"
 )
 
 var neGroups = [9]string{"geb", "bau", "acker", "gruen", "wald", "wasser", "verkehr", "alpen", "sonst"}
