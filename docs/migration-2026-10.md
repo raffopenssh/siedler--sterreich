@@ -103,6 +103,14 @@ What changed here (`srv/necells.go`):
   locally). 63330 reproduces the contract digest `594025647ec3557e` bit-exactly (v0.2.1 ≡ v0.2.0).
 * bevdirect-serve upgraded 2b7e725 (dev) → release **v0.2.1** (`bevdirect_version` + `coord_decimals:7`
   in every document, tile sweeper `-tile-ttl 24h`).
+* 2026-10-04 (later): bevdirect-serve went public as **github.com/raffopenssh/vtcseamless** (MIT, preset
+  `bevdirect/`); upgraded to **v0.3.0** via the public `bootstrap.sh` (no token; release asset 403 → built
+  from source, same version string). Output byte-identical to v0.2.1 (63330 digest `594025647ec3557e`
+  reproduced). install.sh rewrote the unit — `-cells 120 -prefetch 0` tuning restored by hand. NE reports
+  now POST to umfeld `/contrib/api/v1/ne/{kg}/report` (was `/k/…`); peer token installed (`ne-peer.key`),
+  first report per KG became the new baseline (POST 200, compared=false). Licence page / Impressum
+  paragraph rewritten to the wording agreed with the maintainer (VTC §2.3, tileset URL
+  `…/at.gv.bev.kataster/tiles/…`, open-source assembler, 6 h cells / 24 h tiles).
 
 Known limitation: NE coverage is per KG (32 of 7 850 on 2026-10-04, growing); a cell straddling
 processed and unprocessed KGs shows both enrichment kinds side by side (`kgs[].ne`).
