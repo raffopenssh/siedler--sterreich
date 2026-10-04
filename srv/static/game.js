@@ -11184,6 +11184,19 @@ pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attrib
 // Also honoured on load: URL ?dev=1 skips the min. loading-screen dwell time,
 // and #v=lon,lat,zoom (existing) sets the initial camera.
 window.DEV = {
+  /** Schildersturm: DEV.smash() → stats + labels on screen; DEV.smash(true) → shatter the first label
+   *  (returns the fx so a scene can freeze it); DEV.smash('reset') → regrow everything. */
+  smash(act) {
+    if (act === 'reset') { SMASH.gone.clear(); render(); return 'regrown'; }
+    renderNow();
+    if (act === true) {
+      const r = SMASH.reg.find(r => r.y > 60 && r.y < gc.height - 60 && r.x > 40 && r.x + r.w < gc.width - 80) || SMASH.reg[0];
+      if (!r) return 'no label on screen';
+      smashHit(r, r.x + r.w / 2, r.y + r.h / 2);
+      return { id: r.id, fx: SMASH.fx.length };
+    }
+    return { labels: SMASH.reg.map(r => r.id), gone: [...SMASH.gone.keys()], n: SMASH.n, streak: SMASH.streak, fx: SMASH.fx.length };
+  },
   /** NE cells (observed layer): per-parcel block of the selection / a pid, or cell stats. */
   ne(pid) { const id = pid || (G.sel && G.sel.properties.parcel_id); if (id) return (G.terrainParcels[id] || {}).ne || null; const n = Object.values(G.terrainParcels).filter(l => l.ne).length; return { cells: G.neCells || 0, epoch: G.neEpoch, parcels_with_ne: n, parcels: G.parcelPolys.length }; },
   /** Toponyms: DEV.topo() → counts; DEV.topo('Wunderburg') → fly to best local match. */

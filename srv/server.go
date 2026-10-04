@@ -297,6 +297,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/field-economy", s.handleFieldEconomy)
 	mux.HandleFunc("GET /api/forest-value", s.handleForestValue)
 	mux.HandleFunc("POST /api/claim-treasure", s.handleClaimTreasure)
+	mux.HandleFunc("POST /api/smash-label", s.handleSmashLabel)
 	mux.HandleFunc("POST /api/complete-challenge", s.handleCompleteChallenge)
 	mux.HandleFunc("POST /api/sell-parcel", s.handleSellParcel)
 
