@@ -644,7 +644,8 @@ func (s *Server) handleLLMsTxt(w http.ResponseWriter, r *http.Request) {
 - [MCP server](https://github.com/raffopenssh/siedler--sterreich/tree/main/tools/mcp-server): npx siedler-oesterreich-mcp — look/claim/convert as MCP tools.
 
 ## Legal
-- [Data sources & licences](%s/licenses): every provider, licence, attribution text and our cache age (machine-readable: %s/api/licenses)
+- [Data sources & licences](%s/licenses): every provider, licence, attribution text and our cache age (machine-readable: %s/api/licenses, incl. the cadastre assembler version)
+- [Cadastre assembler](https://github.com/raffopenssh/vtcseamless): vtcseamless (MIT, preset bevdirect) — parcels are assembled live from the BEV Katastralmappe vector tiles (CC BY 4.0), no cadastre database on our side, cells cached ≤ 24 h
 - [Impressum](%s/impressum)
 - [Datenschutz](%s/datenschutz)
 `, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL)
@@ -683,7 +684,7 @@ gathers everything the data services know about one parcel, in parallel, in
 |---|---|---|
 | ` + "`parcel`" + `, ` + "`cadastre`" + ` | BEV Katastralmappe (vector tiles, live) | KG, Gst.-Nr., EZ folio, area, ` + "`landuse_areas`" + ` (m² per BEV NS code, measured from the polygons), ` + "`dominant_ns`" + `, footprint count, ` + "`complete`" + ` (false = cut at a tile edge), Gemeinde/Bezirk/Bundesland; ` + "`in_natura2000`" + ` + sites, WDPA protected areas, RIS legal references **of the KG** (` + "`legal_refs.scope:\"kg\"`" + `); ` + "`notice`" + ` = the BEV attribution you must show with this data |
 | ` + "`cadastre.osm`" + ` | OpenStreetMap (ODbL) | nearest road (name, class, distance), major road (L188/B70), rail, bus stop, train station, brook/lake, village — and a 0–100 remoteness score |
-| ` + "`terrain`" + ` | BEV ALS DTM/DSM via srtm-lidar-at — **NE cells** (H3 res 12, ~307 m², product v2.4) where available, else the 25 m heightfield | ` + "`observed`" + ` block where the KG is v2.4: cover shares per group, canopy, every tree apex on the parcel (count, tallest, species, vitality), segmented structures (count, heights, types), NDVI/phenology, surface change, and ` + "`verdict`" + ` = what LiDAR sees vs. what the cadastre declares (` + "`consistent | forest_loss | forest_gain | sealed_new | structure_new | green_new | unknown`" + `) — trust it over the declared Benützungsart when they disagree; elevation min/mean/max, slope, aspect, terrain class, land-cover fractions (tree/grass/shrub/rock/roof/water …), ` + "`dominant_cover`" + `, canopy max, the 5 tallest trees **on the parcel** with coordinates and crown diameter, landmarks nearby; Hansen forest loss 2001–2024 by year **at KG level** (` + "`forest_loss.resolution`" + `). ` + "`resolution`" + ` tells you whether the numbers are per parcel or a KG/bbox aggregate |
+| ` + "`terrain`" + ` | BEV ALS DTM/DSM via srtm-lidar-at — **NE cells** (H3 res 12, ~307 m², product v2.4) where available, else the 25 m heightfield | ` + "`observed`" + ` block where the KG is v2.4: cover shares per group, canopy, every tree apex on the parcel (count, tallest, species, vitality), segmented structures (count, heights, types), NDVI/phenology, surface change, ` + "`consistency`" + ` (share of the parcel's cells per code) and ` + "`verdict`" + ` = what LiDAR sees vs. what the cadastre declares (` + "`consistent | forest_loss | forest_gain | sealed_new | structure_new | green_new | unknown`" + `). The verdict only flags *big* changes — a land-use code needs ≥ 35 %% of the parcel and ≥ 3 cells (~900 m²), new sealing/structures ≥ 15 %% and ≥ 2 cells; everything smaller stays ` + "`consistent`" + ` even if ` + "`consistency`" + ` shows a stray cell. Trust the verdict over the declared Benützungsart when they disagree; elevation min/mean/max, slope, aspect, terrain class, land-cover fractions (tree/grass/shrub/rock/roof/water …), ` + "`dominant_cover`" + `, canopy max, the 5 tallest trees **on the parcel** with coordinates and crown diameter, landmarks nearby; Hansen forest loss 2001–2024 by year **at KG level** (` + "`forest_loss.resolution`" + `). ` + "`resolution`" + ` tells you whether the numbers are per parcel or a KG/bbox aggregate |
 | ` + "`forest`" + ` (NS 56) | LiDAR + LK timber prices | standing stock Vfm, harvestable Efm, CO₂ stored, species mix by elevation, gross/net € at this week's Landeskammer prices, harvest cost by slope → ` + "`harvest_coins`" + ` and ` + "`naturwald_xp`" + ` |
 | ` + "`field`" + ` | AMA INVEKOS 2025 | the declared crop (e.g. "MÄHWIESE/-WEIDE DREI UND MEHR NUTZUNGEN"), crop group, field area, organic flag; nearest farmstead (size class, organic) |
 | ` + "`buildings`" + ` | BEV footprints (tiles) + LiDAR points | every footprint on the plot with area, length/width/orientation, size/shape class, and the nearest LiDAR-measured building (≤ 20 m, ` + "`match_m`" + `): ridge and mean height, storeys, roof type |
@@ -737,8 +738,11 @@ explored area around the point that look like this one).
    "Naturschutz" are **game fiction**: not an official register extract, no
    legal effect, no real owner data — and we hold no cadastre database:
    parcels are assembled live from the BEV map tiles for the 0.02° cell you
-   are looking at and forgotten after 24 h. Nothing here is searchable by
-   parcel number, folio or owner.
+   are looking at (by our open-source assembler ` + "`vtcseamless`" + `, MIT,
+   https://github.com/raffopenssh/vtcseamless, preset ` + "`bevdirect`" + `) and
+   forgotten after 24 h. Nothing here is searchable by parcel number, folio
+   or owner. ` + "`GET /api/licenses`" + ` lists every source, licence, cache age
+   and the assembler version.
 4. **Be a good tenant.** Rate limits below; back off on 429/` + "`Retry-After`" + `.
    A cadastre cell is cached up to 24 h on our side — re-looking at the same
    spot is free (ms), a *new* cell costs the BEV tile server 3–15 s of
@@ -843,8 +847,10 @@ Headers ` + "`X-RateLimit-Limit`" + `, ` + "`X-RateLimit-Remaining`" + `; 429 ca
   Wasserschutz-/Schongebiet Naturschutz pays ×1.5 XP.
 - Observation (` + "`terrain.observed.verdict`" + `, KGs with srtm v2.4 NE cells only): a plot
   where LiDAR/satellite disagree with the cadastre (forest_loss, forest_gain,
-  sealed_new, structure_new, green_new) pays +60 XP "Spurenleser" on claim and
-  completes the quest of that name; Naturschutz on a ` + "`forest_loss`" + ` plot pays
+  sealed_new, structure_new, green_new — only sizeable changes, see the
+  threshold rule above; ` + "`look`" + ` already carries ` + "`ne_verdict`" + ` and
+  ` + "`bonus_spurenleser_xp`" + ` so you can filter before inspecting) pays +60 XP
+  "Spurenleser" on claim and completes the quest of that name; Naturschutz on a ` + "`forest_loss`" + ` plot pays
   200 XP instead of 100 (Wiederbewaldung, ` + "`ne_restore`" + ` in the convert answer).
 - Bulk: parcels share an ` + "`ez`" + ` (land-register folio) — ` + "`ez.bulk_price_coins`" + ` is
   the whole folio at 20 %% off (` + "`POST /api/claim-ez`" + `, send the parcel list you saw).

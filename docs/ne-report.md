@@ -2,7 +2,7 @@
 
 umfeld-at.exe.xyz publishes "NE cells" (declared land-use statistics per H3 res-12 cell,
 derived from the BEV cadastre; contract: umfeld's `docs/ne-cells.md`). We run our own
-bevdirect-serve (`http://127.0.0.1:8787`, v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
+bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.0**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
 **observer**: rebuild the same cells from our bevdirect output with the frozen python reference
 package `ne_cells` (algo `ne-cells-2`, shapely 2.1.2 + h3 4.5.0) and POST an **epoch report**
 (digests only — whole build + one per res-10 chunk, no geometry) to
