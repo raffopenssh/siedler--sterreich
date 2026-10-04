@@ -219,7 +219,7 @@ const G = {
   enhancedGemeinden: [],    // [{gemeinde_code, gemeinde_name, lon, lat, v2}] deduped
   v2KGs: new Set(),         // subset of enhancedKGs on srtm product 2.1 (richer trees / grids)
   enhancedLoaded: new Set(),// kg_codes whose enhanced data has been fetched
-  lidarParcels: {},         // parcel_id → {elev, elevMin, elevMax, slope, aspect, tclass, dom, forestFrac}
+  terrainParcels: {},         // parcel_id → {elev, elevMin, elevMax, slope, aspect, tclass, dom, forestFrac}
   lidarKGTerrain: {},       // kg_code → {emin, emax, tclass}
   lidarBuildingIdx: {},     // grid key → [{lon,lat,stories,roof,h}] for footprint matching
   topTrees: {},             // kg_code → [{height_m, lon, lat}] (flag-filtered server-side)
@@ -1759,7 +1759,7 @@ async function loadViewportGeometry(c, opts) {
     // Per-parcel terrain enrichment from the cell row (NE cells where the KG
     // is v2.4, else the srtm 25 m heightfield) — one shape for renderer + popup.
     if (props.elev_m != null || props.dom_terrain || props.fracs) {
-      G.lidarParcels[id] = {
+      G.terrainParcels[id] = {
         elev: props.elev_m, elevMin: props.elev_min_m, elevMax: props.elev_max_m,
         slope: props.slope_deg, aspect: props.aspect, tclass: null,
         dom: props.dom_terrain, domTerrain: props.dom_terrain, forestFrac: props.tree_frac,
@@ -2073,11 +2073,16 @@ function loadEnhancedForKGs() {
 const WATER_NS = new Set(['59', '60']);
 function waterFraction(pid, p) {
   if (!p) { p = G._propsById && G._propsById[pid]; if (!p) return null; }
+  // Observed layer first: a pond on a declared Acker is water all the same
+  const ne = p.ne || (G.terrainParcels[pid] || {}).ne;
+  const obs = ne && ne.cells > 0 && ne.cover ? (ne.cover.wasser || 0) : null;
   const la = p.landuse_areas;
-  if (!la || typeof la !== 'object') return null;
+  if (!la || typeof la !== 'object') return obs;
   let tot = 0, water = 0;
   for (const k in la) { const a = +la[k] || 0; tot += a; if (WATER_NS.has(String(k))) water += a; }
-  return tot > 0 ? water / tot : null;
+  const decl = tot > 0 ? water / tot : null;
+  if (obs == null) return decl;
+  return decl == null ? obs : Math.max(decl, obs);
 }
 
 /** KG-level srtm data: terrain summary, buildings (centroid grid), top trees / objects.
@@ -2290,8 +2295,14 @@ function correctedFracs(fracs, p) {
  * (canopy only) when composition is unavailable.
  *   → { tree, shrub, wood }  (each 0..1)  |  null
  */
+/** Observed dead + declining share of a parcel's apices (NE vitality), 0 when unknown / too few trees. */
+function neDeadShare(pid) {
+  const ne = (G.terrainParcels[pid] || {}).ne;
+  if (!ne || !ne.vitality || !(ne.tree_n >= 5)) return 0;
+  return ((ne.vitality.dead || 0) + (ne.vitality.declining || 0)) / ne.tree_n;
+}
 function parcelVeg(f) {
-  const lp = G.lidarParcels[f.properties.parcel_id];
+  const lp = G.terrainParcels[f.properties.parcel_id];
   if (!lp) return null;
   const cf = correctedFracs(lp.fracs, f.properties);
   if (cf) {
@@ -2633,8 +2644,8 @@ function questBriefing(c) {
     }
   } else if (t === 'Spurenleser') {
     const owned = new Set((G.claimed||[]).map(x => x.parcel_id));
-    const cands = DEV.parcelsNear(p => !owned.has(p.parcel_id) && neDiscrepant(((G.lidarParcels[p.parcel_id] || {}).ne || {}).verdict), 40)
-      .map(p => { const f = DEV.find(p.parcel_id); const ll = f ? featureLonLat(f) : null; return ll ? { p, f, ll, d: geoDist(ll, [G.cam.lon, G.cam.lat]), v: G.lidarParcels[p.parcel_id].ne.verdict } : null; })
+    const cands = DEV.parcelsNear(p => !owned.has(p.parcel_id) && neDiscrepant(((G.terrainParcels[p.parcel_id] || {}).ne || {}).verdict), 40)
+      .map(p => { const f = DEV.find(p.parcel_id); const ll = f ? featureLonLat(f) : null; return ll ? { p, f, ll, d: geoDist(ll, [G.cam.lon, G.cam.lat]), v: G.terrainParcels[p.parcel_id].ne.verdict } : null; })
       .filter(Boolean).sort((a, b) => a.d - b.d);
     const n = cands[0];
     if (n) {
@@ -2976,6 +2987,8 @@ function* baseLayerSteps(ctx, W, H, claimMap) {
 
   // ---- Brunnen on owned fields (GW-1) ----
   drawWells(ctx, claimMap);
+  // ---- "Steht hier etwas?" — observed roofs without a cadastre footprint, own parcels only ----
+  drawUnmappedFlags(ctx, claimMap);
 
   // ---- Draw real building footprints ----
   if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
@@ -3634,7 +3647,7 @@ function giantTreeName(t) {
 function giantTreeElevation(t) {
   for (const f of G.parcelPolys) {
     if (pipGeom(t.lon, t.lat, f.geometry)) {
-      const lp = G.lidarParcels[f.properties.parcel_id];
+      const lp = G.terrainParcels[f.properties.parcel_id];
       if (lp && lp.elev != null) return lp.elev;
       break;
     }
@@ -4748,7 +4761,7 @@ function drawParcelPoly(ctx, f, claimMap) {
   // Enhanced mode: Lambert hillshade from lidar slope + aspect (fixed NW sun),
   // falling back to the elevation-rank tint when the parcel has no slope data.
   if (G.cam.zoom >= 14 && !isWater) {
-    const lp = G.lidarParcels[parcelId];
+    const lp = G.terrainParcels[parcelId];
     if (lp && lp.elev != null) {
       const hs = _reliefActive ? 0 : hillshade(lp);
       if (hs < -0.03) {
@@ -4955,7 +4968,7 @@ function getParcelTerrain(p, claim) {
   const wf = waterFraction(p.parcel_id, p);
   if (wf != null && wf >= 0.5) return TERRAIN.water;
   // Enhanced mode: real measured dominant land cover from lidar beats cadastre landuse
-  const lp = G.lidarParcels[p.parcel_id];
+  const lp = G.terrainParcels[p.parcel_id];
   // Use the corrected dominant land cover (impervious road/roof skipped server-side,
   // falls back to #2 natural cover). Buildings are drawn as footprints on top.
   if (lp) {
@@ -5088,7 +5101,7 @@ function drawLanduseSprites(ctx, claimMap) {
       // instead of random clutter. Lattice spacing in *screen* px so density is
       // constant across zoom; a parcel-stable phase keeps rows from jumping.
       const fs = fieldStage(p, claim);
-      if (fs.stage === 'meadow' || fs.stage === 'stubble') drawSporadicHabitat(ctx, 'crops', b, coords, sx1, sy1, sx2, sy2, hash);
+      if (fs.stage === 'meadow' || fs.stage === 'stubble') drawSporadicHabitat(ctx, 'crops', b, coords, sx1, sy1, sx2, sy2, hash, p.parcel_id);
       if (fs.stage === 'ploughed' || fs.stage === 'growing' || fs.stage === 'ripe') continue; // texture carries the stage
       const kind = fs.kind;                        // 0,1 sheaves · 2 haystacks · 3 grass
       const sp = kind === 2 ? 46 : 30;
@@ -5109,7 +5122,7 @@ function drawLanduseSprites(ctx, claimMap) {
       }
       continue;
     }
-    if (spriteType === 'meadow' || spriteType === 'garden' || spriteType === 'vineyard') drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash);
+    if (spriteType === 'meadow' || spriteType === 'garden' || spriteType === 'vineyard') drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash, p.parcel_id);
     const count = Math.min(14, Math.max(2, Math.floor(area / 600)));
     for (let i = 0; i < count; i++) {
       const t = ((hash + i * 7919) % 10000) / 10000;
@@ -5800,9 +5813,19 @@ function drawDeadTree(ctx, x, y, u, seed, hornets) {
 }
 /** One rare habitat feature on an ordinary (non-nature) parcel: beehives on
  *  meadows and fields, a nest box in gardens. ~14% of parcels, hash-stable. */
-function drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash) {
+function drawSporadicHabitat(ctx, spriteType, b, coords, sx1, sy1, sx2, sy2, hash, pid) {
   const m = hashMix(hash ^ 0x9e3779b9);
-  if (m % 100 >= 14 || G.cam.zoom < 16.5) return;
+  if (G.cam.zoom < 16.5) return;
+  // Observed layer: a meadow with real trees along it is where nest boxes
+  // hang (and bees like a hedge); a bare observed field keeps the 14 % lottery.
+  const ne = pid ? (G.terrainParcels[pid] || {}).ne : null;
+  let chance = 14;
+  if (ne && ne.cells > 0) {
+    if (ne.tree_n >= 2) { chance = 32; if (spriteType !== 'vineyard') spriteType = 'garden'; }   // trees → nest box
+    else if ((ne.cover && ne.cover.wald) > 0.05) chance = 22;
+    else chance = 10;
+  }
+  if (m % 100 >= chance) return;
   const u = G.cam.zoom > 17.5 ? 2 : 1;
   if ((sx2 - sx1) < 60 * u || (sy2 - sy1) < 40 * u) return;
   // try a few hash-stable spots near the parcel edge (farmers keep hives at the margin)
@@ -6206,7 +6229,7 @@ function claimIsForest(p, claim) {
   const lu = extractLuCode('', p);
   if (lu === '56') return true;
   if (lu === '48') return false;
-  const lp = G.lidarParcels[p.parcel_id];
+  const lp = G.terrainParcels[p.parcel_id];
   const t = lp?.fracs?.tree ?? lp?.forestFrac;
   return t != null && t >= 0.5;
 }
@@ -6252,14 +6275,14 @@ function forestPopupRows(fv, claim) {
   const e = fv?.estimate;
   if (!e || !e.is_forest) return [];
   const rows = [];
-  const src = e.source === 'v3' ? tr('Einzelbaum-Inventur (ALS)') : e.source === 'lidar' ? tr('ALS-Kronenhöhe') : tr('Nutzungsart');
+  const src = e.source === 'v3' ? tr('Einzelbaum-Inventur (ALS)') : e.source === 'ne' ? '👁 ' + tr('beobachtet') + (e.tree_n ? ' · ' + e.tree_n + ' ' + tr('Bäume') : '') : e.source === 'lidar' ? tr('ALS-Kronenhöhe') : tr('Nutzungsart');
   let stock = '~' + Math.round(e.vfm).toLocaleString('de-AT') + ' Vfm';
   if (e.vfm_per_ha) stock += ' <span style="color:var(--text-dim)">(' + e.vfm_per_ha + '/ha · Ø ' + e.h_mean_m + ' m' + (e.n_trees ? ' · ' + e.n_trees + ' ' + tr('Bäume') : '') + ')</span>';
   rows.push(['🪵 ' + tr('Holzvorrat'), stock]);
   const sp = e.species || {};
   const mix = [['spruce_fir', tr('Fichte/Tanne')], ['larch', tr('Lärche')], ['pine', tr('Kiefer')], ['broadleaf', tr('Laubholz')]]
     .filter(([k]) => (sp[k] || 0) >= 0.08).sort((a, b) => sp[b[0]] - sp[a[0]]).map(([k, n]) => n + ' ' + Math.round(sp[k] * 100) + '%').join(' · ');
-  if (mix) rows.push(['🌲 ' + tr('Bestand'), mix + ' <span style="color:var(--text-dim)">· ' + src + '</span>']);
+  if (mix) rows.push(['🌲 ' + tr('Bestand'), mix + (e.dead_frac >= 0.1 ? ' · <span style="color:#d0a060">' + Math.round(e.dead_frac * 100) + '% ' + tr('abgestorben') + '</span>' : '') + ' <span style="color:var(--text-dim)">· ' + src + '</span>']);
   const pr = e.prices || {};
   const fs = forestStage(claim);
   const eur = e.net_eur * (claim ? fs.factor : 1);
@@ -6291,6 +6314,23 @@ const FK = { TREE: 100, STUMP: 101, SLASH: 102, POLTER: 103, ROOTPLATE: 104, BLU
 // species: 0 spruce 1 fir 2 larch 3 beech 4 oak 5 birch 6 rowan 7 maple
 const F_SPECIES_LOW = [0, 1, 3, 3, 4, 5, 7, 3, 0, 6], F_SPECIES_MID = [0, 0, 1, 3, 2, 5, 6, 0, 1, 3], F_SPECIES_HIGH = [0, 0, 2, 2, 6, 1, 0, 2, 0, 5];
 const F_PIONEER = [5, 6, 0, 5, 2, 6];   // birch, rowan, spruce, larch on a clear-cut
+// NE species name → scene species index (nearest look-alike for species the sprite set lacks)
+const NE_SPECIES_IDX = { spruce: 0, fir: 1, larch: 2, beech: 3, oak: 4, birch: 5, maple: 7, ash: 7, alder: 5, poplar: 5, willow: 5, fruit: 4, conifer: 0, broadleaf: 3 };
+const _neTableCache = new Map();
+/** 10-slot species table weighted by the observed species counts of a parcel; null when unknown. */
+function neSpeciesTable(ne) {
+  const sp = ne && ne.species; if (!sp) return null;
+  const ent = Object.entries(sp).filter(([k, n]) => NE_SPECIES_IDX[k] != null && n > 0).sort((a, b) => b[1] - a[1]);
+  const tot = ent.reduce((a, e) => a + e[1], 0); if (tot < 3) return null;
+  const key = ent.map(e => e[0] + ':' + Math.round(e[1] / tot * 10)).join(',');
+  let t = _neTableCache.get(key); if (t) return t;
+  t = [];
+  for (const [k, n] of ent) for (let i = 0, m = Math.max(1, Math.round(n / tot * 10)); i < m && t.length < 10; i++) t.push(NE_SPECIES_IDX[k]);
+  while (t.length < 10) t.push(t[t.length % ent.length] ?? 0);
+  // interleave so one species does not fill a contiguous block of the hash space
+  const out = []; for (let i = 0; i < 10; i++) out.push(t[(i * 7) % 10]);
+  _neTableCache.set(key, out); return out;
+}
 
 function forestScene(f, mode) {
   const p = f.properties, id = p.parcel_id, key = id + ':' + mode;
@@ -6303,10 +6343,16 @@ function forestScene(f, mode) {
   const area = p.area_sqm || wM * hM * 0.6;
   const sp = Math.max(2.2, Math.sqrt(area / 2200));
   const hash = simpleHash(id);
-  const lp = G.lidarParcels[id];
-  const elev = lp?.elev ?? 600, hMean = lp?.treeH?.mean ?? 20;
-  const table = elev > 1200 ? F_SPECIES_HIGH : elev > 750 ? F_SPECIES_MID : F_SPECIES_LOW;
+  const lp = G.terrainParcels[id], ne = lp?.ne;
+  const elev = lp?.elev ?? 600;
+  // Observed stand (NE cells): measured mean canopy height and species mix;
+  // elevation tables only where the KG has no observed layer.
+  const hMean = ne?.h_mean_m > 0 ? ne.h_mean_m : 20;
+  const table = neSpeciesTable(ne) || (elev > 1200 ? F_SPECIES_HIGH : elev > 750 ? F_SPECIES_MID : F_SPECIES_LOW);
   const veteranBias = hMean > 26 ? 0.15 : hMean < 14 ? -0.2 : 0;
+  // standing deadwood: the observed dead/declining share sets how many snags the scene gets
+  const deadShare = ne && ne.tree_n >= 5 && ne.vitality ? ((ne.vitality.dead || 0) + (ne.vitality.declining || 0)) / ne.tree_n : 0;
+  const snagMax = deadShare > 0.3 ? 30 : deadShare > 0.12 ? 14 : 6;
   const segs = [];
   for (const r of rings) for (let i = 0; i < r.length - 1; i++) segs.push([(r[i][0] - b.w) * mLon, (r[i][1] - b.s) * mLat, (r[i + 1][0] - b.w) * mLon, (r[i + 1][1] - b.s) * mLat]);
   const edgeDist = (x, y) => { let d = Infinity; for (const s of segs) { const q = segDist2(x, y, s[0], s[1], s[2], s[3]); if (q < d) d = q; } return Math.sqrt(d); };
@@ -6328,7 +6374,7 @@ function forestScene(f, mode) {
         else if (rr < 78) { it.k = FK.TREE; it.size = 1; } else if (rr < 90) it.k = NK.FERN; else it.k = FK.BLUEBERRY;
       } else if (n > 0.62 + veteranBias * -1) {                 // old growth
         if (rr < 50) { it.k = FK.TREE; it.size = 3; } else if (rr < 72) { it.k = FK.TREE; it.size = 2; }
-        else if (rr < 77 && snagN < 6) { it.k = NK.SNAG; snagN++; } else if (rr < 84) it.k = NK.LOG; else if (rr < 88) it.k = FK.ROOTPLATE;
+        else if (rr < 77 && snagN < snagMax) { it.k = NK.SNAG; snagN++; } else if (rr < 84) it.k = NK.LOG; else if (rr < 88) it.k = FK.ROOTPLATE;
         else if (rr < 94) it.k = NK.FERN; else if (rr < 97) it.k = NK.MUSHROOM; else it.k = FK.BLUEBERRY;
       } else if (n < 0.34) {                                    // gap: windthrow + regeneration
         if (rr < 24) { it.k = FK.TREE; it.size = 0; } else if (rr < 44) { it.k = FK.TREE; it.size = 1; }
@@ -6336,7 +6382,7 @@ function forestScene(f, mode) {
         else if (rr < 84) it.k = NK.FERN; else if (rr < 90) it.k = FK.BLUEBERRY; else if (rr < 94) it.k = FK.HERB; else it.k = NK.MUSHROOM;
       } else {                                                  // mixed, all age classes
         if (rr < 34) { it.k = FK.TREE; it.size = 2; } else if (rr < 50) { it.k = FK.TREE; it.size = 1; } else if (rr < 58 + veteranBias * 40) { it.k = FK.TREE; it.size = 3; }
-        else if (rr < 64) { it.k = FK.TREE; it.size = 0; } else if (rr < 72) it.k = NK.FERN; else if (rr < 76) it.k = NK.LOG; else if (rr < 78 && snagN < 6) { it.k = NK.SNAG; snagN++; }
+        else if (rr < 64) { it.k = FK.TREE; it.size = 0; } else if (rr < 72) it.k = NK.FERN; else if (rr < 76) it.k = NK.LOG; else if (rr < 78 && snagN < snagMax) { it.k = NK.SNAG; snagN++; }
         else if (rr < 84) it.k = FK.BLUEBERRY; else if (rr < 88) it.k = NK.MUSHROOM; else if (rr < 91) it.k = NK.STONES; else if (rr < 93) it.k = NK.ANTHILL; else it.k = NK.FERN;
       }
       // pioneer species in gaps and along the edge
@@ -6618,6 +6664,9 @@ function drawForestSprites(ctx, claimMap) {
     }
     const t = getParcelTerrain(f.properties, claim);
     const veg = parcelVeg(f);
+    // Observed vitality: a stand that is mostly dead / declining (Borkenkäfer,
+    // Dürre) shows as snags, whatever the cadastre says
+    if (veg && veg.wood >= WOOD_MIN && neDeadShare(f.properties.parcel_id) >= 0.5) return 'dead';
     // Scrub-dominant (low woody cover, little tall canopy) → krummholz sprites,
     // regardless of cadastre terrain. srtm distinguishes shrub/hedge from tree.
     if (veg && veg.wood >= WOOD_MIN && veg.shrub > veg.tree && veg.tree < 0.15) {
@@ -6651,7 +6700,7 @@ function drawForestSprites(ctx, claimMap) {
   // replaces the procedural filler on natural stands (z ≥ 15; below that the
   // sprites are symbols anyway and the filler keeps the forest readable).
   const neMode = neApexMode();
-  const NE_REAL = { forest: 1, plantation: 1, krummholz: 1 };
+  const NE_REAL = { forest: 1, plantation: 1, krummholz: 1, dead: 1 };
 
   ctx.save();
   for (const { f, style } of treePolys) {
@@ -6692,6 +6741,10 @@ function drawForestSprites(ctx, claimMap) {
       treeCount = Math.min(28, Math.max(4, Math.floor(area / 200)));
       const rv = [3, 5, 3, 6, 3, 5, 3, 6, 5, 3]; // heavy on saplings + birch
       variantFn = (i) => rv[(hash + i) % rv.length];
+    } else if (style === 'dead') {
+      // Observed dead stand (NE vitality): standing snags, a few survivors
+      treeCount = Math.min(24, Math.max(3, Math.floor(area / 300)));
+      variantFn = (i) => (hash + i) % 4 === 0 ? 7 : -1;   // -1 → snag
     } else if (style === 'plantation') {
       // Managed forest — very dense, rows of conifers
       treeCount = Math.min(35, Math.max(6, Math.floor(area / 180)));
@@ -6749,7 +6802,8 @@ function drawForestSprites(ctx, claimMap) {
       if (!pipRings(lon, lat, coords)) continue;
       placed++;
       const [tx, ty] = toScreen(lon, lat);
-      drawTree(ctx, tx, ty, variantFn(i), hash + i);
+      const vv = variantFn(i);
+      if (vv < 0) drawDeadTree(ctx, tx, ty, G.cam.zoom > 16 ? 1 : 0.6, hash + i, false); else drawTree(ctx, tx, ty, vv, hash + i);
     }
     if (apex) for (let i = apex.length - 1; i >= 0; i--) { if (neMode && apex[i].ne) continue; drawApexTree(ctx, apex[i], hash, i === 0); }
 
@@ -9627,7 +9681,7 @@ function renderEnhancedPopupRows(pid, gamePrice) {
   const rows = [];
   const moreRows = [];  // secondary rows, rendered after the primary ones
 
-  const lp = G.lidarParcels[pid];
+  const lp = G.terrainParcels[pid];
   if (lp) {
     if (lp.elev != null) {
       let range = '';
@@ -9659,6 +9713,15 @@ function renderEnhancedPopupRows(pid, gamePrice) {
   }
 
   if (lp && lp.ne) neRows(lp.ne, rows, moreRows, { unclaimed: !G.claimed.some(c => c.parcel_id === pid) });
+  // Own parcel: observed roof(s) without a cadastre footprint — a soft question, never a verdict
+  if (lp && lp.ne && G.player && G.claimed.some(c => c.parcel_id === pid && c.player_id === G.player.id)) {
+    const um = unmappedStructures(polyById(pid));
+    if (um.length) {
+      const what = um.map(x => '~' + x.area_m2 + ' m² · ' + x.h.toLocaleString('de-AT') + ' m').join(', ');
+      moreRows.push(['🏳️ ' + tr('Steht hier etwas?'), tr('Die Beobachtung zeigt ein dachartiges Bauwerk') + ' (' + what + '), ' + tr('das im Kataster nicht eingetragen ist.') +
+        ' <span style="color:var(--text-dim)">' + tr('Nur ein Hinweis für dich als Besitzer – ob und was, klärt das Vermessungsamt.') + '</span>']);
+    }
+  }
   fabricRow(G.parcelCtx[pid] && G.parcelCtx[pid].ne, moreRows);
 
   // Giant-tree bonus (only after reveal)
@@ -10703,7 +10766,7 @@ pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attrib
 // and #v=lon,lat,zoom (existing) sets the initial camera.
 window.DEV = {
   /** NE cells (observed layer): per-parcel block of the selection / a pid, or cell stats. */
-  ne(pid) { const id = pid || (G.sel && G.sel.properties.parcel_id); if (id) return (G.lidarParcels[id] || {}).ne || null; const n = Object.values(G.lidarParcels).filter(l => l.ne).length; return { cells: G.neCells || 0, epoch: G.neEpoch, parcels_with_ne: n, parcels: G.parcelPolys.length }; },
+  ne(pid) { const id = pid || (G.sel && G.sel.properties.parcel_id); if (id) return (G.terrainParcels[id] || {}).ne || null; const n = Object.values(G.terrainParcels).filter(l => l.ne).length; return { cells: G.neCells || 0, epoch: G.neEpoch, parcels_with_ne: n, parcels: G.parcelPolys.length }; },
   /** Toponyms: DEV.topo() → counts; DEV.topo('Wunderburg') → fly to best local match. */
   async topo(q) {
     if (!q) {
@@ -11884,6 +11947,78 @@ function wellPointFor(f) {
   }
   return (f._well = [(b.w + b.e) / 2, (b.s + b.n) / 2]);
 }
+// ---- Observed structures the cadastre does not know (NE cells) ----------------
+// The observed layer sees every roof; the cadastre only the registered ones.
+// We are *not* sure enough to draw such a structure as a building — so on a
+// parcel the player owns, and only there, a small pennant with a question mark
+// marks a roof-like structure (25–400 m², 2.5–12 m) that sits on no footprint.
+// It is a gentle hint, never a verdict: whether it is real and whether it
+// belongs in the register is for the owner and the Vermessungsamt to settle.
+const UNMAPPED = { minArea: 25, maxArea: 400, minH: 2.5, maxH: 12, cache: new Map(), gen: -1 };
+/** NE roofs on the parcel without a cadastre footprint: [{lon,lat,area_m2,h}] (cached per lidarGen). */
+function unmappedStructures(f) {
+  if (!f || !isAreaGeom(f.geometry)) return [];
+  const pid = f.properties.parcel_id;
+  if (UNMAPPED.gen !== G.lidarGen) { UNMAPPED.cache.clear(); UNMAPPED.gen = G.lidarGen; }
+  const hit = UNMAPPED.cache.get(pid); if (hit) return hit;
+  const out = [];
+  const lp = G.terrainParcels[pid];
+  if (lp && lp.ne && lp.ne.cells > 0) {
+    const b = f._bb || (f._bb = geoBounds(f.geometry)), rings = geomAllRings(f.geometry);
+    const fps = G.buildingFootprints.filter(fp => fp.properties.parcel_id === pid);
+    const gx0 = Math.round(b.w * 2000) - 1, gx1 = Math.round(b.e * 2000) + 1, gy0 = Math.round(b.s * 2000) - 1, gy1 = Math.round(b.n * 2000) + 1;
+    for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
+      const arr = G.lidarBuildingIdx[gx + ':' + gy]; if (!arr) continue;
+      for (const sb of arr) {
+        if (!sb.ne || sb.type !== 'roof') continue;
+        const a = sb.area_m2 || 0, h = sb.max_height_m || 0;
+        if (a < UNMAPPED.minArea || a > UNMAPPED.maxArea || h < UNMAPPED.minH || h > UNMAPPED.maxH) continue;
+        if (sb.lon < b.w || sb.lon > b.e || sb.lat < b.s || sb.lat > b.n || !pipRings(sb.lon, sb.lat, rings)) continue;
+        // on / beside a registered footprint → the cadastre knows it (or a Zubau of it)
+        let known = false;
+        for (const fp of fps) {
+          if (pipGeom(sb.lon, sb.lat, fp.geometry)) { known = true; break; }
+          const [cl, ca] = featureLonLat(fp);
+          const r = Math.sqrt(fp.properties.area_sqm || 100) * 0.8 + 4;
+          if (geoDist([sb.lon, sb.lat], [cl, ca]) < r) { known = true; break; }
+        }
+        if (!known) out.push({ lon: sb.lon, lat: sb.lat, area_m2: Math.round(a), h: Math.round(h * 10) / 10 });
+      }
+    }
+    out.sort((x, y) => y.area_m2 - x.area_m2);
+    if (out.length > 3) out.length = 3;   // a hint, not an inventory
+  }
+  UNMAPPED.cache.set(pid, out);
+  return out;
+}
+function drawUnmappedFlags(ctx, claimMap) {
+  if (G.cam.zoom < 16 || !G.player) return;
+  const u = G.cam.zoom >= 18 ? 2 : 1;
+  const bob = Math.round(Math.sin(Date.now() / 900) * u);
+  for (const c of G.claimed) {
+    if (c.player_id !== G.player.id) continue;
+    const f = polyById(c.parcel_id); if (!f) continue;
+    for (const sbd of unmappedStructures(f)) {
+      const [x, y] = toScreen(sbd.lon, sbd.lat);
+      if (x < -20 || y < -30 || x > gc.width + 20 || y > gc.height + 20) continue;
+      drawQuestionPennant(ctx, x, y, u, bob);
+    }
+  }
+}
+/** Tiny pole + pennant with a "?" — deliberately quiet (α 0.8, no glow). */
+function drawQuestionPennant(ctx, x, y, u, bob) {
+  x = Math.round(x); y = Math.round(y);
+  const px = (dx, dy, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x + dx * u, y + dy * u, w * u, h * u); };
+  ctx.save(); ctx.globalAlpha = 0.8;
+  px(-2, 0, 5, 1, 'rgba(0,0,0,0.25)');                       // shadow
+  px(0, -14, 1, 14, '#6a5a40'); px(0, -15, 1, 1, '#d8c890');  // pole + tip
+  const fy = -14 + bob;
+  px(1, fy, 7, 5, '#e8d8a8'); px(1, fy + 5, 5, 1, '#e8d8a8'); px(7, fy + 1, 1, 3, '#c8b888');  // pennant
+  ctx.fillStyle = '#5a4a30';                                   // "?" glyph, 3×5 px
+  px(3, fy + 1, 2, 1, '#5a4a30'); px(5, fy + 2, 1, 1, '#5a4a30'); px(4, fy + 3, 1, 1, '#5a4a30'); px(4, fy + 5, 1, 1, '#5a4a30');
+  ctx.restore();
+}
+
 function drawWells(ctx, claimMap) {
   if (G.cam.zoom < 16) return;
   const u = G.cam.zoom >= 18.5 ? 3 : 2;
@@ -12342,6 +12477,8 @@ function loadBuildings(b) {
         // roof height over the footprint is the honest storey count
         stories_est: it.mean_height_m > 0 ? Math.max(1, Math.round(it.mean_height_m / 2.9)) : (it.stories_est || 1),
         roof_type_hint: it.roof_type === 'flat' ? 'flat' : it.roof_type ? 'pitched' : null, measured: true,
+        // NE structures (srtm v2.4): type + footprint area — unmappedStructures() looks for roofs without a cadastre footprint
+        ne: !!it.type, type: it.type || null, area_m2: it.area_m2 || null,
       });
     },
     done: () => { G.lidarGen++; invalidateBase(); render(); if (G.selFp) showParcelPopup(G.sel, G.selFp); },

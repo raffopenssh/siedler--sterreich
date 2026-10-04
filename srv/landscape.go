@@ -208,20 +208,27 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 		k, _ := m["kg_code"].(string)
 		return k == "" || k == kg
 	}
-	fetchPts("/trees/bbox", "trees", func(m map[string]any) {
-		if !inKG(m) {
-			return
-		}
-		h, _ := m["height_m"].(float64)
-		if h < 25 || h > 60 {
-			return
-		}
-		t := map[string]any{"height_m": h, "lon": m["lon"], "lat": m["lat"]}
-		if cd, ok := m["crown_d_m"].(float64); ok && cd > 0 && cd < 40 && cd/h > 0.62 {
-			t["broad"] = 1
-		}
-		trees = append(trees, t)
-	})
+	// Giants: NE KGs hold every apex in our cached cells — the srtm sample
+	// (≥ 25 m, sparse) is only consulted where no NE cell is cached yet.
+	treesSource := "srtm-sample"
+	if neRows, ok := s.neKGGiants(kg, 400); ok {
+		trees, treesSource = neRows, "ne-cells"
+	} else {
+		fetchPts("/trees/bbox", "trees", func(m map[string]any) {
+			if !inKG(m) {
+				return
+			}
+			h, _ := m["height_m"].(float64)
+			if h < 25 || h > 60 {
+				return
+			}
+			t := map[string]any{"height_m": h, "lon": m["lon"], "lat": m["lat"]}
+			if cd, ok := m["crown_d_m"].(float64); ok && cd > 0 && cd < 40 && cd/h > 0.62 {
+				t["broad"] = 1
+			}
+			trees = append(trees, t)
+		})
+	}
 	fetchPts("/landmarks/bbox", "landmarks", func(m map[string]any) {
 		if !inKG(m) {
 			return
@@ -272,14 +279,18 @@ func (s *Server) buildLidarSlimUncached(kg string) ([]byte, int) {
 	}
 	slim := map[string]any{
 		"kg_code": kg, "kg_name": a.Name, "product_version": product, "bbox": bb,
-		"terrain": terrain, "parcels": []any{}, "buildings": nonNil(bldgs), "top_trees": nonNil(kept), "top_objects": nonNil(objects),
+		"terrain": terrain, "parcels": []any{}, "buildings": nonNil(bldgs), "top_trees": nonNil(kept), "top_trees_source": treesSource, "top_objects": nonNil(objects),
 		"attribution": "Datenquelle: BEV – ALS DGM/DOM 1 m & Orthophoto DOP RGBI (CC BY 4.0, bearbeitet) · Contains modified Copernicus Sentinel data 2022–2025 · © ESA WorldCover 2021 · Hansen/UMD/Google/USGS/NASA GFC · srtm-lidar-at landscape segmentation (CC BY 4.0)",
 	}
 	out, err := json.Marshal(slim)
 	if err != nil {
 		return jsonErrBody("encode error"), 500
 	}
-	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(6 * time.Hour)})
+	ttl := 6 * time.Hour
+	if treesSource != "ne-cells" && s.neReadyKGSet()[kg] {
+		ttl = 30 * time.Minute // NE KG whose cells are not cached yet — pick up the measured giants soon
+	}
+	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: cacheKey, Data: string(out), ExpiresAt: time.Now().Add(ttl)})
 	return out, 200
 }
 

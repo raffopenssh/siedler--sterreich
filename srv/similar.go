@@ -5,7 +5,7 @@ package srv
 // ≤ 24 h old). Score 0..1 on size ratio,
 // Benützungsart composition (measured m² shares), built density and the
 // 25 m terrain enrichment (elevation, slope, aspect, dominant natural cover,
-// land-cover histogram). Cached 1 h per reference parcel (similar:v6:).
+// land-cover histogram). Cached 1 h per reference parcel (similar:v7:).
 //
 // GET /api/similar?parcel_id=&lon=&lat=&area=&bcount=&barea=&lu=&limit=40
 // Response: {parcel_id, radius_m, cells, candidates, scored, lidar_terms,
@@ -154,6 +154,17 @@ func (s *Server) similarJSON(ctx context.Context, rq similarReq) ([]byte, bool, 
 		if !refTerr {
 			w = map[string]float64{"size": 0.35, "landuse": 0.45, "built": 0.2, "terrain": 0}
 		}
+		// Observed layer (NE cells): when both parcels are observed, what is
+		// really there — species mix, canopy, structures, verdict — gets a say.
+		if ob, ok := neSimilarity(ref.NE, c.NE); ok {
+			parts["observed"] = ob
+			w["observed"] = 0.25
+			for k := range w {
+				if k != "observed" {
+					w[k] *= 0.75
+				}
+			}
+		}
 		tot := 0.0
 		for k, v := range w {
 			tot += v * parts[k]
@@ -244,4 +255,40 @@ func builtRatio(p *bevParcel) float64 {
 		return 0
 	}
 	return math.Min(1, p.BuildingArea/p.AreaSqm)
+}
+
+// neSimilarity scores two observed parcels 0..1: species histogram overlap,
+// canopy and structure-cover closeness, same consistency verdict. ok=false
+// unless both carry an NE block.
+func neSimilarity(a, b *neParcel) (float64, bool) {
+	if a == nil || b == nil || a.Cells == 0 || b.Cells == 0 {
+		return 0, false
+	}
+	t, n := 0.0, 0.0
+	t += 1 - math.Min(1, math.Abs(a.Canopy-b.Canopy)*1.5)
+	n++
+	t += 1 - math.Min(1, math.Abs(a.StructCover-b.StructCover)*3)
+	n++
+	if a.TreeN >= 3 && b.TreeN >= 3 && len(a.Species) > 0 && len(b.Species) > 0 {
+		sa, sb := 0, 0
+		for _, v := range a.Species {
+			sa += v
+		}
+		for _, v := range b.Species {
+			sb += v
+		}
+		hi := 0.0
+		for k, v := range a.Species {
+			hi += math.Min(float64(v)/float64(sa), float64(b.Species[k])/float64(sb))
+		}
+		t += hi * 1.5
+		n += 1.5
+	}
+	if a.Verdict != "" && b.Verdict != "" {
+		if a.Verdict == b.Verdict {
+			t += 1
+		}
+		n++
+	}
+	return t / n, true
 }

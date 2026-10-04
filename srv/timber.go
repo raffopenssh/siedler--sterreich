@@ -295,32 +295,36 @@ type timberAssortment struct {
 }
 
 type timberEstimate struct {
-	ParcelID    string                      `json:"parcel_id"`
-	Source      string                      `json:"source"` // v3 | lidar | landuse | none
-	IsForest    bool                        `json:"is_forest"`
-	AreaHa      float64                     `json:"area_ha"`
-	CanopyFrac  float64                     `json:"canopy_frac"`
-	HMean       float64                     `json:"h_mean_m"`
-	HMax        float64                     `json:"h_max_m,omitempty"`
-	NTrees      int                         `json:"n_trees,omitempty"`
-	Vfm         float64                     `json:"vfm"`        // standing stock, Vorratsfestmeter
-	VfmPerHa    float64                     `json:"vfm_per_ha"` // per canopy ha
-	Efm         float64                     `json:"efm"`        // harvestable (bark + losses removed)
-	CO2t        float64                     `json:"co2_t"`      // stored in the stems (≈0.9 t/Vfm)
-	Species     map[string]float64          `json:"species"`    // shares: spruce_fir, larch, pine, broadleaf
-	Assortments map[string]timberAssortment `json:"assortments"`
-	GrossEur    float64                     `json:"gross_eur"`
-	CostEur     float64                     `json:"cost_eur"`
-	CostPerEfm  float64                     `json:"cost_per_efm"`
-	NetEur      float64                     `json:"net_eur"`
-	Coins       int64                       `json:"coins"`   // full-value harvest payout
-	WildXP      int64                       `json:"wild_xp"` // Naturwald XP reward
-	Prices      timberPrices                `json:"prices"`
-	Elev        float64                     `json:"elev_m,omitempty"`
-	Slope       float64                     `json:"slope_deg,omitempty"`
-	V3          string                      `json:"v3,omitempty"`      // "" | ok | cold | error | off
-	History     *timberHistory              `json:"history,omitempty"` // HOLZ-3 Hansen loss history of this plot
-	TookMs      int64                       `json:"took_ms"`
+	ParcelID      string                      `json:"parcel_id"`
+	Source        string                      `json:"source"` // v3 | lidar | landuse | none
+	IsForest      bool                        `json:"is_forest"`
+	AreaHa        float64                     `json:"area_ha"`
+	CanopyFrac    float64                     `json:"canopy_frac"`
+	HMean         float64                     `json:"h_mean_m"`
+	HMax          float64                     `json:"h_max_m,omitempty"`
+	NTrees        int                         `json:"n_trees,omitempty"`
+	Vfm           float64                     `json:"vfm"`        // standing stock, Vorratsfestmeter
+	VfmPerHa      float64                     `json:"vfm_per_ha"` // per canopy ha
+	Efm           float64                     `json:"efm"`        // harvestable (bark + losses removed)
+	CO2t          float64                     `json:"co2_t"`      // stored in the stems (≈0.9 t/Vfm)
+	Species       map[string]float64          `json:"species"`    // shares: spruce_fir, larch, pine, broadleaf
+	Assortments   map[string]timberAssortment `json:"assortments"`
+	GrossEur      float64                     `json:"gross_eur"`
+	CostEur       float64                     `json:"cost_eur"`
+	CostPerEfm    float64                     `json:"cost_per_efm"`
+	NetEur        float64                     `json:"net_eur"`
+	Coins         int64                       `json:"coins"`   // full-value harvest payout
+	WildXP        int64                       `json:"wild_xp"` // Naturwald XP reward
+	Prices        timberPrices                `json:"prices"`
+	Elev          float64                     `json:"elev_m,omitempty"`
+	Slope         float64                     `json:"slope_deg,omitempty"`
+	SpeciesSource string                      `json:"species_source,omitempty"` // "" (elevation guess) | ne
+	TreeN         int                         `json:"tree_n,omitempty"`         // NE apices ≥ 3 m on the parcel
+	TreesTall     int                         `json:"trees_tall,omitempty"`     // NE apices ≥ 20 m
+	DeadFrac      float64                     `json:"dead_frac,omitempty"`      // NE dead+declining share of apices
+	V3            string                      `json:"v3,omitempty"`             // "" | ok | cold | error | off
+	History       *timberHistory              `json:"history,omitempty"`        // HOLZ-3 Hansen loss history of this plot
+	TookMs        int64                       `json:"took_ms"`
 }
 
 // standFacts gathers what we know about a parcel's stand without any
@@ -337,6 +341,13 @@ type standFacts struct {
 	Grid25   bool
 	HasLidar bool
 	Geometry json.RawMessage
+	// observed layer (NE cells): the measured stand itself
+	NE           bool
+	Species      map[string]int // NE species counts (top 4)
+	TreeN        int
+	TreesTall    int
+	Vitality     map[string]int
+	ForestLossYr int
 }
 
 func (s *Server) standFacts(ctx context.Context, kg, pid string, lon, lat float64) standFacts {
@@ -357,6 +368,22 @@ func (s *Server) standFacts(ctx context.Context, kg, pid string, lon, lat float6
 		} else if len(p.Fracs) > 0 {
 			f.TreeFrac = p.Fracs["tree"]
 		}
+	}
+	// NE cell row: every apex ≥ 3 m of the parcel is counted — canopy share,
+	// mean/max height, species and vitality are measured, not sampled. No
+	// need for the srtm /landscape sample (apices ≥ 20 m only) at all.
+	if ne := p.NE; ne != nil && ne.Cells > 0 {
+		f.NE, f.HasLidar = true, true
+		f.TreeFrac = ne.Canopy
+		f.TreeN, f.TreesTall = ne.TreeN, ne.TreesTall
+		f.Species, f.Vitality, f.ForestLossYr = ne.Species, ne.Vitality, ne.ForestLossYr
+		f.HMax = math.Max(ne.TreeHMaxM, ne.HMaxM)
+		if ne.HMeanM > 0 {
+			f.HMean = clampF(ne.HMeanM, 3, 38) // mean canopy height over the parcel's cells
+		} else if f.HMax > 0 {
+			f.HMean = clampF(f.HMax*0.72, 3, 38)
+		}
+		return f
 	}
 	bb := parcelBBox(p)
 	key := fmt.Sprintf("ls:v1:%.5f,%.5f,%.5f,%.5f:trees", bb.W, bb.S, bb.E, bb.N)
@@ -512,6 +539,9 @@ func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm flo
 	sf := s.standFacts(ctx, kg, pid, lon, lat)
 	if sf.HasLidar {
 		e.Source = "lidar"
+		if sf.NE {
+			e.Source = "ne"
+		}
 		treeFrac, elev, slope = sf.TreeFrac, sf.Elev, sf.Slope
 		hMean, hMax = sf.HMean, sf.HMax
 	}
@@ -550,6 +580,18 @@ func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm flo
 	e.Species["larch"] = conifer * larch
 	e.Species["pine"] = conifer * pine
 	e.Species["broadleaf"] = 1 - conifer
+	// NE: the observed species of the stand beat the elevation guess
+	if mix := neSpeciesMix(sf.Species); mix != nil {
+		e.Species = mix
+		conifer = mix["spruce_fir"] + mix["larch"] + mix["pine"]
+		e.SpeciesSource = "ne"
+	}
+	if sf.NE {
+		e.TreeN, e.TreesTall = sf.TreeN, sf.TreesTall
+		if n := sf.Vitality["dead"] + sf.Vitality["declining"]; n > 0 && sf.TreeN > 0 {
+			e.DeadFrac = math.Round(float64(n)/float64(sf.TreeN)*100) / 100
+		}
+	}
 
 	// 2. standing stock. Ertragstafel-ish: V/ha ≈ 0.9·h_mean^1.95 for a closed canopy
 	//    (h 15 → 175, 22 → 375, 27 → 560 Vfm/ha).
@@ -564,11 +606,19 @@ func (s *Server) estimateTimber(ctx context.Context, kg, pid string, areaSqm flo
 	}
 	e.V3 = "off" // no single-tree inventory in the data tiers; lidar apex heights + heuristic instead
 	e.History = <-histCh
+	if e.History == nil && sf.ForestLossYr > 0 {
+		// no Hansen answer, but the NE cells saw the loss themselves
+		e.History = &timberHistory{LastLossYear: sf.ForestLossYr, StockFactor: 1, Source: "ne-cells"}
+	}
 	if vfm == 0 {
 		vfm = 0.9 * math.Pow(clampF(hMean, 3, 40), 1.95) * canopyHa
 		// Lidar heights already see a young stand; the NS-56 default does not.
 		if e.History != nil && e.Source == "landuse" {
 			vfm *= e.History.StockFactor
+		}
+		// Dead / declining crowns carry no sawlog value: scale the stock down
+		if e.DeadFrac > 0 {
+			vfm *= 1 - 0.6*e.DeadFrac
 		}
 	}
 	e.HMean, e.HMax = math.Round(hMean*10)/10, math.Round(hMax*10)/10
@@ -741,4 +791,37 @@ func (s *Server) handleHarvestForest(w http.ResponseWriter, r *http.Request) {
 		"harvested_at": now, "efm": est.Efm, "net_eur": est.NetEur, "co2_t": est.CO2t,
 		"regrow_at": now.Add(time.Duration(forestStangenMin) * time.Minute),
 	})
+}
+
+// neSpeciesMix folds the NE species counts (spruce, fir, pine, larch, beech,
+// oak, …, conifer, broadleaf) into the four price classes; nil when unknown.
+func neSpeciesMix(sp map[string]int) map[string]float64 {
+	tot := 0
+	for k, n := range sp {
+		if k != "unknown" {
+			tot += n
+		}
+	}
+	if tot < 3 {
+		return nil
+	}
+	m := map[string]float64{"spruce_fir": 0, "larch": 0, "pine": 0, "broadleaf": 0}
+	for k, n := range sp {
+		v := float64(n) / float64(tot)
+		switch k {
+		case "spruce", "fir", "conifer":
+			m["spruce_fir"] += v
+		case "larch":
+			m["larch"] += v
+		case "pine":
+			m["pine"] += v
+		case "unknown":
+		default:
+			m["broadleaf"] += v
+		}
+	}
+	for k, v := range m {
+		m[k] = math.Round(v*100) / 100
+	}
+	return m
 }

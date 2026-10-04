@@ -77,7 +77,7 @@ G.parcelPolys        // parcel Features from /api/viewport (polygon geometry)
 G.parcels            // point Features synthesised from parcelPolys (same properties object)
 G.buildingFootprints // DKM NS-41 building polygons (footprint_id)
 G.landusePolys       // landuse polygons {landuse_code, area_sqm}
-G.lidarParcels[pid]  // per-parcel terrain from the cell row (elev, slope, aspect, dom, fracs)
+G.terrainParcels[pid]  // per-parcel terrain from the cell row (elev, slope, aspect, dom, fracs)
 G.ezIndex            // "kg_code-EZnnn" → [features]
 G.claimed, G.treasures, G.challenges
 G.kgsLoaded (Set), G.kgNames, G.terrainKGs, G.enhancedKGs

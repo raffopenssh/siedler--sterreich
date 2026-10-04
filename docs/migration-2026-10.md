@@ -23,7 +23,7 @@ Contracts kept identical where possible; the differences:
 
 * `GET /api/viewport?west&south&east&north` → `{parcels[], footprints[], landuse[], ready, truncated, retry_after_s?, notice, cells[], kgs[]}`.
   * Tiles **must be grid-aligned**: `west=i*0.02, east=(i+1)*0.02, south=j*0.02, north=(j+1)*0.02` (client helper `gridTiles(bbox)`), so client dedup, our 24 h `api_cache` key (`vp:<i>:<j>`), the prewarm planner and bevdirect's cells all agree. Non-aligned requests are accepted but not prewarmable.
-  * parcel props = bevdirect row (above) **plus** terrain enrichment from the srtm heightfield when grid25 exists: `elev_m, elev_min_m, elev_max_m, slope_deg, aspect (N..NW), dom_terrain, fracs{type:share}, tree_frac`. Client copies these into `G.lidarParcels[pid]` (same shape fetchEnhancedKG used to fill).
+  * parcel props = bevdirect row (above) **plus** terrain enrichment from the srtm heightfield when grid25 exists: `elev_m, elev_min_m, elev_max_m, slope_deg, aspect (N..NW), dom_terrain, fracs{type:share}, tree_frac`. Client copies these into `G.terrainParcels[pid]` (same shape fetchEnhancedKG used to fill).
   * footprints: `footprint_id` (= bevdirect `id`), rest as before.
   * landuse: `{code:"52", area_sqm, geometry}` — the former `/api/viewport-landuse` payload now rides along; `/api/viewport-landuse` still works (served from the same cached build).
   * `ready:false` ⇒ client re-fetches after `retry_after_s` (existing `loadTileResilient`).

@@ -58,6 +58,34 @@ type tParcel struct {
 	Dom      string // most frequent code
 	Bldg     int
 	Rank     int // habitat rank (0 = best-fitting code present), set per species
+	// observed layer (NE cells): what is really there, beyond the declared code
+	Snag  float64 // share of dead / declining crowns (standing deadwood → cavity nesters)
+	Water float64 // observed water share
+	Bonus float64 // per-species habitat bonus 0..1, set with Rank
+}
+
+// neHabitatCodes maps the observed cover groups of a parcel onto the BEV
+// codes the habitat table speaks: a declared Acker that is forest today is a
+// forest for the Auerhahn. Only clear shares count (≥ 25 %, water ≥ 8 %).
+func neHabitatCodes(ne *neParcel, codes map[string]bool) {
+	if ne == nil || ne.Cells == 0 {
+		return
+	}
+	cv := ne.Cover
+	if cv["wald"] >= 0.25 || ne.Canopy >= 0.4 {
+		codes["56"] = true
+	}
+	if cv["wasser"] >= 0.08 {
+		codes["59"] = true
+		codes["61"] = true
+	}
+	if cv["gruen"] >= 0.25 || cv["acker"] >= 0.25 {
+		codes["48"] = true
+	}
+	if cv["alpen"] >= 0.25 {
+		codes["87"] = true
+		codes["54"] = true
+	}
 }
 
 // fetchTreasureParcels collects parcels around (lon,lat) within ~radiusM
@@ -94,6 +122,17 @@ func (s *Server) fetchTreasureParcels(lon, lat, radiusM float64) []tParcel {
 		}
 		if p.Dom != "" {
 			p.Codes[p.Dom] = true
+		}
+		if ne := r.NE; ne != nil && ne.Cells > 0 {
+			neHabitatCodes(ne, p.Codes)
+			// an observed roof on an unbuilt parcel is still a roof: no chest under it
+			if p.Bldg == 0 && (ne.Cover["geb"] >= 0.1 || ne.StructTypes["roof"] > 0) {
+				p.Bldg = 1
+			}
+			p.Water = ne.Cover["wasser"]
+			if ne.TreeN >= 5 {
+				p.Snag = float64(ne.Vitality["dead"]+ne.Vitality["declining"]) / float64(ne.TreeN)
+			}
 		}
 		out = append(out, p)
 	}
@@ -207,6 +246,14 @@ func (s *Server) generateTreasuresOnce(ctx context.Context, sessionID string, lo
 			for _, p := range parcels {
 				if rk := eligible(p, h); rk >= 0 {
 					p.Rank = rk
+					// observed micro-habitat: standing deadwood for cavity nesters
+					// and small mammals, real water for the wet species
+					switch redListSpecies[i].Group {
+					case "bird", "mammal":
+						p.Bonus = math.Min(1, p.Snag*4)
+					case "amphibian", "dragonfly", "fish":
+						p.Bonus = math.Min(1, p.Water*5)
+					}
 					cands = append(cands, p)
 				}
 			}
@@ -262,6 +309,7 @@ func (s *Server) generateTreasuresOnce(ctx context.Context, sessionID string, lo
 			}
 			score += 0.35 * (1 - math.Min(1, math.Abs(d0-targetR)/radius)) // ring preference
 			score += 0.05 * math.Min(1, p.Area/20000)                      // bigger parcels are easier to spot
+			score += 0.15 * p.Bonus                                        // observed habitat (NE cells)
 			if score > bestScore {
 				bestScore, best = score, treasureSpot{p.Lon, p.Lat, p.ID}
 			}

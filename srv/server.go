@@ -989,9 +989,30 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 
 	// Tall-tree bonus: parcels containing lidar-confirmed landmark trees award extra XP
 	tallBonus, tallTrees := 0, 0
-	if req.TallTreeCount > 0 && req.TallTreeCount <= 10 && req.TallTreeMaxH > 0 && req.TallTreeMaxH <= 60 {
-		tallTrees = req.TallTreeCount
-		tallBonus = req.TallTreeCount*40 + int(req.TallTreeMaxH)
+	tallN, tallH := req.TallTreeCount, req.TallTreeMaxH
+	// NE cells: the parcel's measured stand is authoritative — every apex of
+	// the parcel is in the cell row, so the client's count is only a fallback
+	// for KGs without an observed layer.
+	if p, ok := s.lookupParcelCached(req.ParcelID, req.Lon, req.Lat); ok && p != nil && p.NE != nil && p.NE.Cells > 0 {
+		// Giants stay rare: a bonus needs a ≥ 28 m crown; 33 / 38 m count double / triple
+		// (trees_tall counts every apex ≥ 20 m — that is most of any forest).
+		tallN, tallH = 0, 0
+		if h := p.NE.TreeHMaxM; h >= 28 {
+			tallN, tallH = 1, h
+			if h >= 33 {
+				tallN++
+			}
+			if h >= 38 {
+				tallN++
+			}
+		}
+	}
+	if tallN > 0 && tallH > 0 && tallH <= 60 {
+		if tallN > 10 {
+			tallN = 10
+		}
+		tallTrees = tallN
+		tallBonus = tallN*40 + int(tallH)
 		if tallBonus > 300 {
 			tallBonus = 300
 		}

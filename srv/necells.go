@@ -1194,3 +1194,62 @@ func (s *Server) neKGSummary(kg string) map[string]any {
 	}
 	return out
 }
+
+// neKGGiants: every NE apex ≥ 25 m of a KG from our cached cells (tallest
+// first, ≤ limit), in the lidar-slim top_trees row shape. ok=false when no
+// cell of the KG is cached yet — the caller falls back to the srtm sample.
+func (s *Server) neKGGiants(kg string, limit int) ([]map[string]any, bool) {
+	a := admin().KGs[kg]
+	if a == nil {
+		return nil, false
+	}
+	type g struct {
+		h, lon, lat float64
+		broad       bool
+	}
+	var out []g
+	cells := 0
+	for _, c := range a.cells() {
+		ne := s.neCached(c)
+		if ne == nil {
+			continue
+		}
+		cells++
+		for t, ci := range ne.Trees.CellIndex {
+			if int(ci) >= len(ne.KG) || ne.KG[ci] != kg || t >= len(ne.Trees.HM) {
+				continue
+			}
+			h := ne.Trees.HM[t]
+			if h < 25 || h > 60 || t >= len(ne.Trees.Lon) || t >= len(ne.Trees.Lat) {
+				continue
+			}
+			broad := false
+			if t < len(ne.Trees.Species) {
+				switch neSpecies[ne.Trees.Species[t]] {
+				case "beech", "oak", "maple", "ash", "birch", "alder", "poplar", "willow", "fruit", "broadleaf":
+					broad = true
+				}
+			} else if t < len(ne.Trees.CrownM2) && ne.Trees.CrownM2[t] > 0 {
+				cd := 2 * math.Sqrt(ne.Trees.CrownM2[t]/math.Pi)
+				broad = cd < 40 && cd/h > 0.62
+			}
+			out = append(out, g{h, ne.Trees.Lon[t], ne.Trees.Lat[t], broad})
+		}
+	}
+	if cells == 0 {
+		return nil, false
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].h > out[j].h })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	rows := make([]map[string]any, 0, len(out))
+	for _, t := range out {
+		m := map[string]any{"height_m": math.Round(t.h*10) / 10, "lon": t.lon, "lat": t.lat}
+		if t.broad {
+			m["broad"] = 1
+		}
+		rows = append(rows, m)
+	}
+	return rows, true
+}
