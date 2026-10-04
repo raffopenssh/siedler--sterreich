@@ -2995,7 +2995,7 @@ function hillshade(lp) {
 // the Wassertropfen-Reise ever stutters. `invalidateBase()` marks data dirty.
 const BASE_PAD = 1.5, BASE_SLICE_MS = 6;
 let _base = null, _baseA = null, _baseAt = 0, _baseSig = '';   // displayed canvas + its anchor + data signature
-let _bb = null, _spare = null;                                 // build in progress, recycled canvas
+let _bb = null, _spare = null, _bbReal = null;                 // build in progress, recycled canvas, real camera while pumping
 let _camMovedAt = 0, _camLast = '';
 function baseSignature(W, H) {
   let conv = 0; for (const c of G.claimed) { if (c.converted_to) conv++; if (c.well_at) conv += 1000; }
@@ -3176,12 +3176,13 @@ function pumpBaseBuild(budgetMs) {
   if (!_bb) return false;
   const realGc = gc, cam = { lon: G.cam.lon, lat: G.cam.lat, zoom: G.cam.zoom };
   const a = _bb.anchor;
+  _bbReal = { lon: cam.lon, lat: cam.lat, zoom: cam.zoom, W: realGc.width, H: realGc.height };   // the real viewport, for loaders that must not fetch for the padding
   gc = { width: a.bw, height: a.bh, getBoundingClientRect: () => realGc.getBoundingClientRect(), classList: realGc.classList, style: realGc.style };
   G.cam.lon = a.lon; G.cam.lat = a.lat; G.cam.zoom = a.zoom;
   const t0 = performance.now(); let done = false;
   try { do { if (_bb.gen.next().done) { done = true; break; } } while (performance.now() - t0 < budgetMs); }
   catch (e) { console.error('base build failed', e); done = true; }
-  finally { gc = realGc; G.cam.lon = cam.lon; G.cam.lat = cam.lat; G.cam.zoom = cam.zoom; }
+  finally { gc = realGc; G.cam.lon = cam.lon; G.cam.lat = cam.lat; G.cam.zoom = cam.zoom; _bbReal = null; }
   if (done) { _spare = _base; _base = _bb.canvas; _baseA = _bb.anchor; _baseSig = _bb.sig; _baseAt = performance.now(); _bb = null; }
   return done;
 }
@@ -12608,57 +12609,155 @@ G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts =
 G.reliefOn = localStorage.getItem('reliefOn') !== '0';
 
 // ---- LID-4 hillshade tiles (WebMercator PNG, transparent = no data) ----
+// srtm-lidar-at budgets tile renders, so this loader is deliberately tender:
+//   - ≤ 8 requests in flight (TILEQ.max), the rest wait in a queue that is
+//     re-sorted by distance to the view centre and dropped once a tile leaves
+//     the viewport — only what the screen needs, when it needs it; no pyramid.
+//   - nothing is requested while the camera is moving (ease, drag, pinch,
+//     fly); cached tiles of the last settled zoom are drawn instead, new ones
+//     are asked for RELIEF_SETTLE_MS after the camera comes to rest.
+//   - z ≥ 12 only (reliefZoom); 429/503 + Retry-After pause the whole queue
+//     for that long, then exponential back-off (cap 30 s). Never a hot loop.
+//   - the proxy (srv/tiles.go) keeps every tile on disk for a year, so a
+//     tile costs upstream at most once per deployment.
 const RELIEF_BASE = '/api/tiles/hillshade/';   // server proxy (srv/tiles.go)
-const _relief = new Map();          // "z/x/y" → {img|null(empty), canvas, at}
+const _relief = new Map();          // "z/x/y" → {z,x,y, state:idle|queued|loading|data|empty|error, canvas, at, retryAt}
 const RELIEF_MAX_TILES = 400;
-function reliefZoom() { return Math.min(15, Math.max(10, Math.round(G.cam.zoom + 1))); }
+const RELIEF_SETTLE_MS = 220;
+const TILEQ = { max: 8, inflight: 0, queue: [], pauseUntil: 0, backoff: 0, timer: null, stats: { ok: 0, empty: 0, throttled: 0, errors: 0, dropped: 0 } };
+function reliefZoomOf(zoom) { return Math.min(15, Math.max(12, Math.round(zoom + 1))); }
+function reliefZoom() { return reliefZoomOf(G.cam.zoom); }
 function lonToTx(lon, z) { return (lon + 180) / 360 * Math.pow(2, z); }
 function latToTy(lat, z) { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z); }
 function txToLon(x, z) { return x / Math.pow(2, z) * 360 - 180; }
 function tyToLat(y, z) { const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z); return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); }
-function reliefTile(z, x, y) {
+/** The camera + canvas size the *user* sees — during a padded base-layer build
+ *  G.cam/gc are swapped to the 1.5× anchor, and we must not fetch tiles for the padding. */
+function realView() { return _bbReal || { lon: G.cam.lon, lat: G.cam.lat, zoom: G.cam.zoom, W: gc.width, H: gc.height }; }
+/** Tile range (inclusive) at zoom z. `real` = the visible viewport (what we may fetch),
+ *  else the current drawing context (padded base canvas; cached tiles only). */
+function reliefRange(z, real) {
+  let b, cl, ct;
+  if (real) {
+    const v = realView(), s = Math.pow(2, v.zoom - 14) * 25000, hw = v.W / s / 2, hh = v.H / s / 2 / 1.35;
+    b = { w: v.lon - hw, e: v.lon + hw, s: v.lat - hh, n: v.lat + hh }; cl = v.lon; ct = v.lat;
+  } else { b = viewBounds(); cl = G.cam.lon; ct = G.cam.lat; }
+  return { z, x0: Math.floor(lonToTx(b.w, z)), x1: Math.floor(lonToTx(b.e, z)), y0: Math.floor(latToTy(b.n, z)), y1: Math.floor(latToTy(b.s, z)),
+    cx: lonToTx(cl, z), cy: latToTy(ct, z) };
+}
+function tileNeeded(t, r) { return t.z === r.z && t.x >= r.x0 && t.x <= r.x1 && t.y >= r.y0 && t.y <= r.y1; }
+/** Look up (never fetch) a tile; `want` = enqueue it when unknown. */
+function reliefTile(z, x, y, want) {
   const k = z + '/' + x + '/' + y;
   let t = _relief.get(k);
-  if (t) { t.at = performance.now(); return t; }
-  t = { img: null, canvas: null, at: performance.now(), loading: true };
-  _relief.set(k, t);
-  if (_relief.size > RELIEF_MAX_TILES) {   // evict the 50 least recently used
-    [..._relief.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, 50).forEach(e => _relief.delete(e[0]));
+  if (!t) {
+    t = { z, x, y, k, state: 'idle', canvas: null, at: 0, retryAt: 0 };
+    _relief.set(k, t);
+    if (_relief.size > RELIEF_MAX_TILES) {   // evict the 50 least recently used idle/finished tiles
+      [..._relief.entries()].filter(e => e[1].state !== 'loading' && e[1].state !== 'queued').sort((a, b) => a[1].at - b[1].at).slice(0, 50).forEach(e => _relief.delete(e[0]));
+    }
   }
-  const img = new Image(); img.crossOrigin = 'anonymous';
-  img.onload = () => {
-    t.loading = false;
-    // Re-centre: upstream flat ground ≈ grey 180. Shift to 128 so an 'overlay'
-    // composite is neutral on flat land, darkens slopes facing away from the
-    // NW sun and lightens lit slopes. Slight gain so 25 m relief still reads.
-    const c = document.createElement('canvas'); c.width = c.height = 256;
-    const cx = c.getContext('2d'); cx.drawImage(img, 0, 0);
-    try {
-      const id = cx.getImageData(0, 0, 256, 256), d = id.data;
-      let any = false;
-      for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] === 0) continue; any = true;
-        // gentle: shadows never deeper than -40, lit slopes up to +60
-        const v = Math.max(88, Math.min(188, 128 + (d[i] - 180) * 1.0));
-        d[i] = d[i + 1] = d[i + 2] = v;
-      }
-      if (!any) { t.canvas = null; return; }
-      cx.putImageData(id, 0, 0);
-    } catch (e) { /* tainted (no CORS) → draw raw */ }
-    t.canvas = c; invalidateBase(); render();
-  };
-  img.onerror = () => { t.loading = false; t.canvas = null; };   // 204 no-data / offline
-  img.src = RELIEF_BASE + k + '.png';
+  t.at = performance.now();
+  if (want && (t.state === 'idle' || (t.state === 'error' && t.at > t.retryAt))) { t.state = 'queued'; TILEQ.queue.push(t); }
   return t;
+}
+function tilePump() {
+  const now = performance.now();
+  if (now < TILEQ.pauseUntil) {
+    if (!TILEQ.timer) TILEQ.timer = setTimeout(() => { TILEQ.timer = null; tilePump(); }, TILEQ.pauseUntil - now + 20);
+    return;
+  }
+  if (!TILEQ.queue.length) return;
+  const r = reliefRange(reliefZoomOf(realView().zoom), true);
+  // drop what the viewport no longer needs, fetch centre-first
+  TILEQ.queue = TILEQ.queue.filter(t => { if (tileNeeded(t, r)) return true; t.state = 'idle'; TILEQ.stats.dropped++; return false; });
+  TILEQ.queue.sort((a, b) => (Math.hypot(a.x + 0.5 - r.cx, a.y + 0.5 - r.cy)) - (Math.hypot(b.x + 0.5 - r.cx, b.y + 0.5 - r.cy)));
+  while (TILEQ.inflight < TILEQ.max && TILEQ.queue.length) fetchReliefTile(TILEQ.queue.shift());
+}
+async function fetchReliefTile(t) {
+  t.state = 'loading'; TILEQ.inflight++;
+  try {
+    const res = await fetch(RELIEF_BASE + t.k + '.png');
+    if (res.status === 200) {
+      const blob = await res.blob();
+      await decodeReliefTile(t, blob);
+      TILEQ.backoff = 0; TILEQ.stats.ok++;
+    } else if (res.status === 204) {
+      t.state = 'empty'; t.canvas = null; TILEQ.backoff = 0; TILEQ.stats.empty++;
+    } else if (res.status === 429 || res.status === 503) {
+      // Retry-After seconds, else exponential from 1 s; cap 30 s. Pause the queue, requeue the tile.
+      const ra = parseInt(res.headers.get('Retry-After') || '', 10);
+      let wait = Math.max(1, TILEQ.backoff * 2 || 1, isNaN(ra) ? 0 : ra);
+      wait = Math.min(30, wait); TILEQ.backoff = wait;
+      TILEQ.pauseUntil = performance.now() + wait * 1000;
+      TILEQ.stats.throttled++;
+      t.state = 'idle';
+    } else {
+      t.state = 'error'; t.retryAt = performance.now() + 60000; TILEQ.stats.errors++;
+    }
+  } catch (e) {
+    t.state = 'error'; t.retryAt = performance.now() + 15000; TILEQ.stats.errors++;
+  } finally {
+    TILEQ.inflight--;
+    tilePump();
+  }
+}
+function decodeReliefTile(t, blob) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      // Re-centre: upstream flat ground ≈ grey 180. Shift to 128 so an 'overlay'
+      // composite is neutral on flat land, darkens slopes facing away from the
+      // NW sun and lightens lit slopes. Slight gain so 25 m relief still reads.
+      const c = document.createElement('canvas'); c.width = c.height = 256;
+      const cx = c.getContext('2d'); cx.drawImage(img, 0, 0);
+      try {
+        const id = cx.getImageData(0, 0, 256, 256), d = id.data;
+        let any = false;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] === 0) continue; any = true;
+          // gentle: shadows never deeper than -40, lit slopes up to +60
+          const v = Math.max(88, Math.min(188, 128 + (d[i] - 180) * 1.0));
+          d[i] = d[i + 1] = d[i + 2] = v;
+        }
+        if (!any) { t.canvas = null; t.state = 'empty'; resolve(); return; }
+        cx.putImageData(id, 0, 0);
+      } catch (e) { /* tainted → draw raw */ }
+      t.canvas = c; t.state = 'data'; invalidateBase(); render(); resolve();
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); t.canvas = null; t.state = 'empty'; resolve(); };
+    img.src = url;
+  });
+}
+// camera-at-rest detection for the tile loader
+let _reliefCam = { lon: 0, lat: 0, zoom: 0, movedAt: 0 }, _reliefSettleTimer = null, _reliefLastZ = 0, _reliefLastWave = 0;
+const RELIEF_WAVE_MS = 1500;
+function reliefCamSettled() {
+  const c = realView(), now = performance.now();
+  if (c.lon !== _reliefCam.lon || c.lat !== _reliefCam.lat || c.zoom !== _reliefCam.zoom) {
+    _reliefCam.lon = c.lon; _reliefCam.lat = c.lat; _reliefCam.zoom = c.zoom; _reliefCam.movedAt = now;
+  }
+  const moving = (now - _reliefCam.movedAt) < RELIEF_SETTLE_MS || ZOOM.target != null || (G.drag && G.drag.active) || !!_animFrame || (typeof flyAnim !== 'undefined' && !!flyAnim);
+  if (moving && !_reliefSettleTimer) _reliefSettleTimer = setTimeout(() => { _reliefSettleTimer = null; invalidateBase(); render(); }, RELIEF_SETTLE_MS + 30);
+  // Sustained motion (Wassertropfen-Reise follows the droplet for up to 150 s, long drags):
+  // one gentle wave per RELIEF_WAVE_MS for the tiles the viewport needs right now,
+  // so the relief keeps up without turning every frame into a fetch.
+  if (moving && now - _reliefLastWave > RELIEF_WAVE_MS && (now - _reliefCam.movedAt) < RELIEF_SETTLE_MS) { _reliefLastWave = now; return true; }
+  if (!moving) _reliefLastWave = now;
+  return !moving;
 }
 /** Draws the real relief under the sprites. Returns true when at least one
  *  tile with data covered the view (then the per-parcel slope tint is skipped). */
 function drawRelief(ctx) {
   if (!G.reliefOn || G.cam.zoom < 12.5) return false;
-  const z = reliefZoom(), b = viewBounds();
-  const x0 = Math.floor(lonToTx(b.w, z)), x1 = Math.floor(lonToTx(b.e, z));
-  const y0 = Math.floor(latToTy(b.n, z)), y1 = Math.floor(latToTy(b.s, z));
-  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 48) return false;
+  const settled = reliefCamSettled();
+  // in motion: show what we have from the last settled zoom instead of asking for new tiles
+  const z = settled || !_reliefLastZ ? reliefZoomOf(realView().zoom) : _reliefLastZ;
+  if (settled) _reliefLastZ = z;
+  const r = reliefRange(z);                       // what this (possibly padded) canvas shows
+  const rv = settled ? reliefRange(z, true) : null; // what the user actually sees → the only tiles we fetch
+  if ((r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1) > 110) return false;
   let drew = false;
   // Assemble the tiles on one viewport-sized scratch canvas first, so the blur
   // that hides the 25 m cells at high zoom doesn't create seams at tile edges.
@@ -12666,14 +12765,15 @@ function drawRelief(ctx) {
   if (!_reliefScratch || _reliefScratch.width !== W || _reliefScratch.height !== H) { _reliefScratch = document.createElement('canvas'); _reliefScratch.width = W; _reliefScratch.height = H; }
   const sc = _reliefScratch.getContext('2d');
   sc.clearRect(0, 0, W, H); sc.imageSmoothingEnabled = true;
-  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-    const t = reliefTile(z, x, y);
+  for (let x = r.x0; x <= r.x1; x++) for (let y = r.y0; y <= r.y1; y++) {
+    const t = reliefTile(z, x, y, rv && x >= rv.x0 && x <= rv.x1 && y >= rv.y0 && y <= rv.y1);
     if (!t.canvas) continue;
     const [sx0, sy0] = toScreen(txToLon(x, z), tyToLat(y, z));
     const [sx1, sy1] = toScreen(txToLon(x + 1, z), tyToLat(y + 1, z));
     sc.drawImage(t.canvas, sx0, sy0, sx1 - sx0 + 0.5, sy1 - sy0 + 0.5);
     drew = true;
   }
+  if (settled) tilePump();
   if (!drew) return false;
   // 25 m DTM cell in screen px → blur radius; strength fades as you zoom in,
   // where parcel-scale detail (fields, trees, buildings) should dominate.
@@ -13071,8 +13171,8 @@ Object.assign(window.DEV, {
   /** Relief (hillshade) on/off, or stats. */
   relief(on) {
     if (on != null) { G.reliefOn = !!on; localStorage.setItem('reliefOn', on ? '1' : '0'); invalidateBase(); render(); }
-    let data = 0, empty = 0, loading = 0; for (const t of _relief.values()) { if (t.loading) loading++; else if (t.canvas) data++; else empty++; }
-    return { on: G.reliefOn, zoom: reliefZoom(), tiles: _relief.size, data, empty, loading, active: _reliefActive };
+    const n = {}; for (const t of _relief.values()) n[t.state] = (n[t.state] || 0) + 1;
+    return { on: G.reliefOn, zoom: reliefZoom(), tiles: _relief.size, states: n, inflight: TILEQ.inflight, queued: TILEQ.queue.length, pausedMs: Math.max(0, Math.round(TILEQ.pauseUntil - performance.now())), stats: TILEQ.stats, active: _reliefActive };
   },
   /** Measured tree apices: counts, giants, tallest, per-parcel sample. */
   apex(pid) {

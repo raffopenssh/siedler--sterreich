@@ -57,7 +57,7 @@ timeout, per-host circuit breaker). Never `http.Get`; never set
 | **landscape** | **srtm-lidar-at** `https://srtm-lidar-at.exe.xyz/api/v1` (`lidarAPI`, public tier: bbox/point/KG-code keyed only) | `/landscape?bbox`, `/trees/bbox`, `/buildings/bbox`, `/landmarks/bbox`, `/heightfield?bbox&cell=25&landcover=1` (404 where no grid25), `/kgs`, `/kg/{code}`, `/tiles/hillshade/{z}/{x}/{y}.png`. **No parcel or footprint ids** — the client assigns by point-in-parcel / centroid grid. |
 | **admin table** | `srv/data/admin.json.gz` (embedded; BEV VGD 1:50 000, CC BY 4.0) | all 7 850 KGs: code, name, Gemeinde, district, state, bbox, area. Drives `/api/kg-geo/{kg}`, KG neighbours, the warm plan, `/api/lucky`, `kgsAlongPath`. |
 | **KG universe check** (`srv/kguniverse.go`) | umfeld `GET /api/v1/kgs` (one gzipped list, ETag/`X-KG-Universe-Hash`, 304 on If-None-Match) | **Contract: `kg_count = 7850`, `universe_hash = sha256(join(sorted(kg_code),"\n"))` hex.** `kgUniverseBoot()` (sync in `Serve`) computes our hash from the admin table + loads the mirror `data/kg-universe.json.gz` (seed `data/kg-universe.seed.json.gz` committed); `kgUniverseInit` fetches at startup and revalidates hourly. umfeld ↔ ours ↔ srtm (`noteSrtmUniverseHash`) must agree, else `slog.Error`, one e-mail to the owner per fingerprint (`sendOwnerMail`, `SIEDLER_ALERT_MAIL`), `kg_universe.alert` in `/api/metrics` + `/api/warm/status`, and `kgUniverseOK()` pauses the daily warm plan + `neAdoptKGs`. KG codes are always 5-digit strings with leading zero. |
-| **srtm KG registry** (`srv/kgregistry.go`) | srtm `/api/v1/kgs?processed_only=0&limit=5000` (2 pages = all 7 850) | mirrored to `data/srtm-kgs.json.gz` (seed `data/srtm-kgs.seed.json.gz`), used when srtm is down (`source:"local-copy"`, 5 min TTL instead of 30). `/api/enhanced-kgs` (`enhanced-kgs:v5`) keeps `kgs[]` = **full v2.4 rows only** (`v2.4-partial`/v2.3/grid25-only are *not* enhanced; counts of those in `other{}`) — this is what the picker glows on, the "Enhanced Gelände" chip, `/api/lucky` and the daily warm plan key on and adds `kg_count, universe_hash, registry_hash, source, fetched_at, upstream_etag`; weak `ETag` = registry_hash, `X-Registry-Source`. Hashes are recomputed on read, never trusted from disk. Only a live answer purges derived caches / adopts v2.4. |
+| **srtm KG registry** (`srv/kgregistry.go`) | hourly: srtm `/api/v1/kgs?fields=codes&processed_only=0` + `/llm/manifest.json`, both with `If-None-Match` (304 = unchanged); the full rows `/kgs?processed_only=0&limit=5000` (2 pages = all 7 850) only when the universe ETag or the manifest ETag moved | mirrored to `data/srtm-kgs.json.gz` (seed `data/srtm-kgs.seed.json.gz`), used when srtm is down (`source:"local-copy"`, 5 min TTL instead of 30). `/api/enhanced-kgs` (`enhanced-kgs:v5`) keeps `kgs[]` = **full v2.4 rows only** (`v2.4-partial`/v2.3/grid25-only are *not* enhanced; counts of those in `other{}`) — this is what the picker glows on, the "Enhanced Gelände" chip, `/api/lucky` and the daily warm plan key on and adds `kg_count, universe_hash, registry_hash, source, fetched_at, upstream_etag`; weak `ETag` = registry_hash, `X-Registry-Source`. Hashes are recomputed on read, never trusted from disk. Only a live answer purges derived caches / adopts v2.4. |
 | unchanged siblings | holzeinschlag-at, farm-subsidies-austria, groundwater-at | timber prices/history, INVEKOS Schläge/Hofstellen, water. farm host has a 3-slot semaphore (`hostSlots`; busy → 503 `status:"busy"` + `X-Upstream: busy`). |
 
 Privacy: the DB stores **no cadastre ids** — claims/offers/harvests/quest targets
@@ -354,9 +354,25 @@ whenever game.js/style.css change.** Gzip middleware level 5.
   (centroid grid, `findLidarBuilding`); storeys = `mean_height_m/2.9`.
 - `/api/landmarks` → `{landmarks:[{type,lon,lat,height_m}]}` (landmark sprites).
 - Relief: `drawRelief()` composites hillshade tiles via `/api/tiles/hillshade/…`
-  (`srv/tiles.go`, 30 d cache, 204 = no data) `overlay`, deliberately faint
+  (`srv/tiles.go`, 204 = no data) `overlay`, deliberately faint
   (α 0.34 → 0.10); while active the per-parcel slope/aspect tint is skipped.
-  `DEV.relief(bool)`.
+  `DEV.relief(bool)` (stats: states, inflight, queued, pausedMs, throttled).
+  **srtm tile budget** (renders are rate-limited upstream: 25/s, burst 150;
+  z10–11 most expensive): proxy keeps ≤ 8 upstream requests in flight
+  (`tileSlots`), serves z < 12 as 204, stores tiles in api_cache for 1 y
+  (`hs:v2:` JSON `{etag,b64,fresh_until}`) and revalidates with
+  `If-None-Match` after 30 d (304 = free); 429/503 + `Retry-After` pause the
+  gate (exponential, cap 30 s) and are relayed to the browser as **503 +
+  `Retry-After` + `X-Upstream: busy`**, never cached. The breaker treats a
+  503 *with* Retry-After as busy, not down, and probes srtm via
+  `/api/v1/health`. Client `TILEQ`: ≤ 8 in flight, centre-first queue, drops
+  tiles that left the **real** viewport (`realView()` — the padded 1.5× base
+  canvas only draws cached tiles, `_bbReal`), fetches nothing while the camera
+  moves (`reliefCamSettled`, 220 ms; sustained motion such as the
+  Wassertropfen-Reise gets one wave per 1.5 s), honours Retry-After with
+  back-off. `/api/metrics` → `tiles{}` (upstream hit/render, 304, throttled).
+  xbrowser turns relief off after the game opens and only exercises it in the
+  `relief` scene.
 - Per-parcel fill prefers `dom_terrain` (`DOM_TERRAIN`, `IMPERVIOUS_DOM` fallback)
   over cadastre landuse. Elevation tint ≥ z15, slope hatching ≥ z16.5.
 - Giant trees: hidden until first treasure (`G.tallUnlocked`, `treasures_found`

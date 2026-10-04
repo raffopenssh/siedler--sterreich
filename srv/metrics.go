@@ -369,6 +369,7 @@ func (s *Server) metricsSnapshot(fresh bool) map[string]any {
 		"routes":         routes,
 		"cache":          cacheOut,
 		"bevdirect":      metrics.bevHealth(),
+		"tiles":          tileMetrics(),
 		"warm":           s.warmStatusMap(),
 		"kg_universe":    kgUniverseStatus(),
 		"api_cache":      s.apiCacheStats(fresh),

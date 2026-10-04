@@ -128,6 +128,9 @@ for (const form of FORMS) for (const name of ENGINES) {
   try {
     await page.waitForFunction(() => typeof G !== 'undefined' && G.session && document.getElementById('screen-game').classList.contains('active'), null, { timeout: 120000 });
     await page.evaluate(() => DEV.idle(20000));
+    // Be tender with srtm-lidar-at's tile budget: the hillshade overlay is only
+    // exercised in the dedicated 'relief' scene, not on every zoom/pan scene.
+    await page.evaluate(() => DEV.relief && DEV.relief(false));
   } catch (e) { console.log(tag, 'game did not open:', e.message.slice(0, 200)); }
   for (const sc of SCENES) await run(sc);
   await browser.close();

@@ -113,7 +113,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		all = append(all, e)
 	}
 	nv24 := len(all)
-	ttl := 30 * time.Minute
+	ttl := 60 * time.Minute // srtm contract: poll the KG universe at most hourly
 	if source == "local-copy" {
 		ttl = 5 * time.Minute // retry srtm soon
 	} else {

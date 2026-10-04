@@ -2,6 +2,7 @@ package srv
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -121,6 +122,32 @@ func (b *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	b.mu.Unlock()
 
+	if isProbe {
+		if hu := breakerHealthURL(host); hu != "" {
+			// Siblings with a cheap liveness endpoint are probed there (~2 ms)
+			// instead of replaying the caller's (possibly expensive) request.
+			ok := b.healthOK(hu)
+			b.mu.Lock()
+			h.probing = false
+			if ok {
+				if !h.downSince.IsZero() {
+					log.Printf("breaker %s: recovered after %s", serviceLabel(host), time.Since(h.downSince).Round(time.Second))
+				}
+				*h = breakerHost{}
+				b.mu.Unlock()
+				isProbe = false // closed: the real request goes through normally
+			} else {
+				if h.opens < 10 {
+					h.opens++
+				}
+				h.nextProbe = time.Now().Add(b.backoff(h))
+				ra := int(b.backoff(h).Seconds()) + 1
+				b.mu.Unlock()
+				return breakerResponse(req, host, ra), nil
+			}
+		}
+	}
+
 	resp, err := b.base.RoundTrip(req)
 
 	failed := false
@@ -130,7 +157,11 @@ func (b *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			failed, reason = true, err.Error()
 		}
 	} else if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
-		failed, reason = true, "HTTP "+strconv.Itoa(resp.StatusCode)
+		// A 503 *with* Retry-After is a sibling saying "busy, come back in n s"
+		// (srtm tile renderer, farm host slots) — load shedding, not an outage.
+		if !(resp.StatusCode == 503 && resp.Header.Get("Retry-After") != "") {
+			failed, reason = true, "HTTP "+strconv.Itoa(resp.StatusCode)
+		}
 	}
 
 	b.mu.Lock()
@@ -162,6 +193,28 @@ func (b *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		log.Printf("breaker %s: OPEN, next probe in %s (%s)", serviceLabel(host), b.backoff(h), reason)
 	}
 	return resp, err
+}
+
+// breakerHealthURL: the liveness probe to use while a host's breaker is open
+// ("" = replay the caller's request as the probe).
+func breakerHealthURL(host string) string {
+	if host == hostOf(lidarAPI) {
+		return "https://" + host + "/api/v1/health" // fast (~2 ms); never / or a tile
+	}
+	return ""
+}
+
+func (b *breakerTransport) healthOK(u string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	resp, err := b.base.RoundTrip(req)
+	if err != nil {
+		return false
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	resp.Body.Close()
+	return resp.StatusCode < 500
 }
 
 func breakerResponse(req *http.Request, host string, retryAfter int) *http.Response {

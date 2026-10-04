@@ -40,7 +40,9 @@ export const SCENES = [
   { id: 'game-z14.5', title: 'Game · z14.5', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 14.5), S) },
   { id: 'game-z18', title: 'Game · z18 detail', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 18), S) },
   { id: 'game-z20', title: 'Game · z20 max', run: async ({ page, S }) => ev(page, s => DEV.goto(s.lon, s.lat, 20), S) },
-  { id: 'relief', title: 'Relief / hillshade on', run: async ({ page, S }) => { await ev(page, s => DEV.goto(s.lon, s.lat, 15), S); await ev(page, () => DEV.relief && DEV.relief(true)); await settle(page, 2500); } },
+  // The only scene with hillshade tiles on (srtm render budget). Waits for the
+  // ≤ 8-in-flight tile queue to drain instead of a fixed pause.
+  { id: 'relief', title: 'Relief / hillshade on', run: async ({ page, S }) => { await ev(page, s => DEV.goto(s.lon, s.lat, 15), S); await ev(page, () => DEV.relief && DEV.relief(true)); await settle(page, 400); try { await page.waitForFunction(() => { const r = DEV.relief(); return r.queued === 0 && r.inflight === 0 && r.pausedMs === 0; }, null, { timeout: 20000 }); } catch {} await settle(page, 600); return ev(page, () => DEV.relief()); } },
   { id: 'relief-off', title: 'Relief off, N2K off', run: async ({ page }) => { await ev(page, () => { DEV.relief && DEV.relief(false); DEV.n2k(false); }); await settle(page, 500); } },
   { id: 'n2k-on', title: 'Natura 2000 + Wasserschutz overlay', run: async ({ page }) => { await ev(page, () => DEV.n2k(true)); await settle(page, 800); } },
   // NE cells (srtm v2.4 observed layer) — only in processed KGs; Kohlschwarz 63330 is one.
