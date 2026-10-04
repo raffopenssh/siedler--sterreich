@@ -7024,8 +7024,8 @@ function drawForestSprites(ctx, claimMap) {
 
   const treePolys = G.parcelPolys.map(f => ({ f, style: getTreeStyle(f) })).filter(x => x.style);
   // NE mode: in cells where srtm v2.4 gave us every apex, the measured stand
-  // replaces the procedural filler on natural stands (z ≥ 15; below that the
-  // sprites are symbols anyway and the filler keeps the forest readable).
+  // replaces the procedural filler on natural stands at every zoom
+  // (drawNEApices thins by height + per-cell cap as the map zooms out).
   const neMode = neApexMode();
   const NE_REAL = { forest: 1, plantation: 1, krummholz: 1, dead: 1 };
 
@@ -7090,6 +7090,9 @@ function drawForestSprites(ctx, claimMap) {
       const want = Math.min(260, Math.floor(pxArea / 1400));
       if (want > treeCount) treeCount = want;
     }
+    // Below z15 the sprites keep their pixel size while the parcel shrinks:
+    // thin the filler so zooming out never shows *more* trees than zooming in.
+    if (style !== 'orchard' && G.cam.zoom < 15) treeCount = Math.max(1, Math.round(treeCount * fillerZoomMul()));
     // Scale by lidar-measured canopy fraction (skip 'reforested' — that's a
     // game-state look, not a measured natural stand). Always keep ≥1 tree.
     if (style !== 'reforested' && densMul < 1) {
@@ -7154,7 +7157,14 @@ function drawForestSprites(ctx, claimMap) {
 
 // ---- NE apices: the whole measured stand, real position, real crown size ----
 /** NE apex rendering is on at z ≥ 15 once any NE tree cell has arrived. */
-function neApexMode() { return G.cam.zoom >= 15 && G.neTreeCells.size > 0; }
+/** NE mode: wherever srtm v2.4 gave us every apex, the measured stand replaces the
+ *  procedural filler at *every* zoom — otherwise zooming out from z15 to z14 swapped
+ *  ~500 real trees for ~1500 invented ones (more trees the further you zoom out). */
+function neApexMode() { return G.neTreeCells.size > 0; }
+/** Minimum apex height drawn at this zoom: only the dominant trees as the map becomes a symbol. */
+function neApexMinH() { const z = G.cam.zoom; return z < 14 ? 18 : z < 15 ? 14 : z < 16 ? 10 : z < 17 ? 6 : 4; }
+/** Procedural filler density factor: fixed-pixel sprites must thin as the parcel shrinks on screen. */
+function fillerZoomMul() { return Math.max(0.25, Math.min(1, Math.pow(2, G.cam.zoom - 15))); }
 /** Does this parcel lie in a cell whose apices we hold? (centroid cell; cached on the feature) */
 function parcelInNECell(f) {
   if (f._neCell === undefined) { const [lon, lat] = featureLonLat(f); f._neCell = cellOf(lon, lat).key; }
@@ -7198,7 +7208,9 @@ function neApexScale(t) {
     const crown = t.crown > 0 ? t.crown : Math.max(3, t.h * 0.45);
     return Math.max(0.6, Math.min(3.2, crown * pxPerMetre() / 19));
   }
-  return Math.max(0.6, Math.min(1.4, 0.45 + t.h / 30));
+  // Symbol scale below z16; shrinks further below z15 so a thinned stand stays legible.
+  const zm = Math.max(0.5, Math.min(1, Math.pow(2, (G.cam.zoom - 15) * 0.5)));
+  return Math.max(0.5, Math.min(1.4, (0.45 + t.h / 30) * zm));
 }
 /** Every NE apex in view (≥ 10 m below z16, ≥ 6 m below z17, all ≥ 4 m at street level),
  *  tallest first, under a per-build sprite budget.
@@ -7234,7 +7246,7 @@ function drawNEApices(ctx) {
   const perCellBudget = neApexBudget() / cellsInView;
   const perCellCap = Math.min(perCellBudget, cellPx / 90);
   let drawn = 0;
-  const minH = G.cam.zoom < 16 ? 10 : G.cam.zoom < 17 ? 6 : 4;
+  const minH = neApexMinH();
   // Draw back-to-front (north first) so southern canopies overlap northern trunks.
   const rows = [];
   for (const arr of lists) {
