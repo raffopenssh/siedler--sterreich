@@ -34,7 +34,7 @@ const (
 	warmDailyKGs   = 100
 	warmPatches    = 20 // 20 destinations a day → 20 lucky players land in 20 places
 	warmPatchSize  = warmDailyKGs / warmPatches
-	warmPlanVer    = "v3"
+	warmPlanVer    = "v4"
 	warmCellPause  = 800 * time.Millisecond
 	warmFreshGuard = 2 * time.Hour // don't re-warm what is still fresh for this long
 )
@@ -396,7 +396,23 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 				}
 			}
 		}
-		sort.Strings(first)
+		// Densest enhanced neighbourhood first: the biggest cluster a
+		// Gemeinde's KGs sit in (luckycluster.go), ties by code — so the
+		// day's early patches build contiguous enhanced blocks.
+		size := map[string]int{}
+		for _, code := range first {
+			for _, kg := range adm.Gemeinde[code].KGs {
+				if n := enhancedClusterSize(kg, enhKG); n > size[code] {
+					size[code] = n
+				}
+			}
+		}
+		sort.Slice(first, func(i, j int) bool {
+			if size[first[i]] != size[first[j]] {
+				return size[first[i]] > size[first[j]]
+			}
+			return first[i] < first[j]
+		})
 		for _, c := range seeds {
 			if !seen[c] {
 				rest = append(rest, c)
@@ -437,7 +453,7 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 		if allFresh {
 			continue // already warm (or taken) — pick a different destination
 		}
-		patch := s.growPatch(seed, used, fresh)
+		patch := s.growPatch(seed, used, fresh, enhKG)
 		if len(patch) == 0 {
 			continue
 		}
@@ -455,7 +471,7 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 // growPatch: the seed Gemeinde's KGs, then BFS over KG adjacency (enhanced
 // or not — roaming across the border is fine, only the spawn must be
 // enhanced) until warmPatchSize KGs, skipping already-fresh ones.
-func (s *Server) growPatch(seed string, used, fresh map[string]bool) []string {
+func (s *Server) growPatch(seed string, used, fresh, enhanced map[string]bool) []string {
 	adm := admin()
 	g := adm.Gemeinde[seed]
 	var out []string
@@ -470,14 +486,25 @@ func (s *Server) growPatch(seed string, used, fresh map[string]bool) []string {
 		if !fresh[kg] {
 			out = append(out, kg)
 		}
+		// Enhanced neighbours first so the patch becomes a contiguous
+		// enhanced block (a lucky spawn in its middle stays enhanced when
+		// the player pans); plain neighbours fill the rest.
+		var enh, plain []string
 		for i, nb := range adm.neighbours(kg, 0.001) {
 			if i >= 8 {
 				break
 			}
-			if !used[nb.KG] {
-				queue = append(queue, nb.KG)
+			if used[nb.KG] {
+				continue
+			}
+			if enhanced[nb.KG] {
+				enh = append(enh, nb.KG)
+			} else {
+				plain = append(plain, nb.KG)
 			}
 		}
+		queue = append(queue, enh...)
+		queue = append(queue, plain...)
 	}
 	return out
 }
@@ -556,6 +583,10 @@ type luckyPick struct {
 	WarmKGs      int      `json:"warm_kgs"`
 	KGs          []string `json:"kgs"`
 	Pool         int      `json:"pool"`
+	SpawnKG      string   `json:"spawn_kg,omitempty"`
+	ClusterKGs   int      `json:"cluster_kgs,omitempty"`   // warm+enhanced KGs within ~1.5 km of the spawn
+	ClusterTotal int      `json:"cluster_total,omitempty"` // all KGs within that box
+	ClusterShare float64  `json:"cluster_share,omitempty"`
 }
 
 func (s *Server) handleLucky(w http.ResponseWriter, r *http.Request) {
@@ -581,6 +612,14 @@ func (s *Server) luckyPick() luckyPick {
 	for kg := range fresh {
 		if len(enhKG) == 0 || enhKG[kg] {
 			playable[kg] = true
+		}
+	}
+	// Dense first: a spawn in the middle of several warm+enhanced KGs
+	// (luckycluster.go). Falls through to the per-Gemeinde tiers when no
+	// cluster qualifies yet (fresh install, few KGs warm).
+	if len(enhKG) > 0 {
+		if lp, ok := s.luckyClusterPick(playable, enhKG, s.neReadyKGSet()); ok {
+			return lp
 		}
 	}
 	byGem := map[string]int{}
