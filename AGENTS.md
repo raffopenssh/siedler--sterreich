@@ -180,7 +180,7 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   night: `POST /api/warm/run-plan` in the afternoon → everything lands in `cheap[]`. The plan answers `source:"none"` for
   seconds during an srtm registry full refresh; run.sh retries 4× 30 s before using the fallback sample.
   `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json` files. Reads bevdirect directly, writes
-  no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.**
+  no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.** Public counter `GET /api/contrib/stats` (`srv/contrib_stats.go`: latest report per KG → kgs, Σ cells_n, Σ KG km² from the admin table, universe, 10 min cache) feeds the „Beitrag zum Nutzungsmonitoring“ callout on impressum/imprint (`static/contrib-stats.js`, `.legal-callout`/`.legal-stats` in legal.css).
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
   only Gemeinden whose KGs are warm (not expiring within 2 h) **and** srtm
   grid25 (`enhancedKGSet`); the spawn KG itself must be enhanced. Picks are
