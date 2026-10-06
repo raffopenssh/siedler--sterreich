@@ -73,7 +73,7 @@
   Die kostenpflichtige DKM (BEV-Nutzungsbedingungen Amtsblatt 3/2022) und das Katasterservice (Such-/Auskunfts-API) nutzen wir nicht.
   Die Kacheln werden von einem eigenen Dienst zu Parzellen zusammengesetzt; dessen Quellcode ist offen (MIT):
   <a href="https://github.com/raffopenssh/vtcseamless" rel="noopener">github.com/raffopenssh/vtcseamless</a> (Preset bevdirect, Version v0.3.1).
-  Zusammengesetzte Rasterzellen und Kacheln werden höchstens 24 h zwischengespeichert und laufend ausgedünnt.
+  Die abgerufenen BEV-Kacheln hält dieser Dienst nur flüchtig im Arbeitsspeicher (keine Ablage auf Datenträgern), höchstens 24 h; zusammengesetzte Rasterzellen werden ebenfalls höchstens 24 h zwischengespeichert und laufend ausgedünnt.
   Parzellen und Einlagezahlen sind nur innerhalb eines sichtbaren Kartenausschnitts auffindbar, nicht ohne Ortsangabe;
   Eigentümerdaten sind in den Kacheln nicht enthalten. Hinweis BEV: aus den Kacheln können keine rechtsverbindlichen
   Koordinaten abgeleitet werden – das Spiel ist keine amtliche Auskunft. Jede Darstellung trägt den Hinweis
