@@ -16,7 +16,8 @@ tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip 
                                 INSTALL_UNITS=1 also installs+enables the systemd units (sudo)
 tools/ne-report/ne_cells/       vendored frozen reference package (umfeld commit 3f26b3b, 2026-10-04) + pyproject.toml
 tools/ne-report/ne_report.py    the pipeline for one or more KGs (see --help)
-tools/ne-report/run.sh          driver: KG list from /api/warm/status `v24_kgs`, else built-in v2.4 list
+tools/ne-report/run.sh          driver: KG list = today's rotation from GET /api/contrib/plan (srv/contrib.go),
+                                else a 3-KG fallback sample — never the whole v2.4 universe
 tools/ne-report/ne-report.service, ne-report.timer   daily 03:30 UTC (+≤15 min jitter), Nice=15, idle IO,
                                 Requires/After bevdirect-serve.service, Persistent=true
 data/ne-reports/KG.<date>.json        the report as POSTed (gitignored)
@@ -30,7 +31,7 @@ data/ne-reports/work/KG/cell_i_j.json fetched bevdirect cells (only with --keep-
 ```bash
 tools/ne-report/setup.sh                       # once / after pull
 tools/ne-report/run.sh 05007 63330             # explicit KGs
-tools/ne-report/run.sh                         # default KG list, skips KGs with a report < 7 d old
+tools/ne-report/run.sh                         # today's contrib rotation, skips KGs with a report < 7 d old
 FORCE=1 tools/ne-report/run.sh 05007           # ignore the 7-day skip
 tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py --help
 sudo systemctl start ne-report.service; journalctl -u ne-report -f
@@ -46,6 +47,17 @@ passed) → `python -m ne_cells report --observer siedler-oesterreich` → file 
 **Token:** `ne-peer.key` in the repo root, else `$NE_PEER_TOKEN` (the service also reads
 `tools/ne-report/ne-report.env`, gitignored). Without one the POST is a no-op with the log line
 `POST skipped — no peer token …`. We have no token yet; unauthenticated POSTs answer 404 by design.
+
+## Quarterly rotation (`srv/contrib.go`, 2026-10-06)
+
+Every v2.4 KG (registry `v24`, ~1 400) is assigned one **day of the quarter** by
+`sha256("contrib:" + quarter + ":" + kg) mod days` — random across Austria, stable for the quarter,
+new KGs appearing mid-quarter land on some day without shifting the others. `GET /api/contrib/plan`
+→ `{quarter, day, days, today[], kgs[], universe, per_day_avg (~15), reported_quarter, catch_up_days}`;
+`kgs[]` = today + the two previous nights (a missed run is caught up, the 7-day age skip dedups);
+`?kg=NNNNN` → `next_for_kg` (the date that KG is due). `/api/warm/status` carries the compact `contrib{}`.
+The rotation is independent of prewarming: it reads bevdirect directly, writes neither `kg_warm`
+nor `api_cache` cells, so `/api/lucky` is unaffected. ≈ 16 KGs × ~10 cells ≈ 30 MB BEV tiles a night.
 
 ## 2026-10-04 — contributor path & bevdirect v0.3.0
 
@@ -80,6 +92,7 @@ python (11–44 s). bevdirect's cell cache went 2 → 37 cells over the three KG
    layers to `[]` before saving the cell (recorded as `null_layers_normalised`); only the
    informative `inputs[].file_sha256` sees that, the record digest is unaffected (63330 proves it).
    Worth telling umfeld (`or []`) or bevdirect (emit `[]`).
-2. `/api/warm/status` has no `v24_kgs` yet; `run.sh` falls back to the built-in v2.4 list.
+2. ~~`/api/warm/status` has no `v24_kgs` yet~~ — it has all 1 386 since 2026-10-06; `run.sh` now uses
+   `/api/contrib/plan` (quarterly rotation) instead, never the whole list.
 3. `ne_cells build` only checks `ready`, not `truncated`, on bevdirect documents — we check both.
 4. The timer runs at 03:30 **UTC** (host clock is UTC).

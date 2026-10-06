@@ -30,6 +30,7 @@ srv/viewport.go          /api/viewport: one 0.02° cadastre cell (bevdirect) + s
 srv/cellstore.go         read-side helpers over cached cells (parcelsNear, lookupParcel, ensureCell…)
 srv/upstreams.go         provider base URLs, 0.02° grid helpers (cellOf/cellsForBBox), embedded admin.json.gz
 srv/warm.go              cell prewarming (daily plan, neighbour, session), /api/lucky, /api/warm/status
+srv/contrib.go           quarterly rotation of v2.4 KGs for the nightly NE epoch report (/api/contrib/plan)
 srv/necells.go           NE cells (srtm v2.4 observed layer): fetch per cell, parcel/footprint enrichment, NE trees/buildings, /api/ne, v2.4 adoption
 srv/landscape.go         srtm public-tier adapters (/api/enhanced-kgs, /api/lidar/kg, trees/buildings/landmarks,
                          /api/landscape, /api/parcel-context, /api/osm-lines, /api/n2k, /api/municipality…)
@@ -167,6 +168,11 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   `luckySpot` scans a 7×7 grid (~270 m steps) keeping the KG playable and the cluster ≥ n−1. Cluster draws
   < `interestGood` 0.45 are redrawn (≤ 6), per-Gemeinde picks < 0.25; the best dull one is the fallback.
   Answer carries `interest`, `interest_why`; `GET /api/lucky?lon&lat` scores any spot (QA). Flat field ≈ 0.1, village edge + brook + wood ≈ 0.8.
+- **Contrib rotation** (`srv/contrib.go`, separate from warming): `GET /api/contrib/plan` = today's
+  v2.4 KGs for the nightly NE epoch report (`tools/ne-report/run.sh` → umfeld `/contrib`). Each KG gets
+  a day of the quarter by `hash(quarter, kg)` → the whole universe (~1 400) is reported once a quarter at
+  ~15 KGs/night (+ 2 catch-up nights, deduped by ne_report's 7-day skip). Reads bevdirect directly, writes
+  no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.**
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
   only Gemeinden whose KGs are warm (not expiring within 2 h) **and** srtm
   grid25 (`enhancedKGSet`); the spawn KG itself must be enhanced. Picks are

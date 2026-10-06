@@ -862,6 +862,7 @@ func (s *Server) warmStatusMap() map[string]any {
 			"tier": warmTier(), "idle_after_h": int(warmIdleAfter.Hours()), "idle_patches": warmPatches / warmIdleEvery, "keep_warm_cap": warmKeepCap,
 			"boost": warmBoostStatus()},
 		"last_player": lastPlayerAt().UTC().Format(time.RFC3339),
+		"contrib":     s.contribStatusMap(),
 	}
 }
 

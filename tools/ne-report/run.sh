@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run.sh — NE epoch reports for a list of KGs (driver used by ne-report.timer).
 #
-#   tools/ne-report/run.sh                 # KGs = `v24_kgs` from localhost:8000/api/warm/status, else the v2.4 fallback list
+#   tools/ne-report/run.sh                 # KGs = today's rotation from localhost:8000/api/contrib/plan (quarterly sweep of all v2.4 KGs)
 #   tools/ne-report/run.sh 05007 63330     # explicit KGs
 #   FORCE=1 tools/ne-report/run.sh 05007   # ignore the 7-day skip
 #
@@ -17,25 +17,31 @@ if [ ! -x "$PY" ]; then
   exit 2
 fi
 
-# Default v2.4 KG list (used until /api/warm/status exposes `v24_kgs`).
-FALLBACK_KGS="01205 01209 01512 01609 03030 03113 03134 03136 04304 05007 05023 06030 06101 06107 06205 09002 09008 09025 09045 09061 11039 12134"
+# Fallback (only when the game API is unreachable): a tiny v2.4 sample, never the whole universe.
+FALLBACK_KGS="05007 06030 63330"
 
 if [ $# -gt 0 ]; then
   KGS="$*"
 else
-  KGS=$(curl -s --max-time 10 "${SIEDLER_API:-http://localhost:8000}/api/warm/status" \
+  # Today's contrib rotation (srv/contrib.go): every v2.4 KG is assigned one day of the
+  # quarter by hash, so the whole universe (~1 400 KGs) is reported once a quarter at
+  # ~16 KGs a night; the list includes the two previous nights for catch-up (ne_report.py
+  # skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
+  KGS=$(curl -s --max-time 10 "${SIEDLER_API:-http://localhost:8000}/api/contrib/plan" \
     | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     d = {}
-v = d.get("v24_kgs")
-print(" ".join(str(k).zfill(5) for k in v) if isinstance(v, list) and v else "")' 2>/dev/null)
+v = d.get("kgs")
+if isinstance(v, list) and v:
+    print(" ".join(str(k).zfill(5) for k in v))
+    print(f"ne-report: contrib plan {d.get(\"quarter\")} day {d.get(\"day\")}/{d.get(\"days\")}: {len(d.get(\"today\") or [])} today, {len(v)} incl. catch-up, universe {d.get(\"universe\")}, reported this quarter {d.get(\"reported_quarter\")}", file=sys.stderr)' 2>/dev/null)
   if [ -n "$KGS" ]; then
-    echo "ne-report: KGs from /api/warm/status v24_kgs: $KGS" >&2
+    echo "ne-report: KGs from /api/contrib/plan: $KGS" >&2
   else
     KGS="$FALLBACK_KGS"
-    echo "ne-report: /api/warm/status has no v24_kgs — using the built-in v2.4 list" >&2
+    echo "ne-report: /api/contrib/plan unavailable — using the small fallback sample" >&2
   fi
 fi
 
