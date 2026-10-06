@@ -14,7 +14,7 @@ go generate ./db/...              # after editing db/queries/*.sql
 go build ./... && go vet ./srv/...
 ```
 
-bevdirect-serve: public repo `github.com/raffopenssh/vtcseamless` (MIT, preset `bevdirect/`), currently **v0.3.0** (built 2026-10-06 from the public repo at the tag; output byte-identical to v0.2.1). `/api/metrics` → `bevdirect.version_mismatch` flags drift between the running binary and `bevdirectVersion`. Upgrade: `curl -fsSL https://raw.githubusercontent.com/raffopenssh/vtcseamless/main/bootstrap.sh | PREFIX=/opt/bevdirect PORT=8787 bash` — **install.sh overwrites the unit**, restore `-cells 120 -prefetch 0` + `MemoryMax=1G` afterwards (`SOURCE.txt` in /opt/bevdirect). Bump `bevdirectVersion` in `srv/licenses.go` and the version in `impressum.html`/`imprint.html` on upgrade. Library import path `github.com/raffopenssh/vtcseamless/bevdirect` (not embedded yet).
+bevdirect-serve: public repo `github.com/raffopenssh/vtcseamless` (MIT, preset `bevdirect/`), currently **v0.3.1** (release binary, installed 2026-10-06; cell output unchanged since v0.2.1 — registered as `bev_equivalent_tags` on the NE server, no re-baselining). Since v0.3.1 BEV tiles live **only in RAM** (`-tile-cache-mb 1024` LRU, `-tile-ttl 24h`; no `.pbf` on disk, no `bevcache/` dir, no prune timer; `-cache` is ignored and dropped). `/health` → `tile_cache{tiles,bytes,max_bytes,hits,misses}`, relayed in `/api/metrics` → `bevdirect`; `bevdirect.version_mismatch` flags drift between the running binary and `bevdirectVersion`. Upgrade: `curl -fsSL https://raw.githubusercontent.com/raffopenssh/vtcseamless/main/bootstrap.sh | PREFIX=/opt/bevdirect PORT=8787 sudo -E bash` — **install.sh overwrites the unit** (sets `User=root`, `-cells 160`, prefetch on) and does *not* restart a running instance: restore `User=exedev`, `-cells 120 -prefetch 0` (keep `MemoryMax=3G`, `GOMEMLIMIT=2560MiB`), `daemon-reload`, restart (`SOURCE.txt` in /opt/bevdirect). Bump `bevdirectVersion` in `srv/licenses.go` and the version in `impressum.html`/`imprint.html` on upgrade. Never persist raw tiles on our side — only assembled `/viewport` docs (api_cache cells, `tools/ne-report` work dir) may be cached. Library import path `github.com/raffopenssh/vtcseamless/bevdirect` (not embedded yet).
 Live: `https://siedler-oesterreich.exe.xyz:8000/`. DB `./db.sqlite3`. Service
 `/etc/systemd/system/srv.service`. Maintenance mode: `touch MAINTENANCE`
 (bypass cookie `siedler_dev=1` / `?dev=1`). Provider change log:
@@ -267,7 +267,7 @@ are stored gzipped (gzip magic detected on read, transparent to callers) —
 never read `api_cache.data` with raw SQL expecting JSON. 200 bodies from
 `cachedFetch` get `Cache-Control: private, max-age=3600` (`browserCache`,
 skipped for `ready:false`) so reloads don't re-download cells/layers.
-Disk hygiene: `bevcache-prune.timer` deletes bevdirect tiles > 24 h, journald
+Disk hygiene: bevdirect keeps tiles in RAM only (no prune timer needed), journald
 capped at 100 M (`/etc/systemd/journald.conf.d/size.conf`).
 
 Migration: `db/migrations/NNN-name.sql` ending with `INSERT OR IGNORE INTO

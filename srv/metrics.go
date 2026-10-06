@@ -413,6 +413,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, " by_header=%v\n", c["by_header"])
 	bev := snap["bevdirect"].(map[string]any)
 	fmt.Fprintf(&b, "bevdirect: ok=%v cells_cached=%v prefetch_queue=%v probe_ms=%v", bev["ok"], bev["cells_cached"], bev["prefetch_queue"], bev["probe_ms"])
+	if tc, ok := bev["tile_cache"].(map[string]any); ok {
+		fmt.Fprintf(&b, " tile_cache{tiles=%v mb=%.0f/%.0f hits=%v misses=%v}", tc["tiles"], numAny(tc["bytes"])/1048576, numAny(tc["max_bytes"])/1048576, tc["hits"], tc["misses"])
+	}
 	if e, ok := bev["error"]; ok {
 		fmt.Fprintf(&b, " error=%v", e)
 	}
@@ -441,4 +444,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "%-48s %8d %9.1f %9.1f %9.1f %5d %5d %5d  %s\n", rt.Route, rt.Count, rt.P50Ms, rt.P95Ms, rt.MaxMs, rt.Err5xx, rt.Err4xx, rt.Down503, cache)
 	}
 	io.WriteString(w, b.String())
+}
+
+// numAny coerces a JSON-decoded number (float64) to float64; anything else is 0.
+func numAny(v any) float64 {
+	f, _ := v.(float64)
+	return f
 }

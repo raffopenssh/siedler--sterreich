@@ -35,7 +35,7 @@ const (
 	contribCatchUpDays = 3              // today + the two nights before (ne_report's 7-day skip dedups)
 	contribNightMin    = 40             // run ahead of schedule: fill up to this many KGs a night (~90 MB tiles, ~30 min)
 	contribNightMax    = 120            // cap on KGs needing fresh BEV tiles (≈ 0.25 GB); warm (cheap) KGs are never capped
-	contribWarmWindow  = 24 * time.Hour // bevcache-prune deletes bevdirect tiles older than this
+	contribWarmWindow  = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
 	contribReportDir   = "data/ne-reports"
 )
 
