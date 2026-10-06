@@ -11,7 +11,7 @@
 <link rel="alternate" hreflang="x-default" href="https://siedler-oesterreich.exe.xyz:8000/impressum">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
 <link rel="stylesheet" href="/static/style.css?v=20260716e">
-<link rel="stylesheet" href="/static/legal.css?v=20261004a">
+<link rel="stylesheet" href="/static/legal.css?v=20261006a">
 </head>
 <body class="legal">
 <div class="legal-wrap">
@@ -80,8 +80,18 @@
   <a href="https://srtm-lidar-at.exe.xyz/api/v1/license" rel="noopener license">licence per source</a>; the comparison with declared land use rests on
   BEV cadastre statistics per cell without object geometry), the surroundings of a point from
   <a href="https://umfeld-at.exe.xyz/" rel="noopener">umfeld-at</a> (<a href="https://umfeld-at.exe.xyz/api/v1/license" rel="noopener license">licence per source</a>).
-  Both services are in alpha and are not operated or endorsed by the original data providers.
-  Every source with fetch location, licence, attribution, our modifications and maximum cache age:
+  Both services are in alpha and are not operated or endorsed by the original data providers.</p>
+  <div class="legal-callout">
+    <span class="legal-callout-h">Contribution to land-use monitoring</span>
+    We also give something back to umfeld-at: the cadastre cells we assemble anyway for players
+    (daily prewarm plan, on game start or on demand) are recomputed every night, for a rotation of
+    cadastral municipalities, into per-cell land-use statistics (NE cells) with umfeld-at's open
+    reference procedure. As observer <em>siedler-oesterreich</em> we report only digests per cell block,
+    cell counts and the epoch – no geometry, no parcel numbers, no personal data. This lets umfeld-at
+    detect where the cadastre changed between two epochs. Procedure and format:
+    <a href="https://github.com/raffopenssh/siedler--sterreich/blob/main/docs/ne-report.md" rel="noopener">docs/ne-report.md</a>.
+  </div>
+  <p>Every source with fetch location, licence, attribution, our modifications and maximum cache age:
   <a href="/licenses"><strong>Data sources &amp; licences</strong></a> (machine-readable: <a href="/api/licenses">/api/licenses</a>).</p>
   <p>The in-game display is simplified and playfully altered; it is not an official statement and has
   no legal effect. No owner data is processed.

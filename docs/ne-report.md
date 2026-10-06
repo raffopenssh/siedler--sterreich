@@ -2,7 +2,7 @@
 
 umfeld-at.exe.xyz publishes "NE cells" (declared land-use statistics per H3 res-12 cell,
 derived from the BEV cadastre; contract: umfeld's `docs/ne-cells.md`). We run our own
-bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.0**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
+bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.1**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
 **observer**: rebuild the same cells from our bevdirect output with the frozen python reference
 package `ne_cells` (algo `ne-cells-2`, shapely 2.1.2 + h3 4.5.0) and POST an **epoch report**
 (digests only — whole build + one per res-10 chunk, no geometry) to
@@ -46,7 +46,7 @@ passed) → `python -m ne_cells report --observer siedler-oesterreich` → file 
 
 **Token:** `ne-peer.key` in the repo root, else `$NE_PEER_TOKEN` (the service also reads
 `tools/ne-report/ne-report.env`, gitignored). Without one the POST is a no-op with the log line
-`POST skipped — no peer token …`. We have no token yet; unauthenticated POSTs answer 404 by design.
+`POST skipped — no peer token …`. Token in place since 2026-10-06 (token name `siedler-oesterreich`, POST → 200); unauthenticated POSTs answer 404 by design.
 
 ## Quarterly rotation (`srv/contrib.go`, 2026-10-06)
 

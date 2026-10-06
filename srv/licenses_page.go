@@ -179,7 +179,7 @@ func (s *Server) handleLicensesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	t := licStrings(lang)
 	var buf bytes.Buffer
-	err := licTmpl.Execute(&buf, map[string]any{"T": t, "Cards": licCards(lang, t), "Notice": bevNotice, "V": "lic20261003c", "Site": siteURL})
+	err := licTmpl.Execute(&buf, map[string]any{"T": t, "Cards": licCards(lang, t), "Notice": bevNotice, "V": "lic20261006a", "Site": siteURL})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
