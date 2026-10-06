@@ -123,3 +123,14 @@ srv RSS 124 MB, heap 54 MB, no panics. Added: 👁 heat overlay (`/api/ne`, cons
 claim) and the Wiederbewaldung bonus (Naturschutz on `forest_loss` = 200 XP), xbrowser scenes
 `ne-*`. Bug fixed on the way: `/api/ne` emitted `[]uint8` columns, which Go JSON-encodes as base64
 (`neheat:v2`, client `&v=2`). Upstream notes: `docs/upstream-notes-ne.md`.
+
+## 2026-10-06 — bevdirect-serve v0.3.1 (tiles in RAM only)
+
+Upgraded via `bootstrap.sh` (release binary). BEV `.pbf` tiles are no longer written to disk:
+`/opt/bevdirect/bevcache` (564 MB) deleted, `bevcache-prune.timer`/`.service` removed, `-cache`
+dropped from the unit, `-tile-cache-mb 1024` LRU + `MemoryMax=3G` / `GOMEMLIMIT=2560MiB` as shipped.
+Unit re-tuned after install.sh overwrote it (`User=exedev`, `-cells 120 -prefetch 0`). Cell output
+unchanged; v0.3.1 is `bev_equivalent_tags` on the NE server → no re-baselining, report source string
+becomes `bevdirect@v0.3.1` automatically. `/api/metrics` → `bevdirect.tile_cache{}`. Our side keeps
+no raw tiles (api_cache = assembled cells only; `tools/ne-report` uses the systemd instance and
+removes its work dir).
