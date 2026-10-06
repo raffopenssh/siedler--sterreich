@@ -14,7 +14,7 @@ go generate ./db/...              # after editing db/queries/*.sql
 go build ./... && go vet ./srv/...
 ```
 
-bevdirect-serve: public repo `github.com/raffopenssh/vtcseamless` (MIT, preset `bevdirect/`), currently **v0.3.0** (output byte-identical to v0.2.1). Upgrade: `curl -fsSL https://raw.githubusercontent.com/raffopenssh/vtcseamless/main/bootstrap.sh | PREFIX=/opt/bevdirect PORT=8787 bash` — **install.sh overwrites the unit**, restore `-cells 120 -prefetch 0` + `MemoryMax=1G` afterwards (`SOURCE.txt` in /opt/bevdirect). Bump `bevdirectVersion` in `srv/licenses.go` and the version in `impressum.html`/`imprint.html` on upgrade. Library import path `github.com/raffopenssh/vtcseamless/bevdirect` (not embedded yet).
+bevdirect-serve: public repo `github.com/raffopenssh/vtcseamless` (MIT, preset `bevdirect/`), currently **v0.3.0** (built 2026-10-06 from the public repo at the tag; output byte-identical to v0.2.1). `/api/metrics` → `bevdirect.version_mismatch` flags drift between the running binary and `bevdirectVersion`. Upgrade: `curl -fsSL https://raw.githubusercontent.com/raffopenssh/vtcseamless/main/bootstrap.sh | PREFIX=/opt/bevdirect PORT=8787 bash` — **install.sh overwrites the unit**, restore `-cells 120 -prefetch 0` + `MemoryMax=1G` afterwards (`SOURCE.txt` in /opt/bevdirect). Bump `bevdirectVersion` in `srv/licenses.go` and the version in `impressum.html`/`imprint.html` on upgrade. Library import path `github.com/raffopenssh/vtcseamless/bevdirect` (not embedded yet).
 Live: `https://siedler-oesterreich.exe.xyz:8000/`. DB `./db.sqlite3`. Service
 `/etc/systemd/system/srv.service`. Maintenance mode: `touch MAINTENANCE`
 (bypass cookie `siedler_dev=1` / `?dev=1`). Provider change log:
