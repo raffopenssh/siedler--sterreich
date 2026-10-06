@@ -175,6 +175,10 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   (ahead of schedule, `fill[]`/`ahead_days`); **KGs the prewarmer built < 24 h ago go first** (`cheap[]`, BEV
   tiles still on bevdirect's disk → CPU only, **uncapped** — everything warm & unreported is reported that night);
   unreported KGs of the last 2 nights are caught up; cap 120 applies only to KGs needing fresh tiles. Unit timeout 8 h.
+  Verified 2026-10-06 (first real run — until then a silenced SyntaxError in run.sh made every night fall back to the
+  3-KG sample): 242 KGs in 88 min, 241 ok / 1 skipped, 241× POST 200, ~13 s build + ~4 s fetch per KG. Recipe for a big
+  night: `POST /api/warm/run-plan` in the afternoon → everything lands in `cheap[]`. The plan answers `source:"none"` for
+  seconds during an srtm registry full refresh; run.sh retries 4× 30 s before using the fallback sample.
   `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json` files. Reads bevdirect directly, writes
   no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.**
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,

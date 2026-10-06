@@ -27,7 +27,14 @@ else
   # quarter by hash, so the whole universe (~1 400 KGs) is reported once a quarter at
   # ~16 KGs a night; the list includes the two previous nights for catch-up (ne_report.py
   # skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
-  PLAN=$(curl -s --max-time 10 "${SIEDLER_API:-http://localhost:8000}/api/contrib/plan")
+  # The plan is empty (source:"none") for a few seconds while the srtm KG registry does a
+  # full refresh (hourly check) — retry before falling back to the sample.
+  for try in 1 2 3 4; do
+    PLAN=$(curl -s --max-time 10 "${SIEDLER_API:-http://localhost:8000}/api/contrib/plan")
+    case "$PLAN" in *'"source":"registry"'*) break;; esac
+    echo "ne-report: contrib plan not ready (try $try) — waiting 30 s" >&2
+    sleep 30
+  done
   KGS=$(PLAN="$PLAN" python3 -c '
 import json, os, sys
 try:
