@@ -11,6 +11,7 @@ package srv
 // pattern ("GET /api/session/{id}/parcels") rather than the raw path.
 
 import (
+	"log/slog"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -267,6 +268,13 @@ func (m *metricsRegistry) bevHealth() map[string]any {
 		if json.Unmarshal(body, &h) == nil {
 			out = h
 			delete(out, "notice")
+			// The imprint / licences page quote bevdirectVersion; flag drift
+			// from the binary actually running so an upgrade is not forgotten.
+			if v, _ := h["bevdirect_version"].(string); v != "" && v != bevdirectVersion {
+				out["version_mismatch"] = true
+				out["expected_version"] = bevdirectVersion
+				slog.Warn("bevdirect version drift", "running", v, "declared", bevdirectVersion)
+			}
 		} else {
 			out["error"] = fmt.Sprintf("status %d", resp.StatusCode)
 		}
