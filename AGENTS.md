@@ -170,8 +170,10 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   Answer carries `interest`, `interest_why`; `GET /api/lucky?lon&lat` scores any spot (QA). Flat field ≈ 0.1, village edge + brook + wood ≈ 0.8.
 - **Contrib rotation** (`srv/contrib.go`, separate from warming): `GET /api/contrib/plan` = today's
   v2.4 KGs for the nightly NE epoch report (`tools/ne-report/run.sh` → umfeld `/contrib`). Each KG gets
-  a day of the quarter by `hash(quarter, kg)` → the whole universe (~1 400) is reported once a quarter at
-  ~15 KGs/night (+ 2 catch-up nights, deduped by ne_report's 7-day skip). Reads bevdirect directly, writes
+  a day of the quarter by `hash(quarter, kg)` → the whole universe (1 400 now, ~4 000 soon) is reported at
+  least once a quarter; nights are filled to ≥ `contribNightMin` 40 KGs with not-yet-reported KGs due later
+  (ahead of schedule, `fill[]`/`ahead_days`), unreported KGs of the last 2 nights are caught up, cap 120.
+  `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json` files. Reads bevdirect directly, writes
   no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.**
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
   only Gemeinden whose KGs are warm (not expiring within 2 h) **and** srtm
