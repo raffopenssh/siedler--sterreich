@@ -21,6 +21,7 @@ package srv
 // reported_quarter, catch_up_days}; also `contrib{}` in /api/warm/status.
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"net/http"
@@ -31,9 +32,11 @@ import (
 )
 
 const (
-	contribCatchUpDays = 3   // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 40  // run ahead of schedule: fill up to this many KGs a night (~90 MB tiles, ~30 min)
-	contribNightMax    = 120 // hard cap incl. catch-up — ≈ 0.25 GB tiles, 1.5 h of python
+	contribCatchUpDays = 3              // today + the two nights before (ne_report's 7-day skip dedups)
+	contribNightMin    = 40             // run ahead of schedule: fill up to this many KGs a night (~90 MB tiles, ~30 min)
+	contribNightCheap  = 80             // KGs warmed in the last 24 h (tiles already on bevdirect's disk) may extend the night to this
+	contribNightMax    = 120            // hard cap incl. catch-up — ≈ 0.25 GB tiles, 1.5 h of python
+	contribWarmWindow  = 24 * time.Hour // bevcache-prune deletes bevdirect tiles older than this
 	contribReportDir   = "data/ne-reports"
 )
 
@@ -60,6 +63,7 @@ type contribPlan struct {
 	KGs         []string `json:"kgs"`  // tonight's list: today + catch-up + fill (ahead of schedule)
 	Today       []string `json:"today"`
 	Fill        []string `json:"fill"`       // not-yet-reported KGs pulled forward to reach night_min
+	Cheap       []string `json:"cheap"`      // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
 	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
 	NightMin    int      `json:"night_min"`
 	NightMax    int      `json:"night_max"`
@@ -90,7 +94,7 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	}
 	sort.Strings(uni)
 	p := contribPlan{Quarter: label, Day: day, Days: days, Universe: len(uni), CatchUpDays: contribCatchUpDays,
-		NightMin: contribNightMin, NightMax: contribNightMax, KGs: []string{}, Today: []string{}, Fill: []string{}, Source: "registry"}
+		NightMin: contribNightMin, NightMax: contribNightMax, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Source: "registry"}
 	if len(uni) == 0 {
 		p.Source = "none"
 		return p
@@ -116,18 +120,41 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// yet (in due order). A small universe is then swept in weeks instead of
 	// a quarter; once everything is reported the nights are quiet until the
 	// next quarter. The cap protects the night when the universe jumps.
-	var later []string
+	// Tier 1 — KGs the prewarmer built in the last 24 h: their BEV tiles are
+	// still on bevdirect's disk, so the report costs CPU only; these may
+	// extend the night to night_cheap. Tier 2 — the rest in due order.
+	warmed := s.recentlyWarmedKGs(contribWarmWindow)
+	in := map[string]bool{}
+	for _, kg := range p.KGs {
+		in[kg] = true
+	}
+	var cheap, later []string
 	for _, kg := range uni {
-		if !reported[kg] {
-			p.LeftQ++
-			if contribDayOf(label, kg, days) > day {
-				later = append(later, kg)
-			}
+		if reported[kg] {
+			continue
+		}
+		p.LeftQ++
+		if in[kg] {
+			continue
+		}
+		if _, ok := warmed[kg]; ok {
+			cheap = append(cheap, kg)
+		} else if contribDayOf(label, kg, days) > day {
+			later = append(later, kg)
 		}
 	}
+	sort.SliceStable(cheap, func(i, j int) bool { return warmed[cheap[i]].After(warmed[cheap[j]]) }) // freshest tiles first
 	sort.SliceStable(later, func(i, j int) bool {
 		return contribDayOf(label, later[i], days) < contribDayOf(label, later[j], days)
 	})
+	for _, kg := range cheap {
+		if len(p.KGs) >= contribNightCheap {
+			break
+		}
+		p.KGs = append(p.KGs, kg)
+		p.Fill = append(p.Fill, kg)
+		p.Cheap = append(p.Cheap, kg)
+	}
 	for _, kg := range later {
 		if len(p.KGs) >= contribNightMin {
 			break
@@ -140,6 +167,25 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		p.KGs = p.KGs[:contribNightMax]
 	}
 	return p
+}
+
+// recentlyWarmedKGs: kg_code → warmed_at for KGs the prewarmer built within the window.
+func (s *Server) recentlyWarmedKGs(window time.Duration) map[string]time.Time {
+	out := map[string]time.Time{}
+	rows, err := s.DB.QueryContext(context.Background(), "SELECT kg_code, warmed_at FROM kg_warm WHERE warmed_at > ?",
+		time.Now().Add(-window).UTC().Format("2006-01-02 15:04:05"))
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kg, ts string
+		if rows.Scan(&kg, &ts) == nil {
+			t, _ := parseSQLiteTime(ts)
+			out[padKGCode(kg)] = t
+		}
+	}
+	return out
 }
 
 // contribReportedSince: KGs with a report file (KG.YYYY-MM-DD.json) dated on/after t.
@@ -178,7 +224,7 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 // contribStatusMap is the compact `contrib{}` block of /api/warm/status.
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
-	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill),
+	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
 		"ahead_days": p.AheadDays, "tonight": len(p.KGs), "night_min": p.NightMin, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ}
 }

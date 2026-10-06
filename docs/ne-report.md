@@ -55,9 +55,10 @@ Every v2.4 KG (registry `v24`, ~1 400) is assigned one **day of the quarter** by
 new KGs appearing mid-quarter land on some day without shifting the others. `GET /api/contrib/plan`
 → `{quarter, day, days, today[], fill[], ahead_days, kgs[], universe, per_day_avg, night_min 40, night_max 120,
 reported_quarter, left_quarter, catch_up_days}`; `kgs[]` = today's KGs + still-unreported KGs of the two
-previous nights (catch-up) + **fill**: not-yet-reported KGs due later in the quarter, in due order, until
-≥ 40 KGs — so a 1 400-KG universe is swept in ~5 weeks, 4 000 KGs in a quarter (~43/night), the quarter
-being the guarantee. Reported/left counts are read from the `data/ne-reports/KG.<date>.json` file names;
+previous nights (catch-up) + **fill**: first the not-yet-reported KGs the prewarmer built in the last 24 h
+(`cheap[]` — their BEV tiles are still on bevdirect's disk, 9 cells in 4 s instead of 13 s+; up to 80/night),
+then not-yet-reported KGs due later in the quarter, in due order, until ≥ 40 KGs — so a 1 400-KG universe
+is swept in ~3–5 weeks, 4 000 KGs in a quarter (~43/night), the quarter being the guarantee. Reported/left counts are read from the `data/ne-reports/KG.<date>.json` file names;
 
 `?kg=NNNNN` → `next_for_kg` (the date that KG is due). `/api/warm/status` carries the compact `contrib{}`.
 The rotation is independent of prewarming: it reads bevdirect directly, writes neither `kg_warm`
