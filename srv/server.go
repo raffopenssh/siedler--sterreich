@@ -319,6 +319,7 @@ func (s *Server) Serve(addr string) error {
 	// Warm registry / lucky pick / KG register (warm.go, upstreams.go)
 	mux.HandleFunc("GET /api/lucky", s.handleLucky)
 	mux.HandleFunc("GET /api/warm/status", s.handleWarmStatus)
+	mux.HandleFunc("POST /api/warm/run-plan", s.requireAhead(s.handleWarmRunPlan))
 	mux.HandleFunc("GET /api/contrib/plan", s.handleContribPlan)
 	mux.HandleFunc("GET /api/kg-geo/{kg}", s.handleKGGeo)
 	// Public-tier adapters (landscape.go)

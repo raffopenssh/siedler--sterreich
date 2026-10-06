@@ -888,3 +888,42 @@ func (s *Server) handleKGGeo(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, out)
 }
+
+// POST /api/warm/run-plan — pull today's remaining daily patches forward and
+// queue them now (ops, X-Ahead-Token). Used when a boost day needs its
+// destinations warm before the evening, or to feed the nightly contrib run
+// (`cheap[]` = KGs the prewarmer built < 24 h ago) with a full day's worth of
+// KGs at once. The worker still paces one cell at a time; this only removes
+// the wait between slots. ?patches=N limits how many patches are pulled.
+func (s *Server) handleWarmRunPlan(w http.ResponseWriter, r *http.Request) {
+	if !kgUniverseOK() {
+		jsonRespStatus(w, map[string]any{"error": "kg universe unverified — plan paused"}, http.StatusServiceUnavailable)
+		return
+	}
+	limit := len(s.loadOrMakePlan(time.Now()).Patches)
+	if n, err := strconv.Atoi(r.URL.Query().Get("patches")); err == nil && n > 0 {
+		limit = n
+	}
+	plan := s.loadOrMakePlan(time.Now())
+	pulled, kgs := 0, 0
+	for i := range plan.Patches {
+		if pulled >= limit {
+			break
+		}
+		if plan.Started[fmt.Sprint(i)] {
+			continue
+		}
+		plan.Started[fmt.Sprint(i)] = true
+		pulled++
+		for _, kg := range plan.Patches[i] {
+			if s.enqueueWarm(kg, "daily", 2) {
+				kgs++
+			}
+		}
+	}
+	if pulled > 0 {
+		s.savePlan(plan)
+	}
+	slog.Info("warm: plan pulled forward", "patches", pulled, "kgs", kgs, "remote", r.RemoteAddr)
+	jsonResp(w, map[string]any{"patches_queued": pulled, "kgs_queued": kgs, "plan_patches": len(plan.Patches), "queue_len": len(s.warm.queue)})
+}
