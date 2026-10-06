@@ -281,6 +281,7 @@ func agentParam(r *http.Request, k string, def, lo, hi int) int {
 
 // GET /api/agent/look?session_id=&player_id=&lon=&lat=&radius=300&limit=25&landuse=&unclaimed=1
 func (s *Server) handleAgentLook(w http.ResponseWriter, r *http.Request) {
+	playerSeen()
 	ctx := r.Context()
 	qs := r.URL.Query()
 	sess, err := s.Q.GetSession(ctx, qs.Get("session_id"))

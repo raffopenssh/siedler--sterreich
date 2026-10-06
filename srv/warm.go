@@ -9,6 +9,8 @@ package srv
 //   - Neighbour warming: the first viewport build in a cell enqueues the KGs
 //     touching that cell plus their adjacent KGs (low priority).
 //   - Session warming: POST /api/session/create enqueues the Gemeinde's KGs.
+//   - Activity tiers (warmactivity.go): with no player for 24 h only every
+//     5th patch runs and nothing is kept warm beyond that.
 //   - One worker, polite pacing (~0.8 s between cells, yields to foreground
 //     viewport builds), never re-warms a KG that is fresh for ≥ 2 h.
 //
@@ -264,18 +266,21 @@ func (s *Server) warmPlanner() {
 	if _, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey); err != nil {
 		s.buildEnhancedKGs(enhancedKGsKey)
 	}
-	// v2.4 KGs are always kept warm: whatever the plan says, re-queue the
-	// ones that are not fresh (the in-memory queue does not survive a restart).
+	// Keep-warm (active tier only): the v2.4 KGs of Gemeinden played in the
+	// last week, capped (warmactivity.go). Never the whole v2.4 universe —
+	// that is 1 300+ KGs and would re-download gigabytes a day with no player.
 	go func() {
 		for {
-			n := 0
-			for kg := range s.neReadyKGSet() {
-				if len(kg) == 5 && s.enqueueWarm(kg, "v24", 1) {
-					n++
+			if !warmIdle() {
+				n := 0
+				for _, kg := range s.recentV24KGs(s.neReadyKGSet()) {
+					if s.enqueueWarm(kg, "v24", 1) {
+						n++
+					}
 				}
-			}
-			if n > 0 {
-				slog.Info("warm: v2.4 KGs queued", "kgs", n)
+				if n > 0 {
+					slog.Info("warm: recently played v2.4 KGs queued", "kgs", n)
+				}
 			}
 			time.Sleep(2 * time.Hour)
 		}
@@ -297,6 +302,12 @@ func (s *Server) warmPlanner() {
 			if now.After(due) && !plan.Started[fmt.Sprint(i)] {
 				plan.Started[fmt.Sprint(i)] = true
 				s.savePlan(plan)
+				if warmIdle() && i%warmIdleEvery != 0 {
+					// Nobody around: 4 destinations a day keep /api/lucky
+					// meaningful, the rest is built lazily when a player comes.
+					slog.Info("warm: daily patch skipped (idle)", "patch", i, "seed", plan.Seeds[i], "last_player", lastPlayerAt().UTC().Format(time.RFC3339))
+					continue
+				}
 				n := 0
 				for _, kg := range plan.Patches[i] {
 					if s.enqueueWarm(kg, "daily", 2) {
@@ -834,7 +845,9 @@ func (s *Server) warmStatusMap() map[string]any {
 		"current": s.warm.current.Load(), "queue": q, "queue_len": queueLen, "done": s.warm.done.Load(),
 		"cells_built": s.warm.cells.Load(), "warm_kgs": warmKGs, "warm_gemeinden": warmGem,
 		"v24_kgs": v24, "v24_warm": v24Warm, "kg_universe": kgUniverseStatus(),
-		"plan": plan, "policy": map[string]any{"daily_kgs": warmDailyKGs, "patches": warmPatches, "ttl_h": 24},
+		"plan": plan, "policy": map[string]any{"daily_kgs": warmDailyKGs, "patches": warmPatches, "ttl_h": 24,
+			"tier": warmTier(), "idle_after_h": int(warmIdleAfter.Hours()), "idle_patches": warmPatches / warmIdleEvery, "keep_warm_cap": warmKeepCap},
+		"last_player": lastPlayerAt().UTC().Format(time.RFC3339),
 	}
 }
 

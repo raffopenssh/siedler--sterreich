@@ -1028,8 +1028,8 @@ func hotCellDrop(key string) {
 // neAdoptKGs runs after every registry refresh: a KG that is (newly) v2.4 or
 // was regenerated gets its derived caches purged — our viewport cells
 // (`vp:v1:i:j`, enriched from the heightfield before), the NE documents and
-// the NE-derived tree/building layers — and is enqueued for warming so the
-// cells are rebuilt with the observed layer before a player arrives. Once
+// the NE-derived tree/building layers — and, if it is in today's warm plan and
+// players are around, enqueued for warming. Once
 // per KG per product generation (`ne-adopt:v1:<kg>` = updated_at).
 func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 	if !kgUniverseOK() {
@@ -1039,6 +1039,17 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 	ctx := context.Background()
 	adm := admin()
 	adopted := 0
+	// Purging is free and keeps us correct; re-warming is bandwidth. Only KGs in
+	// today's plan are rebuilt eagerly (and only while players are around) —
+	// everything else is built lazily on the first viewport request.
+	planned := map[string]bool{}
+	if p, ok := s.warm.plan.Load().(*warmPlan); ok && p != nil {
+		for _, patch := range p.Patches {
+			for _, kg := range patch {
+				planned[kg] = true
+			}
+		}
+	}
 	for kg := range v24 {
 		if len(kg) != 5 {
 			continue
@@ -1064,12 +1075,14 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 		}
 		s.Q.DeleteCacheLike(ctx, "similar:v6:"+kg+"-%")
 		s.DB.ExecContext(ctx, "DELETE FROM kg_warm WHERE kg_code = ?", kg)
-		s.enqueueWarm(kg, "v24", 1)
+		if !warmIdle() && planned[kg] {
+			s.enqueueWarm(kg, "v24", 1) // rebuilt with the observed layer before today's lucky players land there
+		}
 		s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: mark, Data: cur, ExpiresAt: time.Now().Add(10 * 365 * 24 * time.Hour)})
 		adopted++
 	}
 	if adopted > 0 {
-		slog.Info("ne: adopted v2.4 KGs (cells purged, warm enqueued)", "kgs", adopted)
+		slog.Info("ne: adopted v2.4 KGs (cells purged)", "kgs", adopted)
 	}
 }
 

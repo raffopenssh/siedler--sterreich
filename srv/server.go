@@ -196,6 +196,7 @@ func (s *Server) Serve(addr string) error {
 	go s.safetyJanitor()
 	s.kgUniverseBoot()
 	go s.kgUniverseInit()
+	s.seedPlayerActivity()
 	go s.warmLoop()
 	go s.warmPlanner()
 
@@ -716,6 +717,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	playerSeen()
 	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
 		jsonErr(w, "unauthorized", 401)
 		return
@@ -808,6 +810,7 @@ func (s *Server) handleJoinSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	playerSeen()
 	if _, ok := s.authPlayer(r, req.PlayerID); !ok {
 		jsonErr(w, "unauthorized", 401)
 		return

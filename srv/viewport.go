@@ -80,6 +80,7 @@ func (s *Server) handleViewport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key, cell := vpCacheKey(b)
+	playerSeen()
 	// Hot path: a pre-gzipped, hash-annotated copy of recently served cells
 	// (≈150 KB each). Under load this turns a HIT from "1 MB SQLite read +
 	// byte scan + gzip-5" (~25 ms CPU) into a memcpy.
