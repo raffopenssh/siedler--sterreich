@@ -16,5 +16,5 @@ EnvironmentFile=-/home/exedev/siedler/tools/ne-report/ne-report.env
 ExecStart=/home/exedev/siedler/tools/ne-report/run.sh
 Nice=15
 IOSchedulingClass=idle
-TimeoutStartSec=4h
+TimeoutStartSec=8h
 MemoryMax=2G

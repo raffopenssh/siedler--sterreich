@@ -173,8 +173,8 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   a day of the quarter by `hash(quarter, kg)` → the whole universe (1 400 now, ~4 000 soon) is reported at
   least once a quarter; nights are filled to ≥ `contribNightMin` 40 KGs with not-yet-reported KGs due later
   (ahead of schedule, `fill[]`/`ahead_days`); **KGs the prewarmer built < 24 h ago go first** (`cheap[]`, BEV
-  tiles still on bevdirect's disk → CPU only, may extend the night to 80); unreported KGs of the last 2 nights
-  are caught up; cap 120.
+  tiles still on bevdirect's disk → CPU only, **uncapped** — everything warm & unreported is reported that night);
+  unreported KGs of the last 2 nights are caught up; cap 120 applies only to KGs needing fresh tiles. Unit timeout 8 h.
   `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json` files. Reads bevdirect directly, writes
   no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.**
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,

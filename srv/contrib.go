@@ -34,8 +34,7 @@ import (
 const (
 	contribCatchUpDays = 3              // today + the two nights before (ne_report's 7-day skip dedups)
 	contribNightMin    = 40             // run ahead of schedule: fill up to this many KGs a night (~90 MB tiles, ~30 min)
-	contribNightCheap  = 80             // KGs warmed in the last 24 h (tiles already on bevdirect's disk) may extend the night to this
-	contribNightMax    = 120            // hard cap incl. catch-up — ≈ 0.25 GB tiles, 1.5 h of python
+	contribNightMax    = 120            // cap on KGs needing fresh BEV tiles (≈ 0.25 GB); warm (cheap) KGs are never capped
 	contribWarmWindow  = 24 * time.Hour // bevcache-prune deletes bevdirect tiles older than this
 	contribReportDir   = "data/ne-reports"
 )
@@ -121,8 +120,8 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// a quarter; once everything is reported the nights are quiet until the
 	// next quarter. The cap protects the night when the universe jumps.
 	// Tier 1 — KGs the prewarmer built in the last 24 h: their BEV tiles are
-	// still on bevdirect's disk, so the report costs CPU only; these may
-	// extend the night to night_cheap. Tier 2 — the rest in due order.
+	// still on bevdirect's disk, so the report costs CPU only (~30 s/KG) —
+	// all of them, no cap. Tier 2 — the rest in due order, up to night_min.
 	warmed := s.recentlyWarmedKGs(contribWarmWindow)
 	in := map[string]bool{}
 	for _, kg := range p.KGs {
@@ -147,13 +146,8 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	sort.SliceStable(later, func(i, j int) bool {
 		return contribDayOf(label, later[i], days) < contribDayOf(label, later[j], days)
 	})
-	for _, kg := range cheap {
-		if len(p.KGs) >= contribNightCheap {
-			break
-		}
-		p.KGs = append(p.KGs, kg)
-		p.Fill = append(p.Fill, kg)
-		p.Cheap = append(p.Cheap, kg)
+	if len(p.KGs) > contribNightMax {
+		p.KGs = p.KGs[:contribNightMax] // only the scheduled/catch-up part needs fresh tiles
 	}
 	for _, kg := range later {
 		if len(p.KGs) >= contribNightMin {
@@ -163,8 +157,12 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		p.Fill = append(p.Fill, kg)
 		p.AheadDays = contribDayOf(label, kg, days) - day
 	}
-	if len(p.KGs) > contribNightMax {
-		p.KGs = p.KGs[:contribNightMax]
+	// Cheap ones last in the list but uncapped: everything warm and unreported
+	// is reported tonight while the tiles are still there.
+	for _, kg := range cheap {
+		p.KGs = append(p.KGs, kg)
+		p.Fill = append(p.Fill, kg)
+		p.Cheap = append(p.Cheap, kg)
 	}
 	return p
 }

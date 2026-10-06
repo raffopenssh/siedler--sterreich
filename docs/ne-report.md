@@ -56,7 +56,8 @@ new KGs appearing mid-quarter land on some day without shifting the others. `GET
 → `{quarter, day, days, today[], fill[], ahead_days, kgs[], universe, per_day_avg, night_min 40, night_max 120,
 reported_quarter, left_quarter, catch_up_days}`; `kgs[]` = today's KGs + still-unreported KGs of the two
 previous nights (catch-up) + **fill**: first the not-yet-reported KGs the prewarmer built in the last 24 h
-(`cheap[]` — their BEV tiles are still on bevdirect's disk, 9 cells in 4 s instead of 13 s+; up to 80/night),
+(`cheap[]` — their BEV tiles are still on bevdirect's disk, 9 cells in 4 s instead of 13 s+; **uncapped**, on boost
+days 100–200 of them, ~30–50 s CPU each, unit timeout 8 h),
 then not-yet-reported KGs due later in the quarter, in due order, until ≥ 40 KGs — so a 1 400-KG universe
 is swept in ~3–5 weeks, 4 000 KGs in a quarter (~43/night), the quarter being the guarantee. Reported/left counts are read from the `data/ne-reports/KG.<date>.json` file names;
 
