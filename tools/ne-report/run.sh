@@ -27,16 +27,21 @@ else
   # quarter by hash, so the whole universe (~1 400 KGs) is reported once a quarter at
   # ~16 KGs a night; the list includes the two previous nights for catch-up (ne_report.py
   # skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
-  KGS=$(curl -s --max-time 10 "${SIEDLER_API:-http://localhost:8000}/api/contrib/plan" \
-    | python3 -c 'import json,sys
+  PLAN=$(curl -s --max-time 10 "${SIEDLER_API:-http://localhost:8000}/api/contrib/plan")
+  KGS=$(PLAN="$PLAN" python3 -c '
+import json, os, sys
 try:
-    d = json.load(sys.stdin)
-except Exception:
-    d = {}
+    d = json.loads(os.environ.get("PLAN") or "")
+except Exception as e:
+    print("plan: not json: %s" % e, file=sys.stderr); sys.exit(0)
 v = d.get("kgs")
 if isinstance(v, list) and v:
     print(" ".join(str(k).zfill(5) for k in v))
-    print(f"ne-report: contrib plan {d.get(\"quarter\")} day {d.get(\"day\")}/{d.get(\"days\")}: {len(d.get(\"today\") or [])} today, {len(v)} incl. catch-up, universe {d.get(\"universe\")}, reported this quarter {d.get(\"reported_quarter\")}", file=sys.stderr)' 2>/dev/null)
+    print("ne-report: contrib plan %s day %s/%s: %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
+          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("today") or []), len(d.get("cheap") or []),
+             len(v), d.get("universe"), d.get("reported_quarter")), file=sys.stderr)
+' 2>/tmp/ne-report-plan.err)
+  [ -s /tmp/ne-report-plan.err ] && cat /tmp/ne-report-plan.err >&2
   if [ -n "$KGS" ]; then
     echo "ne-report: KGs from /api/contrib/plan: $KGS" >&2
   else
