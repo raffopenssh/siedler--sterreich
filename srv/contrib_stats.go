@@ -21,7 +21,7 @@ type contribStats struct {
 	AreaKm2  float64 `json:"area_km2"`  // Σ KG area (BEV VGD admin table)
 	First    string  `json:"first"`     // oldest report date
 	Last     string  `json:"last"`      // newest report date
-	Universe int     `json:"universe"`  // v2.4 KGs eligible for the rotation
+	Universe int     `json:"universe"`  // all Austrian KGs (kgUniverseCount)
 	SharePct float64 `json:"share_pct"` // kgs / universe
 	At       string  `json:"generated_at"`
 }
@@ -82,7 +82,7 @@ func (s *Server) contribStatsNow() contribStats {
 	}
 	st.KGs = len(kgs)
 	st.AreaKm2 = float64(int(st.AreaKm2*10+0.5)) / 10
-	st.Universe = len(s.neReadyKGSet())
+	st.Universe = kgUniverseCount
 	if st.Universe > 0 {
 		st.SharePct = float64(int(float64(st.KGs)*1000/float64(st.Universe)+0.5)) / 10
 	}
