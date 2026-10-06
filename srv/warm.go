@@ -11,6 +11,8 @@ package srv
 //   - Session warming: POST /api/session/create enqueues the Gemeinde's KGs.
 //   - Activity tiers (warmactivity.go): with no player for 24 h only every
 //     5th patch runs and nothing is kept warm beyond that.
+//   - Boost days (warmboost.go, ./WARM_BOOST): 50 patches / 250 KGs a day
+//     (~0.5 GB of BEV tiles), never idle — for presentations.
 //   - One worker, polite pacing (~0.8 s between cells, yields to foreground
 //     viewport builds), never re-warms a KG that is fresh for ≥ 2 h.
 //
@@ -63,6 +65,7 @@ type warmer struct {
 }
 
 type warmPlan struct {
+	Boost   bool            `json:"boost,omitempty"`
 	Date    string          `json:"date"`
 	Patches [][]string      `json:"patches"`
 	Seeds   []string        `json:"seeds"`
@@ -296,7 +299,7 @@ func (s *Server) warmPlanner() {
 		plan := s.loadOrMakePlan(now)
 		// Patch k is due at k × (24 h / patches) after local midnight.
 		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-		slot := 24 * time.Hour / warmPatches
+		slot := 24 * time.Hour / time.Duration(max(len(plan.Patches), 1))
 		for i := range plan.Patches {
 			due := midnight.Add(time.Duration(i) * slot)
 			if now.After(due) && !plan.Started[fmt.Sprint(i)] {
@@ -329,11 +332,15 @@ func (s *Server) warmPlanner() {
 }
 
 func (s *Server) planKey(now time.Time) string {
-	return "warm-plan:" + warmPlanVer + ":" + now.Format("2006-01-02")
+	k := "warm-plan:" + warmPlanVer + ":" + now.Format("2006-01-02")
+	if warmBoosted() {
+		k += ":boost" // a boost switched on mid-day gets its own, bigger plan
+	}
+	return k
 }
 
 func (s *Server) loadOrMakePlan(now time.Time) *warmPlan {
-	if p, ok := s.warm.plan.Load().(*warmPlan); ok && p != nil && p.Date == now.Format("2006-01-02") {
+	if p, ok := s.warm.plan.Load().(*warmPlan); ok && p != nil && p.Date == now.Format("2006-01-02") && p.Boost == warmBoosted() {
 		return p
 	}
 	if raw, err := s.Q.GetCachedData(context.Background(), s.planKey(now)); err == nil {
@@ -348,14 +355,19 @@ func (s *Server) loadOrMakePlan(now time.Time) *warmPlan {
 	}
 	p := s.makePlan(now)
 	s.savePlan(p)
+	slog.Info("warm: daily plan made", "date", p.Date, "patches", len(p.Patches), "boost", p.Boost)
 	return p
 }
 
 func (s *Server) savePlan(p *warmPlan) {
 	s.warm.plan.Store(p)
 	enc, _ := json.Marshal(p)
+	key := "warm-plan:" + warmPlanVer + ":" + p.Date
+	if p.Boost {
+		key += ":boost"
+	}
 	s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
-		CacheKey: "warm-plan:" + warmPlanVer + ":" + p.Date, Data: string(enc), ExpiresAt: time.Now().Add(48 * time.Hour),
+		CacheKey: key, Data: string(enc), ExpiresAt: time.Now().Add(48 * time.Hour),
 	})
 }
 
@@ -434,11 +446,12 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	}
 	used := map[string]bool{}
 	fresh := s.freshWarmSet()
-	plan := &warmPlan{Date: now.Format("2006-01-02"), Started: map[string]bool{}}
+	patches := warmPatchesNow()
+	plan := &warmPlan{Date: now.Format("2006-01-02"), Started: map[string]bool{}, Boost: warmBoosted()}
 	usedState := map[string]int{}
-	perState := (warmPatches + 8) / 9 * 2 // ≈ 2× the fair share per Bundesland
+	perState := (patches + 8) / 9 * 2 // ≈ 2× the fair share per Bundesland
 	for _, seed := range seeds {
-		if len(plan.Patches) >= warmPatches {
+		if len(plan.Patches) >= patches {
 			break
 		}
 		g := adm.Gemeinde[seed]
@@ -846,7 +859,8 @@ func (s *Server) warmStatusMap() map[string]any {
 		"cells_built": s.warm.cells.Load(), "warm_kgs": warmKGs, "warm_gemeinden": warmGem,
 		"v24_kgs": v24, "v24_warm": v24Warm, "kg_universe": kgUniverseStatus(),
 		"plan": plan, "policy": map[string]any{"daily_kgs": warmDailyKGs, "patches": warmPatches, "ttl_h": 24,
-			"tier": warmTier(), "idle_after_h": int(warmIdleAfter.Hours()), "idle_patches": warmPatches / warmIdleEvery, "keep_warm_cap": warmKeepCap},
+			"tier": warmTier(), "idle_after_h": int(warmIdleAfter.Hours()), "idle_patches": warmPatches / warmIdleEvery, "keep_warm_cap": warmKeepCap,
+			"boost": warmBoostStatus()},
 		"last_player": lastPlayerAt().UTC().Format(time.RFC3339),
 	}
 }

@@ -47,11 +47,17 @@ func lastPlayerAt() time.Time {
 }
 
 func warmIdle() bool {
+	if warmBoosted() { // boost days (warmboost.go) are never idle
+		return false
+	}
 	t := lastPlayerAt()
 	return t.IsZero() || time.Since(t) > warmIdleAfter
 }
 
 func warmTier() string {
+	if warmBoosted() {
+		return "boost"
+	}
 	if warmIdle() {
 		return "idle"
 	}
