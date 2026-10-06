@@ -57,6 +57,10 @@ if isinstance(v, list) and v:
   fi
 fi
 
+# Cadastre hygiene: fetched /viewport cells under data/ne-reports/work are scratch input only
+# and must never outlive 24 h (orphans from crashed or --keep-cells runs included).
+find "$HERE/../../data/ne-reports/work" -mindepth 1 -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+
 # Token: ne-peer.key in the repo root wins, else the environment. ne_report.py logs a clear
 # "POST skipped — no peer token" line when neither exists.
 EXTRA=()
