@@ -43,7 +43,7 @@ const (
 	warmSpreadTargetActive = 9                  // destination groups ≥ 30 km apart (active / boost) — one per Bundesland
 	warmSpreadTargetIdle   = 3                  // idle tier: still enough for one far hop
 	warmSpreadExpiring     = 3 * time.Hour      // a group this close to expiry is replaced early
-	warmSpreadDailyCap     = 12                 // seeds queued per day (≈ 12 × 10–25 cells)
+	warmSpreadDailyCap     = 16                 // seeds queued per day (≈ 16 × 10–25 cells)
 	warmSpreadSeedKGs      = 8                  // KGs per seed (cluster + nearest v2.4 neighbours)
 	warmSpreadSeedMaxCells = 60                 // cheap seeds only; big Gemeinden come via the daily plan
 	warmSpreadEvery        = 30 * time.Minute
