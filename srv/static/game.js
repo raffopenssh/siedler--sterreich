@@ -606,9 +606,20 @@ function setUrlParams(obj) {
   };
 
   document.getElementById('btn-lucky').onclick = async () => {
+    // Loading screen first, synchronously in the click handler — registration
+    // and the server's Gemeinde pick run behind it, in parallel.
+    G.loadStart = Date.now();
+    show('loading');
+    document.getElementById('loading-muni').textContent = '🎲 ' + tr('Würfle eine Gemeinde…');
+    ['ls-session','ls-parcels','ls-kg','ls-treasures','ls-ready'].forEach(id => setLoadStep(id, ''));
+    setLoadStep('ls-session', 'active');
+    setLoadProgress(2);
+    startTipRotation();
+    startLoadingCountdown(30);
+    const luckyReq = GET('/api/lucky').catch(e => ({error: e.message}));
     const p = await registerAndProceed(true);
-    if (!p) return;
-    await startLucky();
+    if (!p) { show('welcome'); return; }
+    await startLucky(luckyReq);
   };
 
   // Join via invite button — register, join session, go straight to game
@@ -670,11 +681,12 @@ function savePlayer(p) {
 }
 
 // Pick a random municipality and start loading immediately
-async function startLucky() {
+async function startLucky(luckyReq) {
   // Server picks a Gemeinde whose cells are already warm (prefers NE / srtm
-  // terrain coverage); nothing to decide client-side.
+  // terrain coverage); nothing to decide client-side. `luckyReq` = request
+  // already in flight (started before registration so both overlap).
   try {
-    const l = await GET('/api/lucky');
+    const l = await (luckyReq || GET('/api/lucky'));
     if (!l || l.error || !l.gemeinde_code) throw new Error(l && l.error || 'kein Vorschlag');
     const picked = { code: l.gemeinde_code, name: l.name, lon: l.lon, lat: l.lat, enhanced: !!l.enhanced, warm: !!l.warm, kgs: l.kgs || [] };
     G.selectedMuni = picked;

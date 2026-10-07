@@ -108,6 +108,7 @@ const I18N_EXACT = {
   'Natura-2000-Schutzgebiete ein/aus': 'Toggle Natura 2000 protected areas',
   'Mein Standort': 'My location',
   '✨ Enhanced Gelände': '✨ Enhanced terrain',
+  'Würfle eine Gemeinde…': 'Rolling the dice for a municipality…',
   '✨ Enhanced Gelände 🌲': '✨ Enhanced terrain 🌲',
   '✕ Ähnliche ausblenden': '✕ Hide similar',
 
