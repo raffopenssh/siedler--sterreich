@@ -134,3 +134,19 @@ unchanged; v0.3.1 is `bev_equivalent_tags` on the NE server → no re-baselining
 becomes `bevdirect@v0.3.1` automatically. `/api/metrics` → `bevdirect.tile_cache{}`. Our side keeps
 no raw tiles (api_cache = assembled cells only; `tools/ne-report` uses the systemd instance and
 removes its work dir).
+
+## 2026-10-07 — bevdirect-serve v0.3.2 (multi-cell footprint seam dedup)
+
+Upgraded via `bootstrap.sh` (`VERSION=v0.3.2`, tag commit 5ffbe23; tarball sha256 verified
+`5a776c3c…`). Fix: an *unaligned* multi-cell `/viewport` duplicated footprints straddling a z16
+tile edge inside a neighbour cell's 0.004° pad (one cell seam-merged the building whole, the other
+emitted a clipped fragment under a different per-tile id; `compose()` deduped by that id). Repro
+`16.1402,47.7068,16.168,47.728` now yields 419 footprints (was 431) = union of its 4 cells;
+`BEVDIRECT_LIVE=1 go test ./bevdirect -run Live` passes. Parcels/landuse never affected. Aligned
+0.02° cell docs are byte-identical apart from two new fields: `complete` (bool) on footprint and
+landuse pieces and `members` (merged tile-scoped ids) on seam-merged footprints — our code and
+`ne_cells` ignore both. v0.3.2 is listed under `frozen.bev_equivalent_tags` on the NE server →
+no baseline reset, report source becomes `bevdirect@v0.3.2`. `tools/ne-report` has only ever
+built from aligned cells (`ne_report.py` GRID 0.02, floor-aligned), so no report carries the
+duplicates and nothing needs re-reporting. Unit re-tuned after install.sh (`User=exedev`,
+`-cells 120 -prefetch 0`), `bevdirect-serve.prev` = v0.3.1.
