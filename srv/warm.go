@@ -2,10 +2,11 @@ package srv
 
 // Prewarming of cadastre cells (bevdirect-serve → api_cache, 24 h max).
 //
-//   - Daily plan: 100 KGs/day in 20 patches (5 KGs each): a small, fully
-//     srtm-enhanced Gemeinde (grid25 → relief, giants) plus its nearest
-//     neighbour KGs (enhanced or not), one patch every 24h/20, spread over
-//     the Bundesländer. 20 destinations → 20 lucky players land in 20 places.
+//   - Daily plan: ~100 KGs/day in 20 patches (≥ 5 KGs each): a fully
+//     srtm-enhanced Gemeinde (grid25 → relief, giants; any size — all of its
+//     KGs, so it becomes a whole lucky destination) plus its nearest
+//     neighbour KGs (enhanced or not) up to 5, one patch every 24h/20, spread
+//     over the Bundesländer. 20 destinations → 20 lucky players land in 20 places.
 //   - Neighbour warming: the first viewport build in a cell enqueues the KGs
 //     touching that cell plus their adjacent KGs (low priority).
 //   - Session warming: POST /api/session/create enqueues the Gemeinde's KGs.
@@ -42,6 +43,10 @@ const (
 	warmPlanVer    = "v4"
 	warmCellPause  = 800 * time.Millisecond
 	warmFreshGuard = 2 * time.Hour // don't re-warm what is still fresh for this long
+	// warmSeedMaxCells is a sanity guard only (like ne-report's --max-cells):
+	// the biggest Gemeinde in the admin table (Sölden) spans 322 cells, so
+	// every Gemeinde must stay seedable — never size-exclude destinations.
+	warmSeedMaxCells = 600
 )
 
 type warmJob struct {
@@ -381,7 +386,7 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	enhKG := s.enhancedKGSet()
 	var seeds []string
 	for code, g := range adm.Gemeinde {
-		if len(g.KGs) == 0 || len(g.KGs) > warmPatchSize {
+		if len(g.KGs) == 0 || gemeindeCells(adm, g) > warmSeedMaxCells {
 			continue
 		}
 		ok := true
@@ -491,17 +496,26 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	return plan
 }
 
-// growPatch: the seed Gemeinde's KGs, then BFS over KG adjacency (enhanced
-// or not — roaming across the border is fine, only the spawn must be
-// enhanced) until warmPatchSize KGs, skipping already-fresh ones.
+// growPatch: *all* of the seed Gemeinde's KGs (a Gemeinde is only a lucky
+// destination once it is warm as a whole — never cut a big Gemeinde short),
+// then BFS over KG adjacency (enhanced or not — roaming across the border is
+// fine, only the spawn must be enhanced) until warmPatchSize KGs, skipping
+// already-fresh ones.
 func (s *Server) growPatch(seed string, used, fresh, enhanced map[string]bool) []string {
 	adm := admin()
 	g := adm.Gemeinde[seed]
 	var out []string
+	own := map[string]bool{}
+	for _, kg := range g.KGs {
+		own[kg] = true
+	}
 	queue := append([]string{}, g.KGs...)
-	for len(queue) > 0 && len(out) < warmPatchSize {
+	for len(queue) > 0 {
 		kg := queue[0]
 		queue = queue[1:]
+		if !own[kg] && len(out) >= warmPatchSize {
+			break
+		}
 		if used[kg] {
 			continue
 		}
@@ -530,6 +544,20 @@ func (s *Server) growPatch(seed string, used, fresh, enhanced map[string]bool) [
 		queue = append(queue, plain...)
 	}
 	return out
+}
+
+// gemeindeCells counts the distinct grid cells the Gemeinde's KGs span —
+// the real warming cost (Wien: 89 KGs but 180 cells; Sölden: 1 KG, 322).
+func gemeindeCells(adm *adminIndex, g *gemeindeAdmin) int {
+	seen := map[cellID]bool{}
+	for _, kg := range g.KGs {
+		if k := adm.KGs[kg]; k != nil {
+			for _, c := range k.cells() {
+				seen[c] = true
+			}
+		}
+	}
+	return len(seen)
 }
 
 func (s *Server) freshWarmSet() map[string]bool {
