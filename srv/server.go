@@ -323,6 +323,8 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/contrib/plan", s.handleContribPlan)
 	mux.HandleFunc("GET /api/contrib/stats", s.handleContribStats)
 	mux.HandleFunc("GET /api/kg-geo/{kg}", s.handleKGGeo)
+	mux.HandleFunc("GET /api/search-index", s.handleSearchIndex)
+	mux.HandleFunc("GET /api/parcel-find", s.handleParcelFind)
 	// Public-tier adapters (landscape.go)
 	mux.HandleFunc("GET /api/landmarks", s.handleLandmarks)
 	mux.HandleFunc("GET /api/landscape", s.handleLandscape)
@@ -2255,10 +2257,7 @@ func (s *Server) handleUmfeldProxy(w http.ResponseWriter, r *http.Request) {
 			return jsonErrBody("data service error"), 502
 		}
 		if code == 200 {
-			ttl := 24 * time.Hour
-			if strings.Contains(path, "/address_osm") {
-				ttl = time.Hour
-			}
+			ttl := 24 * time.Hour // addresses included: Nominatim upstream is 1 req/s, answers are stable
 			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: cacheKey, Data: string(body), ExpiresAt: time.Now().Add(ttl)})
 			return body, 200
 		}

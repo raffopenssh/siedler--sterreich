@@ -245,7 +245,24 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .search-item:last-child { border-bottom:none; }
 .search-item:hover, .search-item.hi { background:var(--panel-light); color:var(--gold); }
-.search-item small { font-size:16px; color:var(--text-dim); }
+.search-item small { display:block; font-size:16px; color:var(--text-dim); line-height:1.1; }
+.search-item mark { background:none; color:var(--gold); text-decoration:underline; text-decoration-color:rgba(255,200,60,.5); text-underline-offset:2px; }
+.search-item.hi mark { color:#fff; }
+.search-item .s-enh { color:#7ee8fa; }
+.search-item .s-prog { color:var(--gold); font-style:normal; }
+.search-item.s-wait, .search-item.s-none { cursor:default; color:var(--text-dim); }
+.search-item.s-wait:hover, .search-item.s-none:hover { background:none; color:var(--text-dim); }
+.search-sec {
+  padding:5px 12px 2px; font:9px var(--font-pixel); color:var(--text-dim); letter-spacing:.5px;
+  background:rgba(0,0,0,.25); border-bottom:1px solid var(--panel-light); text-transform:uppercase;
+}
+/* 2000s-style striped progress bar while addresses/toponyms are still on their way */
+.search-dropdown.loading::before {
+  content:''; display:block; position:sticky; top:0; z-index:1; height:4px;
+  background:repeating-linear-gradient(90deg, var(--gold) 0 10px, var(--panel-light) 10px 20px);
+  background-size:40px 4px; animation:search-stripes .6s linear infinite;
+}
+@keyframes search-stripes { from { background-position:0 0; } to { background-position:40px 0; } }
 #pick-canvas { flex:1; display:block; cursor:grab; image-rendering:auto; }
 #pick-canvas.dragging { cursor:grabbing; }
 .pick-info {
@@ -639,8 +656,9 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   /* Picker */
   .pick-header { flex-wrap:wrap; gap:8px; padding:8px 10px; }
   .pick-header h2 { font-size:9px; }
-  .pick-search { max-width:100%; }
-  .search-dropdown { max-height:45vh; }
+  .pick-search { max-width:100%; flex-basis:100%; order:3; }   /* own full-width row under the title */
+  .search-dropdown { max-height:50vh; }
+  .search-item small { font-size:15px; }
   .search-item { padding:12px; min-height:48px; font-size:18px; }
 
   /* Lobby */

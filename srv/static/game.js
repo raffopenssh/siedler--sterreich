@@ -756,56 +756,9 @@ function initPicker() {
     }
   });
 
-  // Search: municipalities + addresses in parallel (race-guarded)
-  const inp = document.getElementById('input-search');
-  const dd = document.getElementById('search-results');
-  let timer, seq = 0;
-  inp.addEventListener('input', () => {
-    clearTimeout(timer);
-    const q = inp.value.trim();
-    if (q.length < 2) { dd.classList.remove('open'); return; }
-    timer = setTimeout(async () => {
-      const mySeq = ++seq;
-      dd.innerHTML = '<div class="search-item"><small>Suche…</small></div>';
-      dd.classList.add('open');
-      const [muniRes, addrRes] = await Promise.allSettled([
-        GET(CAD+'/lookup?q='+encodeURIComponent(q)+'&type=gemeinde&limit=6'),
-        GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=4'),
-      ]);
-      if (mySeq !== seq) return; // stale — newer query in flight
-      const munis = muniRes.status==='fulfilled' ? (muniRes.value.data||[]) : [];
-      const addrs = addrRes.status==='fulfilled' ? (addrRes.value.data||[]) : [];
-      let html = munis.map(m => {
-        const enh = G.enhancedGemeinden.some(g => String(g.gemeinde_code) === String(m.code||m.gemeinde_code));
-        return `<div class="search-item" data-code="${m.code||m.gemeinde_code}" data-name="${esc(m.name||m.gemeinde_name)}">
-          🏘️ ${esc(m.name||m.gemeinde_name)}${enh?' <span style="color:#7ee8fa">✨</span>':''}<br><small>${m.gemeinde_name&&m.gemeinde_name!==m.name?esc(m.gemeinde_name)+' · ':''}${m.code||m.gemeinde_code}</small></div>`;
-      }).join('');
-      html += addrs.map((a,i) => {
-        const l = addrLabel(a);
-        return `<div class="search-item" data-lon="${a.lon}" data-lat="${a.lat}" data-name="${esc(l.main)}">
-          📍 ${esc(l.main)}${l.sub?'<br><small>'+esc(l.sub)+'</small>':''}</div>`;
-      }).join('');
-      dd.innerHTML = html || '<div class="search-item">Keine Ergebnisse</div>';
-      dd.querySelectorAll('.search-item').forEach(el => {
-        el.onclick = () => {
-          dd.classList.remove('open');
-          if (el.dataset.code) {
-            pickMunicipality(el.dataset.code, el.dataset.name);
-          } else if (el.dataset.lon) {
-            // Address result - find municipality at that point
-            findMuniAtPoint(parseFloat(el.dataset.lon), parseFloat(el.dataset.lat), el.dataset.name);
-          }
-        };
-      });
-    }, 300);
-  });
-  inp.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { dd.classList.remove('open'); inp.blur(); }
-    if (e.key === 'Enter') {
-      const first = dd.querySelector('.search-item[data-code],.search-item[data-lon]');
-      if (first) first.click();
-    }
-  });
+  // Search: unified typeahead (local Gemeinde/KG index + addresses), see createSearchBox
+  G._pickSearch = createSearchBox(document.getElementById('input-search'), document.getElementById('search-results'), 'pick');
+  searchIndexLoad().catch(() => {});
 
   document.getElementById('btn-back-pick').onclick = () => {
     G.pick.level = 'states';
@@ -1298,8 +1251,10 @@ function pip(x, y, poly) {
 
 window.pickMunicipality = async function(code, name) {
   G.selectedMuni = { code, name };
+  // A search pick may carry an exact spawn (KG centre / parcel / address) → wins over the Gemeinde centroid
+  if (G._muniHint && G._muniHint.code === code && G._muniHint.lon) { G.selectedMuni.lon = G._muniHint.lon; G.selectedMuni.lat = G._muniHint.lat; }
   // Try to get coords from already-loaded data
-  if (pickData.allMunis) {
+  if (!G.selectedMuni.lon && pickData.allMunis) {
     const m = pickData.allMunis.find(m => (m.gemeinde_code||m.code) === code);
     if (m) { G.selectedMuni.lon = m.lon; G.selectedMuni.lat = m.lat; }
   }
@@ -1353,7 +1308,7 @@ async function startSinglePlayer() {
     center_lon:m.lon, center_lat:m.lat,
     // Lucky cluster pick: the point sits in the middle of warm+enhanced KGs — the
     // server must not re-snap it to the OSM village (may be an unprocessed KG).
-    spawn_exact: !!(G.luckyPick && G.luckyPick.spawn_kg && G.luckyPick.lon === m.lon && G.luckyPick.lat === m.lat),
+    spawn_exact: !!(G.luckyPick && G.luckyPick.spawn_kg && G.luckyPick.lon === m.lon && G.luckyPick.lat === m.lat) || !!(G._muniHint && G._muniHint.code === m.code && G._muniHint.lon === m.lon),
   });
   if (res.error) { toast(res.error,'err'); show('pick'); return; }
   G.session = res.session;
@@ -1583,6 +1538,7 @@ async function startGameWithLoading() {
   setLoadStep('ls-kg', 'active');
   await fetchKGPolygonsBlocking(getUrlParam('dev') ? 6000 : 6000);
   buildEZIndex();
+  if (G.pendingSelect) { G.cam.zoom = Math.max(G.cam.zoom, 17.5); setTimeout(checkPendingSelect, 50); setTimeout(() => selectParcelWhenLoaded(G.pendingSelect || ''), 1500); }
   mark('cadastre_done');
   loadTallSeen();
   GET('/api/player/'+G.player.id).then(pl => {
@@ -1742,11 +1698,20 @@ async function loadMoreParcels() {
   // Polygon geometry ALWAYS loads, at every zoom: fetchKGPolygons tiles the
   // viewport into grid cells (nearest first) — never gate this on span, because
   // viewBounds() is in device pixels and trips early on retina/wide screens.
-  fetchKGPolygons().then(() => { buildEZIndex(); refreshSimilarForView(); updateEnhancedBadge(); }).catch(e => console.error(e));
+  fetchKGPolygons().then(() => { buildEZIndex(); refreshSimilarForView(); updateEnhancedBadge(); checkPendingSelect(); }).catch(e => console.error(e));
   loadToponyms().catch(e => console.error(e));
   if (G.sel && document.getElementById('parcel-popup')?.classList.contains('open')) updateSimilarRadiusLabel();
   detectAdjacentMunicipalities();
   checkViewportMunicipality();
+}
+
+/** A parcel picked in the search before the game opened (G.pendingSelect) → select it once its cell is here. */
+function checkPendingSelect() {
+  if (!G.pendingSelect) return;
+  const f = DEV.find(G.pendingSelect);
+  if (!f) return;
+  G.pendingSelect = null;
+  showParcelPopup(f); render();
 }
 
 /** Attribution notice from /api/viewport (year-bearing BEV CC BY text) → #map-attrib. */
@@ -9535,68 +9500,400 @@ function zoomForResult(a) {
   return a.address?.house_number ? 18 : 16.5;
 }
 
+// ================= UNIFIED SEARCH (picker + in-game) =================
+// Zero-latency typeahead: the whole admin table (Gemeinden + KGs, /api/search-index,
+// ~160 KB gz, cached a day) is indexed in the browser; every keystroke renders
+// local hits synchronously. Only addresses (OSM) and toponyms (BEV DLM) go to
+// umfeld — debounced, cached per query, merged in under a striped progress bar
+// without ever wiping what is already on screen. Parcel ids ("68/3",
+// "12105-68/3", "Dürnstein 68/3") resolve via loaded polygons first, then
+// /api/parcel-find (KG sweep with 202 progress).
+const SIDX = { g: null, k: null, loading: null, ready: false };
+const SEARCH_RECENT_KEY = 'siedler_recent_search', SEARCH_RECENT_MAX = 6;
+
+/** Diacritics-free lower-case key, 1:1 in length with the input (for highlighting). */
+function snorm(s) {
+  let out = '';
+  for (const ch of String(s || '')) {
+    let c = ch.toLowerCase();
+    if (c === 'ß') c = 's';
+    else if (c > '\u007f') { const d = c.normalize('NFD'); c = d.length ? d[0] : c; }
+    if (c === '-' || c === '.' || c === ',' || c === '/') c = ' ';
+    out += c;
+  }
+  return out;
+}
+/** Query key: snorm + "st." → "sankt", collapsed spaces. */
+function sqnorm(q) {
+  return snorm(q).replace(/\bst\b\.?\s*/g, 'sankt ').replace(/\s+/g, ' ').trim();
+}
+
+function searchIndexLoad() {
+  if (SIDX.loading) return SIDX.loading;
+  SIDX.loading = GET('/api/search-index').then(d => {
+    if (!d || !Array.isArray(d.g)) throw new Error('bad index');
+    SIDX.g = d.g.map(r => ({ kind: 'gemeinde', code: r[0], name: r[1], district: r[2], state: r[3], lon: r[4] / 1e3, lat: r[5] / 1e3, span: r[6] / 1e3, n: sqnorm(r[1]) }));
+    SIDX.k = d.k.map(r => { const g = SIDX.g[r[2]]; return { kind: 'kg', code: r[0], name: r[1], g, lon: r[3] / 1e3, lat: r[4] / 1e3, span: r[5] / 1e3, n: sqnorm(r[1]) }; });
+    SIDX.ready = true;
+    return SIDX;
+  }).catch(e => { SIDX.loading = null; throw e; });
+  return SIDX.loading;
+}
+
+/** 0 = no match, else a score: 4 exact, 3 prefix, 2 every token at a word start, 1 substring. */
+function smatch(n, q, toks) {
+  if (!q) return 0;
+  if (n === q) return 4;
+  if (n.startsWith(q)) return 3;
+  let all = true;
+  for (const t of toks) { if (!(n.startsWith(t) || n.includes(' ' + t))) { all = false; break; } }
+  if (all) return 2;
+  return q.length >= 4 && n.includes(q) ? 1 : 0;
+}
+
+/** Local hits for the typed query: Gemeinden, KGs, codes and parcel intents. */
+function searchLocal(q0, mode) {
+  const out = { gemeinden: [], kgs: [], parcels: [], q: q0 };
+  const raw = q0.trim();
+  if (!raw) return out;
+  const cam = mode === 'game' ? G.cam : null;
+  const dist = r => cam ? geoDist([r.lon, r.lat], [cam.lon, cam.lat]) : 0;
+  const enh = code => G.enhancedGemeinden.some(g => String(g.gemeinde_code) === String(code));
+  let m;
+  // "12105-68/3" / "12105 68/3" / "12105 .68" → one parcel
+  if ((m = raw.match(/^(\d{5})\s*[- ]\s*(\.?\d{1,6}(?:\/\d{1,5})?)$/))) {
+    const k = SIDX.k && SIDX.k.find(x => x.code === m[1]);
+    if (k) out.parcels.push({ kind: 'parcel', kg: k, gnr: m[2].replace(/^\./, '') });
+    return out;
+  }
+  // "68/3" / ".68" / bare number ≤ 5 digits with "/" or "." → parcel in a KG around the camera
+  if (mode === 'game' && (m = raw.match(/^(\.?\d{1,6}(?:\/\d{1,5})?)$/)) && SIDX.k && (raw.includes('/') || raw.startsWith('.') || raw.length <= 3)) {   // 4 bare digits = PLZ
+    const gnr = m[1].replace(/^\./, '');
+    const near = kgsAroundCamera(3);
+    for (const k of near) out.parcels.push({ kind: 'parcel', kg: k, gnr, local: !!DEV.find(k.code + '-' + gnr) });
+  }
+  // 5-digit code → KG + Gemeinde
+  if (/^\d{5}$/.test(raw) && SIDX.k) {
+    const k = SIDX.k.find(x => x.code === raw); if (k) out.kgs.push({ ...k, score: 4, d: dist(k) });
+    const g = SIDX.g.find(x => x.code === raw); if (g) out.gemeinden.push({ ...g, score: 4, d: dist(g), enh: enh(g.code) });
+    return out;
+  }
+  if (!SIDX.ready) return out;
+  // "Dürnstein 68/3" → KG by name + parcel number
+  let nameQ = raw;
+  if ((m = raw.match(/^(.+?)\s+(\.?\d{1,6}\/\d{1,5}|\.\d{1,6})$/))) {
+    const nq = sqnorm(m[1]), toks = nq.split(' ');
+    const ks = SIDX.k.filter(k => smatch(k.n, nq, toks) >= 3).sort((a, b) => dist(a) - dist(b)).slice(0, 3);
+    for (const k of ks) out.parcels.push({ kind: 'parcel', kg: k, gnr: m[2].replace(/^\./, '') });
+    if (ks.length) nameQ = m[1];
+  }
+  const q = sqnorm(nameQ), toks = q.split(' ');
+  if (q.length < 2) return out;
+  const gs = [], ks = [];
+  for (const g of SIDX.g) { const sc = smatch(g.n, q, toks); if (sc) gs.push({ ...g, score: sc, d: dist(g), enh: enh(g.code) }); }
+  for (const k of SIDX.k) { const sc = smatch(k.n, q, toks); if (sc) ks.push({ ...k, score: sc, d: dist(k) }); }
+  // in-game, nearby names outrank better-spelled far ones (a substring hit 1 km away beats a prefix hit 30 km away)
+  const eff = r => r.score + (cam ? (r.d < 3000 ? 2 : r.d < 15000 ? 1 : 0) : 0);
+  const cmp = (a, b) => (eff(b) - eff(a)) || ((b.enh ? 1 : 0) - (a.enh ? 1 : 0)) || (cam ? a.d - b.d : 0) || (a.name.length - b.name.length) || a.name.localeCompare(b.name, 'de');
+  gs.sort(cmp); ks.sort(cmp);
+  const gl = mode === 'game' ? 4 : 6, kl = 5;
+  out.gemeinden = gs.slice(0, gl);
+  // a KG that merely repeats its Gemeinde (same name, Gemeinde already listed) adds nothing
+  const gshown = new Set(out.gemeinden.map(g => g.code));
+  out.kgs = ks.filter(k => !(k.n === k.g.n && gshown.has(k.g.code) && k.score < 4)).slice(0, kl);
+  return out;
+}
+
+/** KGs around the camera (index rows): the KGs of the loaded parcels nearest
+ *  the camera first (the one under the crosshair leads), then index neighbours. */
+function kgsAroundCamera(n) {
+  if (!SIDX.k) return [];
+  const c = G.cam, byCode = new Map();
+  for (const f of G.parcelPolys) {
+    const p = f.properties, kg = String(p.kg_code || '');
+    if (!kg || p.lon == null) continue;
+    const d = geoDist([p.lon, p.lat], [c.lon, c.lat]);
+    if (d > 2500) continue;
+    const e = byCode.get(kg) || { d: 1e9, n: 0 };
+    e.n++; if (d < e.d) e.d = d;
+    byCode.set(kg, e);
+  }
+  const near = [...byCode.entries()].sort((a, b) => a[1].d - b[1].d).map(([code]) => SIDX.k.find(k => k.code === code)).filter(Boolean);
+  if (near.length < n) {
+    const rows = [];
+    for (const k of SIDX.k) {
+      if (near.includes(k)) continue;
+      const d = geoDist([k.lon, k.lat], [c.lon, c.lat]);
+      if (d < 6000 + k.span * 60000) rows.push({ k, d });
+    }
+    rows.sort((a, b) => a.d - b.d);
+    for (const r of rows) { if (near.length >= n) break; near.push(r.k); }
+  }
+  return near.slice(0, n);
+}
+
+/** Wrap the matched part of `name` in <mark> (normalised match, 1:1 char mapping). */
+function smark(name, q) {
+  const n = snorm(name), qq = snorm(q).trim();
+  if (!qq) return esc(name);
+  let i = n.indexOf(qq);
+  if (i < 0) { const t = qq.split(' ')[0]; i = n.startsWith(t) ? 0 : n.indexOf(' ' + t) + 1; if (i <= 0 && !n.startsWith(t)) return esc(name); return esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + t.length)) + '</mark>' + esc(name.slice(i + t.length)); }
+  return esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + qq.length)) + '</mark>' + esc(name.slice(i + qq.length));
+}
+
+function fmtKm(m) { return m == null ? '' : m < 950 ? Math.round(m / 50) * 50 + ' m' : m < 9500 ? (m / 1000).toFixed(1) + ' km' : Math.round(m / 1000) + ' km'; }
+function zoomForSpan(span) { const px = (gc ? gc.width : 900) * 0.75; return Math.max(13, Math.min(17, Math.log2(px / (Math.max(span, 1e-3) * 25000)) + 14)); }
+
+function searchRecentGet() { try { return JSON.parse(localStorage.getItem(SEARCH_RECENT_KEY) || '[]'); } catch (e) { return []; } }
+function searchRecentPush(item) {
+  const rec = searchRecentGet().filter(r => r.key !== item.key);
+  rec.unshift(item);
+  try { localStorage.setItem(SEARCH_RECENT_KEY, JSON.stringify(rec.slice(0, SEARCH_RECENT_MAX))); } catch (e) {}
+}
+
+/** Resolve a parcel intent to {lon,lat,parcel_id,…}; `onProgress(text)` for the 202 sweep. */
+async function resolveParcelIntent(it, onProgress) {
+  const pid = it.kg.code + '-' + it.gnr;
+  const f = DEV.find(pid);
+  if (f) { const [lon, lat] = featureLonLat(f); return { parcel_id: pid, lon, lat, feature: f }; }
+  const t0 = Date.now();
+  for (let i = 0; i < 20 && Date.now() - t0 < 60000; i++) {
+    const url = `/api/parcel-find?kg=${it.kg.code}&gnr=${encodeURIComponent(it.gnr)}&lon=${G.cam.lon.toFixed(5)}&lat=${G.cam.lat.toFixed(5)}`;
+    const d = await GET(url, null, { pendingBudgetMs: 0 });
+    if (d && d.found && d.parcel) return { parcel_id: pid, lon: d.parcel.lon, lat: d.parcel.lat, parcel: d.parcel };
+    if (d && (d.pending || d.status === 'pending')) {
+      const p = d.progress || {};
+      if (onProgress) onProgress(p.total ? `Durchsuche ${esc(it.kg.name)} … ${p.searched || 0}/${p.total} Zellen` : 'Suche …');
+      await new Promise(r => setTimeout(r, Math.min(Math.max(+(d.retry_after_s || 2), 1), 6) * 1000));
+      continue;
+    }
+    if (d && d.status === 'down') throw new Error('Kataster gerade nicht erreichbar');
+    return null;
+  }
+  return null;
+}
+
+/** Select a parcel once its cell is loaded (after a fly-to). */
+function selectParcelWhenLoaded(pid, tries = 25) {
+  if (!pid) return false;
+  const f = DEV.find(pid);
+  if (f) { G.pendingSelect = null; showParcelPopup(f); render(); return true; }
+  if (tries <= 0) return false;
+  setTimeout(() => selectParcelWhenLoaded(pid, tries - 1), 400);
+  return false;
+}
+
+/**
+ * One search box. mode 'pick' (municipality picker) or 'game' (in-game bar).
+ * Rows: Gemeinden, Katastralgemeinden, Grundstück (parcel intents), Orte &
+ * Fluren (toponyms, game only), Adressen (OSM). Local rows render per keystroke,
+ * remote rows merge in; a stale response never overwrites a newer query.
+ */
+function createSearchBox(inp, dd, mode) {
+  const st = { q: '', seq: 0, items: [], hi: -1, local: null, remote: null, remoteFor: '', orte: null, orteFor: '', pending: false, cache: new Map(), timer: 0, timerL: 0, busy: null };
+  const isGame = mode === 'game';
+
+  const rowHTML = (it, i) => {
+        switch (it.kind) {
+      case 'gemeinde': return `<div class="search-item" data-idx="${i}">🏘️ ${smark(it.name, st.q)}${it.enh ? ' <span class="s-enh" title="Enhanced Gelände">✨</span>' : ''}<small>${esc(it.district)} · ${esc(it.state)}${isGame && it.d ? ' · ' + fmtKm(it.d) : ''}</small></div>`;
+      case 'kg': return `<div class="search-item" data-idx="${i}">📐 ${smark(it.name, st.q)}<small>KG ${it.code} · ${esc(it.g.name)}${isGame && it.d ? ' · ' + fmtKm(it.d) : ''}</small></div>`;
+      case 'parcel': return `<div class="search-item" data-idx="${i}">${it.local ? '🟩' : '🔎'} Grundstück ${esc(it.gnr)}<small>KG ${esc(it.kg.name)} (${it.kg.code}) · ${esc(it.kg.g.name)}${it.local ? ' · geladen' : ''}${it.progress ? '<br><i class="s-prog">' + it.progress + '</i>' : ''}</small></div>`;
+      case 'ort': return `<div class="search-item" data-idx="${i}">🏡 ${smark(it.name, st.q)}<small>Ortschaft · ${esc(it.gname)}${it.plz ? ' · PLZ ' + esc(it.plz) : ''}</small></div>`;
+      case 'recent': return `<div class="search-item" data-idx="${i}">🕘 ${esc(it.label)}<small>${esc(it.sub || '')}</small></div>`;
+      default: { const l = addrLabel(it); return `<div class="search-item" data-idx="${i}">${it._topo ? '' : '📍 '}${esc(l.main)}${l.sub ? '<small>' + esc(l.sub) + '</small>' : ''}</div>`; }
+    }
+  };
+  const sec = (label) => `<div class="search-sec">${label}</div>`;
+
+  const paint = () => {
+    const L = st.local || { gemeinden: [], kgs: [], parcels: [] };
+    const R = (st.remoteFor === st.q && st.remote) || null;
+    const items = [], parts = [];
+    const push = (label, arr) => { if (!arr.length) return; parts.push(sec(label)); for (const it of arr) { parts.push(rowHTML(it, items.length)); items.push(it); } };
+    if (!st.q) {
+      const rec = searchRecentGet();
+      if (rec.length) push('Zuletzt gesucht', rec.map(r => ({ kind: 'recent', ...r })));
+    } else {
+      push('Grundstück', L.parcels);
+      push('Gemeinden', L.gemeinden);
+      push('Katastralgemeinden', L.kgs);
+      const O = (st.orteFor === st.q && st.orte) || [];
+      const gshown = new Set(L.gemeinden.map(g => g.n));
+      push('Orte', O.filter(o => !gshown.has(sqnorm(o.name)) && !L.kgs.some(k => k.n === sqnorm(o.name) && k.g.code === o.gcode)));
+      if (R) {
+        const strong = (R.topo || []).filter(t => t._topo.score >= 0.85), weak = (R.topo || []).filter(t => t._topo.score < 0.85);
+        push('Orte & Fluren', strong);
+        push('Adressen', R.addr || []);
+        if (weak.length) push('Ähnliche Namen', weak);
+      }
+    }
+    st.items = items;
+    if (st.hi >= items.length) st.hi = items.length ? 0 : -1;
+    if (st.hi < 0 && items.length && st.q) st.hi = 0;
+    let html = parts.join('');
+    if (st.pending && st.q) html += `<div class="search-item s-wait"><small>${items.length ? 'Adressen werden gesucht …' : 'Suche Adressen & Orte …'}</small></div>`;
+    else if (!items.length && st.q) html += `<div class="search-item s-none"><small>${st.q.length < 2 ? 'Weiter tippen …' : !SIDX.ready ? 'Ortsverzeichnis lädt …' : 'Keine Treffer – Gemeinde, KG, Adresse, PLZ oder Grundstück (z.&nbsp;B. 68/3)'}</small></div>`;
+    dd.innerHTML = html;
+    dd.classList.toggle('loading', !!st.pending);
+    dd.classList.toggle('open', !!html);
+    if (st.hi >= 0) { const h = dd.querySelector(`.search-item[data-idx="${st.hi}"]`); if (h) h.classList.add('hi'); }
+    dd.querySelectorAll('.search-item[data-idx]').forEach(el => {
+      el.onmousedown = e => { e.preventDefault(); choose(st.items[+el.dataset.idx]); };
+      el.onmousemove = () => { const i = +el.dataset.idx; if (i !== st.hi) { st.hi = i; dd.querySelectorAll('.search-item.hi').forEach(x => x.classList.remove('hi')); el.classList.add('hi'); } };
+    });
+    const hiEl = dd.querySelector('.search-item.hi'); if (hiEl && hiEl.scrollIntoView) hiEl.scrollIntoView({ block: 'nearest' });
+  };
+
+  // addresses/toponyms: ≥ 3 chars, not a KG code / parcel id; a bare 4-digit number is a PLZ
+  const remoteWanted = q => q.length >= 3 && !/^\d{5}(\s*[- ].*)?$/.test(q) && !(/^\.?\d{1,6}(\/\d+)?$/.test(q) && !/^\d{4}$/.test(q));
+  // Fast remote (umfeld /lookup, ~10–40 ms): Ortschaften + PLZ — the register
+  // knows 16 988 places the admin table does not. Fires after 120 ms.
+  const fetchLookup = async (q) => {
+    const key = 'l:' + q;
+    if (st.cache.has(key)) { st.orte = st.cache.get(key); st.orteFor = q; paint(); return; }
+    const mySeq = st.seq;
+    const rows = await GET(CAD + '/lookup?q=' + encodeURIComponent(q) + '&limit=10').then(r => (r.data || []).filter(x => x.type === 'ortschaft' && x.gemeinde_code)).catch(() => []);
+    const seen = new Set(), orte = [];
+    for (const r of rows) { const k = r.name + '|' + r.gemeinde_code; if (seen.has(k)) continue; seen.add(k); orte.push({ kind: 'ort', name: r.name, plz: (r.plz || [])[0] || '', gcode: String(r.gemeinde_code), gname: r.gemeinde_name || '' }); if (orte.length >= 4) break; }
+    st.cache.set(key, orte);
+    if (mySeq !== st.seq) return;
+    st.orte = orte; st.orteFor = q;
+    if (st.q === q) paint();
+  };
+  // Slow remote (Nominatim 1 req/s upstream; our proxy caches a day): in the
+  // game the query is also asked *with the current Gemeinde appended* — a
+  // street typed while playing almost always means the local one.
+  const addrGET = q => GET(CAD + '/search/address_osm?q=' + encodeURIComponent(q) + '&limit=' + (isGame ? 5 : 4)).then(r => r.data || []).catch(() => []);
+  const fetchRemote = async (q) => {
+    const mySeq = ++st.seq;
+    if (st.cache.has(q)) { st.remote = st.cache.get(q); st.remoteFor = q; st.pending = false; paint(); return; }
+    st.pending = true; paint();
+    const muni = isGame ? currentMuniName() : '';
+    const biased = muni && !snorm(q).includes(snorm(muni).split(' ')[0]) && !/^\d{4}$/.test(q);
+    const [addrLocal, addrAll, topo] = await Promise.all([
+      biased ? addrGET(q + ' ' + muni) : Promise.resolve([]),
+      addrGET(q),
+      isGame ? searchToponyms(q, 4) : Promise.resolve([]),
+    ]);
+    const seen = new Set(), addr = [];
+    for (const a of [...addrLocal, ...addrAll]) { const k = a.display_name || (a.lon + ',' + a.lat); if (seen.has(k)) continue; seen.add(k); addr.push(a); }
+    const res = { addr: addr.slice(0, isGame ? 6 : 5), topo };
+    st.cache.set(q, res); if (st.cache.size > 80) st.cache.delete(st.cache.keys().next().value);
+    if (mySeq !== st.seq) return;          // a newer query is in flight
+    st.remote = res; st.remoteFor = q; st.pending = false;
+    if (st.q === q) paint();
+  };
+
+  const onInput = () => {
+    const q = inp.value.trim();
+    st.q = q;
+    clearTimeout(st.timer); clearTimeout(st.timerL);
+    st.local = searchLocal(q, mode);
+    if (st.orteFor !== q) st.orte = st.cache.has('l:' + q) ? st.cache.get('l:' + q) : null;
+    if (q.length >= 2 && !/^\d{5}/.test(q) && !/^\.?\d{1,6}(\/\d+)?$/.test(q.replace(/^\d{4}$/, 'x'))) st.timerL = setTimeout(() => fetchLookup(q), 120);
+    if (!SIDX.ready && q) searchIndexLoad().then(() => { if (st.q === q) { st.local = searchLocal(q, mode); paint(); } }).catch(() => {});
+    if (st.remoteFor !== q) { if (!(st.cache.has(q))) st.remote = null; else { st.remote = st.cache.get(q); st.remoteFor = q; } }
+    st.hi = -1;
+    if (remoteWanted(q)) {
+      if (st.cache.has(q)) { st.remote = st.cache.get(q); st.remoteFor = q; st.pending = false; }
+      else { st.pending = true; st.timer = setTimeout(() => fetchRemote(q), 220); }
+    } else { st.pending = false; st.seq++; }
+    paint();
+  };
+
+  const choose = async (it) => {
+    if (!it || st.busy) return;
+    if (it.kind === 'recent') {
+      if (it.kind2 === 'parcel') it = { kind: 'parcel', kg: SIDX.k.find(k => k.code === it.kg) || { code: it.kg, name: it.kgName || it.kg, g: { name: '' } }, gnr: it.gnr };
+      else it = it.item;
+      if (!it) return;
+    }
+    if (it.kind === 'parcel') {
+      st.busy = it; it.progress = 'Suche …'; paint();
+      try {
+        const r = await resolveParcelIntent(it, txt => { it.progress = txt; paint(); });
+        st.busy = null; it.progress = '';
+        if (!r) { it.progress = '<b>nicht gefunden</b> – Nummer prüfen'; paint(); setTimeout(() => { it.progress = ''; paint(); }, 2500); return; }
+        searchRecentPush({ key: 'p:' + r.parcel_id, kind2: 'parcel', label: 'Grundstück ' + it.gnr, sub: 'KG ' + it.kg.name, kg: it.kg.code, kgName: it.kg.name, gnr: it.gnr });
+        close(it.kg.name + ' ' + it.gnr);
+        if (isGame) { flyToSmart(r.lon, r.lat, 17.8); selectParcelWhenLoaded(r.parcel_id); }
+        else { G._muniHint = { code: it.kg.g.code, lon: r.lon, lat: r.lat }; G.pendingSelect = r.parcel_id; pickMunicipality(it.kg.g.code, it.kg.g.name); }
+      } catch (e) { st.busy = null; it.progress = '<b>' + esc(e.message || 'Fehler') + '</b>'; paint(); }
+      return;
+    }
+    const recOf = (label, sub) => ({ key: it.kind + ':' + (it.code || (it.lon + ',' + it.lat)), label, sub, item: it });
+    if (it.kind === 'gemeinde') {
+      searchRecentPush(recOf(it.name, it.district + ' · ' + it.state)); close(it.name);
+      if (isGame) flyToSmart(it.lon, it.lat, Math.max(14, Math.min(zoomForSpan(it.span), 15.5)));   // a Gemeinde: land where parcels are readable
+      else { G._muniHint = null; pickMunicipality(it.code, it.name); }
+      return;
+    }
+    if (it.kind === 'ort') {
+      // the register has no coordinates for an Ortschaft → BEV toponym of that name near the Gemeinde, else Gemeinde centre
+      searchRecentPush({ key: 'o:' + it.gcode + ':' + it.name, label: it.name, sub: 'Ortschaft · ' + it.gname, item: it }); close(it.name);
+      const g = SIDX.g && SIDX.g.find(x => x.code === it.gcode);
+      let lon = g ? g.lon : 0, lat = g ? g.lat : 0, zoom = 15;
+      try {
+        const d = await GET(CAD + `/toponyms/search?q=${encodeURIComponent(it.name)}&near=${lon.toFixed(3)},${lat.toFixed(3)}&radius=15000&limit=3`);
+        const t = (d?.data || []).find(x => sqnorm(x.name) === sqnorm(it.name)) || (d?.data || [])[0];
+        if (t && t.lon) { lon = t.lon; lat = t.lat; zoom = 15.5; }
+      } catch (e) {}
+      if (!lon) return;
+      if (isGame) flyToSmart(lon, lat, zoom);
+      else { G._muniHint = { code: it.gcode, lon, lat }; pickMunicipality(it.gcode, it.gname); }
+      return;
+    }
+    if (it.kind === 'kg') {
+      searchRecentPush(recOf(it.name, 'KG ' + it.code + ' · ' + it.g.name)); close(it.name);
+      if (isGame) flyToSmart(it.lon, it.lat, Math.max(14.5, Math.min(zoomForSpan(it.span), 16)));
+      else { G._muniHint = { code: it.g.code, lon: it.lon, lat: it.lat }; pickMunicipality(it.g.code, it.g.name); }
+      return;
+    }
+    // address / toponym
+    const l = addrLabel(it);
+    searchRecentPush(recOf(l.main, l.sub)); close(l.main);
+    if (isGame) flyToSmart(parseFloat(it.lon), parseFloat(it.lat), zoomForResult(it));
+    else findMuniAtPoint(parseFloat(it.lon), parseFloat(it.lat), l.main);
+  };
+  const close = (label) => { dd.classList.remove('open'); if (label != null) inp.value = label; inp.blur(); };
+
+  inp.addEventListener('input', onInput);
+  inp.addEventListener('focus', () => { searchIndexLoad().catch(() => {}); st.q = inp.value.trim(); if (!st.local) st.local = searchLocal(st.q, mode); paint(); });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { close(null); return; }
+    const n = st.items.length;
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!dd.classList.contains('open')) { paint(); return; } if (n) { st.hi = (st.hi + 1) % n; paint(); } }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); if (n) { st.hi = (st.hi - 1 + n) % n; paint(); } }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (n) { choose(st.items[st.hi >= 0 ? st.hi : 0]); return; }
+      // nothing local yet: wait for the remote answer and take its first row
+      if (st.pending) { const q = st.q; const t = setInterval(() => { if (st.q !== q) { clearInterval(t); return; } if (!st.pending) { clearInterval(t); if (st.items.length) choose(st.items[0]); } }, 60); setTimeout(() => clearInterval(t), 8000); }
+    }
+  });
+  document.addEventListener('pointerdown', e => { if (!dd.contains(e.target) && e.target !== inp) dd.classList.remove('open'); });
+  return { state: st, paint, choose };
+}
+
+/** Fly with a zoom-out arc proportional to distance (long hops read as travel). */
+function flyToSmart(lon, lat, zoom) {
+  const d = geoDist([lon, lat], [G.cam.lon, G.cam.lat]);
+  const dur = d < 2000 ? 700 : d < 20000 ? 1100 : d < 100000 ? 1500 : 1900;
+  const dip = d < 3000 ? 0 : d < 20000 ? 1.2 : d < 100000 ? 2.2 : 3;
+  flyTo(lon, lat, zoom, { dur, dip });
+}
+
+/** Name of the Gemeinde the player is in (session home, else the one under the camera). */
+function currentMuniName() {
+  const n = (G.currentMuniName) || (G.session && G.session.municipality_name) || (G.selectedMuni && G.selectedMuni.name) || '';
+  return String(n).replace(/\s*\(.*\)\s*$/, '');
+}
+
 function initGameSearch() {
   const inp = document.getElementById('game-search-input');
   const dd = document.getElementById('game-search-results');
   if (!inp || !dd) return;
-  let timer, seq = 0, items = [], hi = -1;
-
-  const pick = (a) => {
-    if (!a) return;
-    dd.classList.remove('open');
-    inp.value = addrLabel(a).main;
-    inp.blur();
-    flyTo(parseFloat(a.lon), parseFloat(a.lat), zoomForResult(a));
-  };
-  const renderDD = () => {
-    if (!items.length) { dd.innerHTML = '<div class="search-item"><small>Keine Ergebnisse</small></div>'; return; }
-    dd.innerHTML = items.map((a, i) => {
-      const l = addrLabel(a);
-      return `<div class="search-item${i===hi?' hi':''}" data-idx="${i}">${esc(l.main)}${l.sub?'<br><small>'+esc(l.sub)+'</small>':''}</div>`;
-    }).join('');
-    dd.querySelectorAll('.search-item[data-idx]').forEach(el => {
-      el.onmousedown = e => { e.preventDefault(); pick(items[+el.dataset.idx]); };
-    });
-  };
-
-  inp.addEventListener('input', () => {
-    clearTimeout(timer);
-    const q = inp.value.trim();
-    if (q.length < 2) { dd.classList.remove('open'); items = []; return; }
-    timer = setTimeout(async () => {
-      const mySeq = ++seq;
-      dd.innerHTML = '<div class="search-item"><small>Suche…</small></div>';
-      dd.classList.add('open');
-      try {
-        const [res, topo] = await Promise.all([
-          GET(CAD+'/search/address_osm?q='+encodeURIComponent(q)+'&limit=6').catch(() => ({data: []})),
-          searchToponyms(q, 4),
-        ]);
-        if (mySeq !== seq) return; // stale response — a newer query is in flight
-        // Official BEV names (Almen, Rieden, Gipfel, Höfe) rank above OSM when
-        // they match well; weaker fuzzy hits go below the addresses.
-        const strong = topo.filter(t => t._topo.score >= 0.85), weak = topo.filter(t => t._topo.score < 0.85);
-        items = [...strong, ...(res.data || []), ...weak].slice(0, 8);
-        hi = items.length ? 0 : -1;
-        renderDD();
-      } catch(e) {
-        if (mySeq !== seq) return;
-        dd.innerHTML = '<div class="search-item"><small>Fehler bei der Suche</small></div>';
-      }
-    }, 300);
-  });
-  inp.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { dd.classList.remove('open'); inp.blur(); return; }
-    if (!items.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); hi = (hi + 1) % items.length; renderDD(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); hi = (hi - 1 + items.length) % items.length; renderDD(); }
-    else if (e.key === 'Enter') { e.preventDefault(); pick(items[hi >= 0 ? hi : 0]); }
-  });
-  inp.addEventListener('focus', () => { if (items.length) dd.classList.add('open'); });
-  // Close dropdown on outside click
-  document.addEventListener('click', e => {
-    if (!e.target.closest('#game-search')) dd.classList.remove('open');
-  });
+  G._gameSearch = createSearchBox(inp, dd, 'game');
 }
 
 // ================= ADJACENT MUNICIPALITY DETECTION =================
@@ -9644,6 +9941,7 @@ async function checkViewportMunicipality() {
     const items = res && res.gemeinde ? [res.gemeinde] : [];
     if (items.length > 0) {
       const muniName = items[0].gemeinde_name || items[0].name;
+      if (muniName) G.currentMuniName = muniName;   // address search bias (createSearchBox)
       if (muniName && G.homeMuni && muniName !== G.homeMuni && muniName !== G._lastMuniToast) {
         G._lastMuniToast = muniName;
         if (!G.flow) showMuniCrossingToast(muniName);   // glitch #13: the droplet crosses a Gemeinde every few seconds
