@@ -296,6 +296,20 @@ landuse, building_count, total_building_area, tall_tree_*, gw_station),
 `/claim-treasure`, `/complete-challenge`, `/offer-parcel`, `/offer-respond`,
 chat + rules + block/report.
 
+**Search** (`srv/search.go`, client `createSearchBox` in game.js — one engine for the picker
+`#input-search` and the in-game bar `#game-search-input`). `GET /api/search-index` = the whole
+admin table (2 092 Gemeinden + 7 850 KGs, codes, centre, span; ~160 KB gz, ETag, 1 d) indexed in
+the browser (`SIDX`, `snorm`/`sqnorm` diacritics-free, "St." → "Sankt") → Gemeinde/KG/code rows
+render **synchronously per keystroke**; umfeld `/lookup` (Ortschaften + PLZ, 120 ms) and
+`/search/address_osm` + `/toponyms/search` (220 ms; Nominatim is 1 req/s upstream, proxy caches 24 h)
+merge in under a striped progress bar without wiping rows; in-game the address query is also sent
+*with the current Gemeinde appended* (`currentMuniName()`). Parcel intents `68/3`, `.68`, `12105-68/3`,
+`Dürnstein 68/3` → loaded polygons first (`DEV.find`), else `GET /api/parcel-find?kg&gnr&lon&lat`
+(cached cells of the KG nearest the hint first, cold cells built within 8 s, then `202 progress{searched,total}`
+— the client polls and shows "Durchsuche KG … 3/12 Zellen"; ≤ 40 cells). Picker picks set
+`G._muniHint` (exact spawn → `spawn_exact`) and `G.pendingSelect` (parcel popup opens after loading,
+`checkPendingSelect`). Recent picks in `localStorage` `siedler_recent_search`. xbrowser scene `search-parcel`.
+
 **Geo/data proxies.** `/api/viewport`, `/api/viewport-landuse`, `/api/lucky`,
 `/api/warm/status`, `/api/kg-geo/{kg}`, `/api/municipality?lon&lat`,
 `/api/municipalities?q=|list=all|state=&format=geojson`, `/api/parcel-context`,
