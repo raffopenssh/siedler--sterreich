@@ -60,6 +60,24 @@ type srtmKG struct {
 	Quality      string    `json:"quality_grade"`
 }
 
+// enhancedKGsRaw returns the cached enhanced-kgs document, rebuilding it from
+// the srtm registry mirror when the api_cache row has expired. Internal readers
+// (neReadyKGSet → contrib plan, enhancedKGSet → warm plan / lucky) must never
+// depend on a browser having requested /api/enhanced-kgs recently: on
+// 2026-10-07 the 03:37 ne-report run saw an empty universe (source:"none")
+// for exactly that reason and fell back to the sample.
+func (s *Server) enhancedKGsRaw() (string, error) {
+	raw, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey)
+	if err == nil {
+		return raw, nil
+	}
+	b, code := s.buildEnhancedKGs(enhancedKGsKey)
+	if code != 200 {
+		return "", fmt.Errorf("enhanced-kgs: build failed (%d)", code)
+	}
+	return string(b), nil
+}
+
 func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	type kgEntry struct {
 		KgCode       string  `json:"kg_code"`

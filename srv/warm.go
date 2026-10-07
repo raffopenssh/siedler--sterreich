@@ -266,9 +266,7 @@ func (s *Server) warmKG(kg, reason string) {
 func (s *Server) warmPlanner() {
 	// The plan prefers v2.4 (NE cells) Gemeinden — make sure the srtm KG
 	// registry is loaded before the first plan of the day is made.
-	if _, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey); err != nil {
-		s.buildEnhancedKGs(enhancedKGsKey)
-	}
+	s.enhancedKGsRaw()
 	// Keep-warm (active tier only): the v2.4 KGs of Gemeinden played in the
 	// last week, capped (warmactivity.go). Never the whole v2.4 universe —
 	// that is 1 300+ KGs and would re-download gigabytes a day with no player.
@@ -568,7 +566,7 @@ func (s *Server) enhancedGemeindeSet() map[string]bool {
 // padded forms both present so callers can look up either.
 func (s *Server) enhancedKGSet() map[string]bool {
 	out := map[string]bool{}
-	raw, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey)
+	raw, err := s.enhancedKGsRaw()
 	if err != nil {
 		return out
 	}

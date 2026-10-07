@@ -991,7 +991,7 @@ func (s *Server) handleNE(w http.ResponseWriter, r *http.Request) {
 // read from the cached enhanced-KG registry; padded + unpadded forms.
 func (s *Server) neReadyKGSet() map[string]bool {
 	out := map[string]bool{}
-	raw, err := s.Q.GetCachedData(context.Background(), enhancedKGsKey)
+	raw, err := s.enhancedKGsRaw()
 	if err != nil {
 		return out
 	}
