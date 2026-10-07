@@ -69,7 +69,11 @@ func kgUniverseHashes(kgs []srtmKG) (string, string) {
 	hr := sha256.New()
 	for _, c := range codes {
 		k := byCode[c]
-		fmt.Fprintf(hr, "%s|%s|%s\n", c, k.ProductVer, k.UpdatedAt)
+		ne := ""
+		if k.NEReady != nil {
+			ne = fmt.Sprintf("|%t|%s", *k.NEReady, k.NEStatus)
+		}
+		fmt.Fprintf(hr, "%s|%s|%s%s\n", c, k.ProductVer, k.UpdatedAt, ne)
 	}
 	return universeHashOf(codes), hex.EncodeToString(hr.Sum(nil))[:20]
 }

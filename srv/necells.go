@@ -86,7 +86,10 @@ type neCols struct {
 		N          int      `json:"n"`
 		Epoch      string   `json:"epoch"`
 		KGs        []string `json:"kgs"`
-		KGsMissing []string `json:"kgs_missing"`
+		KGsMissing []string `json:"kgs_missing"` // union of pending + not_processed
+		KGsPending []string `json:"kgs_pending"` // processed, cells not yet ingested → poll after RetryAfter
+		KGsNotProc []string `json:"kgs_not_processed"`
+		RetryAfter float64  `json:"retry_after_s"`
 		Partial    bool     `json:"partial"`
 		CellsMiss  int      `json:"cells_missing"`
 	} `json:"meta"`
@@ -192,6 +195,7 @@ type neStatus struct {
 	Status     string   `json:"status,omitempty"`
 	RetryAfter float64  `json:"retry_after_s,omitempty"`
 	KGsMissing []string `json:"kgs_missing,omitempty"`
+	KGsPending []string `json:"kgs_pending,omitempty"` // srtm: processed, cells being ingested — poll, not a gap
 }
 
 var neHot = struct {
@@ -272,8 +276,21 @@ func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 		switch resp.StatusCode {
 		case 200:
-			s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: key, Data: string(raw), ExpiresAt: time.Now().Add(neTTL)})
-			slog.Info("ne cells fetched", "cell", key, "bytes", len(raw), "ms", time.Since(t0).Milliseconds())
+			ttl := neTTL
+			if ra, pend := nePendingHint(raw); pend > 0 {
+				// Part of the cell is still being ingested upstream: keep this
+				// doc only until srtm's retry hint (≥ 30 min, ≤ 6 h) so the
+				// pending KGs get picked up; neAdoptKGs purges earlier on publish.
+				ttl = time.Duration(ra) * time.Second
+				if ttl < 30*time.Minute {
+					ttl = 30 * time.Minute
+				}
+				if ttl > 6*time.Hour {
+					ttl = 6 * time.Hour
+				}
+			}
+			s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: key, Data: string(raw), ExpiresAt: time.Now().Add(ttl)})
+			slog.Info("ne cells fetched", "cell", key, "bytes", len(raw), "ms", time.Since(t0).Milliseconds(), "ttl", ttl.String())
 			return sfRes{raw, 200}, nil
 		case 404:
 			var st neStatus
@@ -286,7 +303,14 @@ func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) {
 				st.RetryAfter = 3600
 			}
 			b, _ := json.Marshal(st)
-			s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: key, Data: string(b), ExpiresAt: time.Now().Add(neMissTTL)})
+			miss := neMissTTL
+			if st.Status == "pending" || len(st.KGsPending) > 0 {
+				// only pending KGs intersect: poll after srtm's hint (≤ neMissTTL)
+				if d := time.Duration(st.RetryAfter) * time.Second; d < miss && d >= 5*time.Minute {
+					miss = d
+				}
+			}
+			s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: key, Data: string(b), ExpiresAt: time.Now().Add(miss)})
 			return sfRes{b, 404}, nil
 		case 503:
 			if resp.Header.Get("X-Upstream") == "down" {
@@ -303,6 +327,25 @@ func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) {
 		return nil, &st, r.status
 	}
 	return neParse(c, r.body)
+}
+
+// nePendingHint peeks at meta.kgs_pending / meta.retry_after_s of a raw
+// 200 cells document without a full parse.
+func nePendingHint(raw []byte) (retryAfter float64, pending int) {
+	var d struct {
+		Meta struct {
+			KGsPending []string `json:"kgs_pending"`
+			RetryAfter float64  `json:"retry_after_s"`
+		} `json:"meta"`
+	}
+	if json.Unmarshal(raw, &d) != nil {
+		return 0, 0
+	}
+	ra := d.Meta.RetryAfter
+	if ra <= 0 {
+		ra = 3600
+	}
+	return ra, len(d.Meta.KGsPending)
 }
 
 // neCached returns the parsed cell without any upstream call.
@@ -950,7 +993,7 @@ func (s *Server) handleNE(w http.ResponseWriter, r *http.Request) {
 		if st.RetryAfter > 0 {
 			w.Header().Set("Retry-After", fmt.Sprintf("%.0f", st.RetryAfter))
 		}
-		body := map[string]any{"ready": false, "status": st.Status, "retry_after_s": st.RetryAfter, "kgs_missing": st.KGsMissing, "cell": map[string]int{"i": c.I, "j": c.J}}
+		body := map[string]any{"ready": false, "status": st.Status, "retry_after_s": st.RetryAfter, "kgs_missing": st.KGsMissing, "kgs_pending": st.KGsPending, "cell": map[string]int{"i": c.I, "j": c.J}}
 		if code == 404 {
 			jsonRespStatus(w, body, 200)
 		} else {
@@ -973,7 +1016,7 @@ func (s *Server) handleNE(w http.ResponseWriter, r *http.Request) {
 			return out
 		}
 		out := map[string]any{
-			"ready": true, "epoch": ne.Meta.Epoch, "partial": ne.Meta.Partial, "kgs": ne.Meta.KGs, "kgs_missing": ne.Meta.KGsMissing,
+			"ready": true, "epoch": ne.Meta.Epoch, "partial": ne.Meta.Partial, "kgs": ne.Meta.KGs, "kgs_missing": ne.Meta.KGsMissing, "kgs_pending": ne.Meta.KGsPending,
 			"n": n, "lon": ne.Lon, "lat": ne.Lat, "cover": ne.Cover, "canopy": pick8(ne.Canopy), "h_max": pick8(ne.HMax),
 			"consistency": pick8(ne.Consistency), "phenology": pick8(ne.Phenology), "structures_cover": pick8(ne.StructCover),
 			"forest_loss_year": pick8(ne.ForestLossYear), "slope": pick8(ne.Slope),
@@ -1074,6 +1117,7 @@ func (s *Server) neAdoptKGs(gen map[string]string, v24 map[string]bool) {
 			neHot.Unlock()
 		}
 		s.Q.DeleteCacheLike(ctx, "similar:v6:"+kg+"-%")
+		s.Q.DeleteCacheLike(ctx, neObsPrefix+kg) // "no NE cells" note from before publication (neobserved.go)
 		s.DB.ExecContext(ctx, "DELETE FROM kg_warm WHERE kg_code = ?", kg)
 		if !warmIdle() && planned[kg] {
 			s.enqueueWarm(kg, "v24", 1) // rebuilt with the observed layer before today's lucky players land there

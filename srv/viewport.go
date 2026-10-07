@@ -503,10 +503,10 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 	}
 	if ne != nil {
 		out["ne"] = map[string]any{"ready": true, "epoch": ne.Meta.Epoch, "partial": ne.Meta.Partial, "kgs": ne.Meta.KGs,
-			"kgs_missing": ne.Meta.KGsMissing, "cells": len(ne.Cells), "trees": len(ne.Trees.Lon), "structures": len(ne.Structures.Lon),
+			"kgs_missing": ne.Meta.KGsMissing, "kgs_pending": ne.Meta.KGsPending, "cells": len(ne.Cells), "trees": len(ne.Trees.Lon), "structures": len(ne.Structures.Lon),
 			"parcels": neParcels, "attribution": neAttribution}
 	} else if neSt != nil {
-		out["ne"] = map[string]any{"ready": false, "status": neSt.Status, "retry_after_s": neSt.RetryAfter, "kgs_missing": neSt.KGsMissing, "code": neCode}
+		out["ne"] = map[string]any{"ready": false, "status": neSt.Status, "retry_after_s": neSt.RetryAfter, "kgs_missing": neSt.KGsMissing, "kgs_pending": neSt.KGsPending, "code": neCode}
 	}
 	if c, ok := isAlignedCell(b.W, b.S, b.E, b.N); ok {
 		out["cell"] = map[string]int{"i": c.I, "j": c.J}

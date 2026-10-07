@@ -52,12 +52,27 @@ type srtmKG struct {
 	GemeindeCode string    `json:"gemeinde_code"`
 	GemeindeName string    `json:"gemeinde_name"`
 	Processed    bool      `json:"processed"`
-	ProductVer   string    `json:"product_version"`
+	ProductVer   string    `json:"product_version"`     // "v2.4-pending" while cells are not yet served; raw in product_version_registry
+	NEReady      *bool     `json:"ne_ready"`            // authoritative since srtm afe147d (2026-10-07): cells served completely
+	NEStatus     string    `json:"ne_status,omitempty"` // served|partial|pending|not_processed
+	NEPublished  string    `json:"ne_cells_published_at,omitempty"`
 	UpdatedAt    string    `json:"updated_at"`
 	Grid25       *bool     `json:"grid25"`
 	BBox         []float64 `json:"bbox"`
 	Centroid     []float64 `json:"centroid"`
 	Quality      string    `json:"quality_grade"`
+}
+
+// kgNEServed: the KG's NE cells are served completely. srtm's ne_ready is
+// authoritative (its product_version reads "v2.4-pending" until the cells
+// are ingested — hours after the row appears; some old v1/v2.3 rows carry
+// ne_ready:true with real cells). Rows without the field (pre-afe147d
+// mirror) fall back to the product string.
+func kgNEServed(k srtmKG) bool {
+	if k.NEReady != nil {
+		return *k.NEReady
+	}
+	return isV24Product(k.ProductVer)
 }
 
 // enhancedKGsRaw returns the cached enhanced-kgs document, rebuilding it from
@@ -87,8 +102,9 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		Lon          float64 `json:"lon"`
 		Lat          float64 `json:"lat"`
 		V2           bool    `json:"v2,omitempty"`
-		V24          bool    `json:"v24,omitempty"` // product v2.4 = NE cells published
+		V24          bool    `json:"v24,omitempty"` // NE cells served (srtm ne_ready)
 		Product      string  `json:"product_version,omitempty"`
+		NEStatus     string  `json:"ne_status,omitempty"`
 	}
 	// One list of the whole KG universe (srtm /kgs, mirrored to
 	// data/srtm-kgs.json.gz) — kgs[] below keeps only the full v2.4 rows,
@@ -101,7 +117,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	var all []kgEntry
 	gen := map[string]string{}
 	adm := admin()
-	nProcessed, nv2, nPartial := 0, 0, 0
+	nProcessed, nv2, nPartial, nPending := 0, 0, 0, 0
 	for _, k := range uni.KGs {
 		if !k.Processed || k.ProductVer == "" {
 			continue
@@ -116,6 +132,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 			e.GemeindeCode, e.GemeindeName = a.Gemeinde, a.GemName
 		}
 		e.Product = k.ProductVer
+		e.NEStatus = k.NEStatus
 		gen[k.KgCode] = k.UpdatedAt
 		nProcessed++
 		if isV2Product(k.ProductVer) {
@@ -124,8 +141,11 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 		if strings.Contains(k.ProductVer, "partial") {
 			nPartial++
 		}
-		if !isV24Product(k.ProductVer) {
-			continue // not enhanced: v1, v2.3, v2.4-partial …
+		if k.NEStatus == "pending" || (k.NEReady == nil && strings.Contains(k.ProductVer, "pending")) {
+			nPending++
+		}
+		if !kgNEServed(k) {
+			continue // not enhanced: v1, v2.3, v2.4-partial, v2.4-pending (cells not yet served) …
 		}
 		e.V2, e.V24 = true, true
 		all = append(all, e)
@@ -141,7 +161,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	}
 	out, _ := json.Marshal(map[string]any{
 		"count": len(all), "v24_count": nv24, "enhanced": "v2.4 full only",
-		"other":    map[string]int{"processed": nProcessed, "v2_any": nv2, "partial": nPartial},
+		"other":    map[string]int{"processed": nProcessed, "v2_any": nv2, "partial": nPartial, "pending": nPending},
 		"kg_count": uni.KGsTotal, "kg_universe": kgUniverseCount,
 		"universe_hash": uni.UniverseHash, "registry_hash": uni.RegistryHash,
 		"source": source, "fetched_at": uni.FetchedAt, "upstream_etag": uni.ETag,
