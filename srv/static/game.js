@@ -2620,6 +2620,10 @@ function enhancedViewShare() {
     if (!_enhShare.t) _enhShare.t = setTimeout(() => { _enhShare.t = 0; updateEnhancedBadge(); }, 450);
     return _enhShare.v;
   }
+  // Canvas not sized yet (loading screen, lidar KG arriving early): answer
+  // without caching — a poisoned key would hide the badge until the first pan
+  // (phones: the lucky spawn sat on a v2.4 KG and never showed ✨).
+  if (typeof gc === 'undefined' || !gc || !gc.width || !gc.height) return _enhShare.v;
   _enhShareT = now; _enhShare.cam = camKey;
   const v = viewBounds();
   let tot = 0, enh = 0;
@@ -2655,6 +2659,7 @@ function updateEnhancedBadge() {
   const el = document.getElementById('enhanced-badge');
   if (!el) return;
   const share = enhancedViewShare();
+  if (share < 0) { if (!_enhShare.t) _enhShare.t = setTimeout(() => { _enhShare.t = 0; updateEnhancedBadge(); }, 800); return; }
   // majority rule with a little hysteresis (appear ≥ 60 %, vanish < 50 %) so a pan along a KG border doesn’t flicker
   const shown = el.style.display !== 'none' && !el.classList.contains('fade-out');
   const majority = shown ? share >= 0.5 : share >= 0.6;
@@ -2663,12 +2668,20 @@ function updateEnhancedBadge() {
   if (onEnh) Herald.hint('enhanced');
   if (G.enhancedKGs.size && G._questEnh !== enhancedLoaded()) { G._questEnh = enhancedLoaded(); renderQuests(); }
   // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
-  let txt = G.devTree ? '✨ Enhanced Gelände 🌲' : '✨ Enhanced Gelände';
+  let txt = G.devTree ? 'Enhanced Gelände 🌲' : 'Enhanced Gelände';
   if (G.tallUnlocked && G.tallRevealed) {
     const c = giantChronik();
     if (c.total) txt += ' · 🌲 ' + c.seen + '/' + c.total;
   }
-  el.textContent = txt;
+  // Like the water chip: speaks up when it appears / the text changes, then
+  // folds down to the ✨ icon (phones: the HUD row is narrow). Tap still works.
+  if (txt !== el._txt) {
+    el._txt = txt;
+    el.innerHTML = '<span class="eb-ico">✨</span><span class="eb-txt">' + esc(txt) + '</span>';
+    el.classList.remove('min');
+    clearTimeout(el._minT);
+    el._minT = setTimeout(() => { el.classList.add('min'); invalidateHudInsets(); }, 8000);
+  }
 }
 
 async function loadClaimed() {
