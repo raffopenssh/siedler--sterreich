@@ -916,6 +916,34 @@ func (s *Server) handleKGGeo(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, out)
 }
 
+// POST /api/warm/trim?keep=daily|focus&max=N — drop queued jobs (ops,
+// X-Ahead-Token): ?reason=daily removes every queued daily-plan job (e.g.
+// to keep a boost day's worker free for the focus), ?max=N truncates the
+// prio-sorted queue to N jobs. Nothing already warm is touched.
+func (s *Server) handleWarmTrim(w http.ResponseWriter, r *http.Request) {
+	reason := r.URL.Query().Get("reason")
+	max, _ := strconv.Atoi(r.URL.Query().Get("max"))
+	s.warm.mu.Lock()
+	before := len(s.warm.queue)
+	var keep []warmJob
+	for _, j := range s.warm.queue {
+		if reason != "" && j.Reason == reason {
+			delete(s.warm.queued, j.KG)
+			continue
+		}
+		if max > 0 && len(keep) >= max {
+			delete(s.warm.queued, j.KG)
+			continue
+		}
+		keep = append(keep, j)
+	}
+	s.warm.queue = keep
+	after := len(keep)
+	s.warm.mu.Unlock()
+	slog.Info("warm: queue trimmed", "reason", reason, "max", max, "before", before, "after", after, "remote", r.RemoteAddr)
+	jsonResp(w, map[string]any{"before": before, "after": after, "dropped": before - after})
+}
+
 // POST /api/warm/run-plan — pull today's remaining daily patches forward and
 // queue them now (ops, X-Ahead-Token). Used when a boost day needs its
 // destinations warm before the evening, or to feed the nightly contrib run

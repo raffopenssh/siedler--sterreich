@@ -110,8 +110,8 @@ func warmBoostStatus() map[string]any {
 // e.g. `focus=Wien,30`. While the boost is active every v2.4 KG whose bbox
 // centre lies within the radius is (re-)queued every 2 h (prio 1, fresh ones
 // skipped), so the whole area is warm for the duration — not just the
-// 20-50 daily destinations. Wien + 30 km ≈ 230 v2.4 KGs ≈ 900 cells ≈ 270 MB
-// of BEV tiles per 24 h, inside the boost budget.
+// 20-50 daily destinations. Wien + 15 km ≈ 120 v2.4 KGs ≈ 270 distinct cells ≈ 80 MB
+// of BEV tiles per 24 h, inside the boost budget (30 km would be ~960 cells).
 
 type boostFocus struct {
 	Label    string  `json:"label"`
@@ -259,16 +259,19 @@ func (s *Server) warmBoostFocusStatus() map[string]any {
 	}
 	kgs := s.boostFocusKGs(f, s.neReadyKGSet())
 	fresh := s.freshWarmSet()
-	warm, cells := 0, 0
+	warm := 0
 	adm := admin()
+	seen := map[cellID]bool{}
 	for _, kg := range kgs {
 		if fresh[kg] {
 			warm++
 		}
 		if k := adm.KGs[kg]; k != nil {
-			cells += len(k.cells())
+			for _, c := range k.cells() {
+				seen[c] = true
+			}
 		}
 	}
 	return map[string]any{"label": f.Label, "lon": f.Lon, "lat": f.Lat, "radius_km": f.RadiusKm,
-		"v24_kgs": len(kgs), "warm": warm, "cells": cells}
+		"v24_kgs": len(kgs), "warm": warm, "cells": len(seen)}
 }
