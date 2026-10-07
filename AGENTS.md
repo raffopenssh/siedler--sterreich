@@ -152,10 +152,12 @@ as `202 {status:"pending", retry_after_s}` + `Retry-After` (`relayCellStatus`).
 
 `kg_warm` table (`kg_code, warmed_at, expires_at=+24 h, cells, parcels, reason`).
 Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2 h.
-- **Daily plan**: 100 KGs/day in 20 patches of 5 KGs: a small Gemeinde whose
-  KGs are *all* srtm-enhanced (grid25) + nearest neighbour KGs (any), one patch
-  per 24h/20, ≤ 4 per Bundesland; persisted as `warm-plan:v2:<date>` in
-  api_cache so restarts resume.
+- **Daily plan**: ~100 KGs/day in 20 patches of ≥ 5 KGs: a Gemeinde whose
+  KGs are *all* srtm-enhanced (grid25) — **any size, all of its KGs** (a Gemeinde
+  is a lucky destination only when warm as a whole; `warmSeedMaxCells` 600 is a
+  sanity guard like ne-report's `--max-cells`, Sölden = 322 cells, never
+  size-exclude) + nearest neighbour KGs (any) up to 5, one patch per 24h/20,
+  ≤ 4 per Bundesland; persisted as `warm-plan:v4:<date>` in api_cache so restarts resume.
 - **Neighbour**: first foreground build of a cell enqueues the KGs touching it +
   adjacent KGs (low prio, debounced 1 h per cell).
 - **v2.4 first**: `neReadyKGSet()` (registry `v24` flag = srtm `product_version` v2.4) — the daily plan seeds Gemeinden with NE KGs first (no state quota), `neAdoptKGs` (on every registry refresh, once per KG generation `ne-adopt:v1:<kg>`) purges their `vp:v1`/`ne:`/`trees:ne`/`buildings:ne`/`neheat` caches + `kg_warm` (warming only for planned KGs, see activity tiers). `/api/warm/status` → `v24_kgs[]`, `v24_warm`. `/api/lucky` picks a v2.4 destination ~2 of 3 times (`ne:true`).
