@@ -7060,13 +7060,14 @@ function drawForestSprites(ctx, claimMap) {
       treeCount = Math.min(12, Math.max(2, Math.floor(area / 500)));
       variantFn = (i) => 4;
     } else if (style === 'krummholz') {
-      // Krummholz: dense low scrub
+      // Krummholz: dense low scrub — Latschen, Wacholder, Grünerlen
       treeCount = Math.min(20, Math.max(3, Math.floor(area / 250)));
-      variantFn = (i) => 2;
+      const kv = [2, 16, 2, 2, 16, 15];
+      variantFn = (i) => kv[(hash + i) % kv.length];
     } else if (style === 'young') {
       // Regrown stand after a harvest: even-aged young trees, birch pioneers
       treeCount = Math.min(30, Math.max(4, Math.floor(area / 220)));
-      const rv = [3, 5, 6, 3, 7, 5, 3, 6];
+      const rv = [3, 5, 6, 3, 7, 5, 3, 6, 14, 17];
       variantFn = (i) => rv[(hash + i) % rv.length];
     } else if (style === 'reforested') {
       // Reforested: dense mix of saplings, young firs, birch — vibrant new growth
@@ -7084,7 +7085,7 @@ function drawForestSprites(ctx, claimMap) {
     } else {
       // Normal mixed forest: oak, beech, fir, birch — dense Austrian Mischwald
       treeCount = Math.min(30, Math.max(4, Math.floor(area / 250)));
-      const v = [0, 1, 5, 6, 1, 0, 5, 1, 0, 6]; // weighted toward deciduous
+      const v = [0, 1, 5, 6, 1, 13, 5, 1, 0, 6, 8, 15, 1, 0, 11]; // weighted toward deciduous, a hazel in the understorey
       variantFn = (i) => v[(hash + i) % v.length];
     }
 
@@ -7200,7 +7201,7 @@ function neTreeSprite(variant, k) {
   const ax = W / 2, ay = H - Math.ceil(6 * kq) - 1;
   const z = G.cam.zoom; G.cam.zoom = 17;   // drawTree picks its 1.2 base scale above z16
   c2.translate(ax, ay); c2.scale(kq, kq);
-  drawTree(c2, 0, 0, variant, 11 * variant);
+  drawTree(c2, 0, 0, variant, 11 * Math.abs(variant) + 3);
   G.cam.zoom = z;
   sp = { cv, ax, ay };
   NE_APEX.sprites.set(key, sp);
@@ -7314,151 +7315,294 @@ function drawSprout(ctx, x, y, seed) {
   }
 }
 
-function drawTree(ctx, x, y, variant, seedOffset) {
-  // Settlers IV style trees — warm, chunky, painterly
-  // Variants: 0=oak, 1=beech, 2=bush/krummholz, 3=young sapling,
-  //           4=fruit tree, 5=fir (Tanne), 6=birch, 7=mixed conifer
-  const scale = G.cam.zoom > 16 ? 1.2 : 0.8;
-  x = Math.round(x);
-  y = Math.round(y);
+// ---- Tree sprites ----------------------------------------------------------
+// Pixel-art trees in the same grammar as the giant trees (giantTreeSprites):
+// a chunky unit grid, light from the upper right / shade lower left, hashed
+// leaf dither, ragged crown rims, 3-shade trunks with a root flare, species
+// details (apples, birch bark, larch gaps, pine umbrella, cones) and a soft
+// ground shadow. Every variant is rasterised once per seed class into an atlas
+// (TREE_ATLAS, unit = 2 px) and blitted scaled — base layer and NE apex
+// sprites share it. Shapes are built row by row around the trunk axis, so a
+// tree is always complete (never a half crown).
+// Variants: 0 oak, 1 beech, 2 bush/Krummholz, 3 sapling, 4 fruit tree,
+//           5 fir (Tanne), 6 birch, 7 mixed conifer pair, 8 spruce (Fichte),
+//           9 larch (Lärche), 10 pine (Kiefer), 11 willow (Weide), 12 poplar (Pappel),
+//           13 maple/ash (Ahorn/Esche), 14 hawthorn shrub (Weißdorn), 15 hazel (Hasel),
+//           16 juniper (Wacholder), 17 elder/sloe shrub (Holunder/Schlehe), -1 → drawDeadTree (snag).
+const TREE_SHRUBS = [2, 14, 15, 17];
+const TREE_PAL = {
+  oak:    { rim: '#153218', sh: '#1e4d20', mid: '#2e6b30', lt: '#48924a', hi: '#63b060', trunk: ['#4a2f14', '#6e4a24', '#7a5530'] },
+  beech:  { rim: '#173619', sh: '#225a26', mid: '#357c34', lt: '#52a04e', hi: '#78c46a', trunk: ['#4c3a28', '#75604a', '#8c7458'] },
+  bush:   { rim: '#243a12', sh: '#3a5a1c', mid: '#52762a', lt: '#6e9638', hi: '#96b852', trunk: ['#4a3018', '#6a4a28', '#7a5a30'] },
+  young:  { rim: '#1c4418', sh: '#2e7e2a', mid: '#44a038', lt: '#62c050', hi: '#96e07a', trunk: ['#4a3018', '#6e4a28', '#8a6a40'] },
+  fruit:  { rim: '#173a1a', sh: '#246424', mid: '#368430', lt: '#52a448', hi: '#7cc86a', trunk: ['#4e2e12', '#7a4a20', '#946034'] },
+  fir:    { rim: '#0e2a12', sh: '#173f1b', mid: '#245c28', lt: '#38843c', hi: '#4a9848', trunk: ['#2c1a08', '#4a2e10', '#5e3c1c'] },
+  spruce: { rim: '#0c2616', sh: '#143c22', mid: '#1c522e', lt: '#2a7440', hi: '#3e9052', trunk: ['#2a180a', '#4a2e14', '#5c3c1e'] },
+  larch:  { rim: '#2a4412', sh: '#4a7020', mid: '#6a9630', lt: '#8eb844', hi: '#c0dc6a', trunk: ['#3e2a14', '#6a4a2a', '#866038'] },
+  pine:   { rim: '#133018', sh: '#1f5422', mid: '#2c7030', lt: '#3f9040', hi: '#62ac5a', trunk: ['#5a3014', '#9a5a30', '#c07a48'] },
+  birch:  { rim: '#36561a', sh: '#6e9c30', mid: '#92bc44', lt: '#b4d85c', hi: '#dcf494', trunk: ['#8e8a80', '#e2ded2', '#fbfaf6'] },
+  willow: { rim: '#2c4a1e', sh: '#4e7a34', mid: '#6c9a48', lt: '#8cb864', hi: '#b8d890', trunk: ['#4a3a24', '#6e5838', '#86704a'] },
+  poplar: { rim: '#1a3c1c', sh: '#2c6a2c', mid: '#3e8a3c', lt: '#5aaa52', hi: '#88cc78', trunk: ['#5a5040', '#8a8068', '#a89c80'] },
+  maple:  { rim: '#1e3a16', sh: '#3a6a22', mid: '#548a30', lt: '#72aa44', hi: '#a4cc66', trunk: ['#4a3a2a', '#6e5c44', '#8a7658'] },
+  thorn:  { rim: '#22381a', sh: '#365428', mid: '#4a7034', lt: '#628c44', hi: '#88ac5e', trunk: ['#3a2c1a', '#5a4428', '#6e5634'] },
+  hazel:  { rim: '#203e18', sh: '#386a28', mid: '#4e8a36', lt: '#6aa84a', hi: '#98cc70', trunk: ['#4a3a24', '#6e5838', '#86704a'] },
+  juniper:{ rim: '#10281a', sh: '#1a4028', mid: '#245236', lt: '#306a46', hi: '#4a8860', trunk: ['#3a2a18', '#5a4428', '#6e5634'] },
+  elder:  { rim: '#1c3a1e', sh: '#2e6230', mid: '#428244', lt: '#5ea05c', hi: '#8cc484', trunk: ['#4a3a2a', '#6e5c44', '#8a7658'] },
+};
+const TREE_ATLAS = { u: 2, W: 36, H: 48, cx: 18, by: 42, seeds: 6, cv: new Map() };
+function treeHash(a, b, c) { return (((a * 73856093) ^ (b * 19349663) ^ (c * 83492791)) >>> 0); }
+/** Rasterise one variant/seed class onto a unit grid. */
+function treeAtlasSprite(variant, sv) {
+  const key = variant + ':' + sv;
+  let cv = TREE_ATLAS.cv.get(key);
+  if (cv) return cv;
+  const A = TREE_ATLAS, p = A.u;
+  cv = document.createElement('canvas'); cv.width = A.W * p; cv.height = A.H * p;
+  const g = cv.getContext('2d');
+  const px = (ux, uy, col) => { g.fillStyle = col; g.fillRect(Math.round(ux) * p, Math.round(uy) * p, p, p); };
+  const cx = A.cx, by = A.by, seed = sv * 7 + Math.abs(variant) * 13 + 5;
+  if (variant < 0) { drawDeadTree(g, cx * p, by * p, p, seed, false); A.cv.set(key, cv); return cv; }
+  const lean = [0, 1, -1, 0, 1, -1][sv], H = (a, b) => treeHash(a, b, seed);
 
-  const t = (Date.now() / 3000 + (seedOffset||0) * 0.37) % (Math.PI * 2);
-  const sway = Math.sin(t) * 0.8 * scale;
-
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.12)';
-  ctx.beginPath();
-  ctx.ellipse(x+2, y+1, 6*scale, 2.5*scale, 0.2, 0, Math.PI*2);
-  ctx.fill();
-
-  if (variant === 0) {
-    // Oak — thick trunk, big lumpy canopy (Settlers IV classic)
-    ctx.fillStyle = '#5a3a1a';
-    ctx.fillRect(x-1.5*scale, y-5*scale, 3*scale, 6*scale);
-    // Main canopy — layered circles for lumpy look
-    ctx.fillStyle = '#2a6a22';
-    ctx.beginPath(); ctx.arc(x+sway*0.2, y-13*scale, 8*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#348a2c';
-    ctx.beginPath(); ctx.arc(x-3*scale+sway*0.3, y-15*scale, 5.5*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#3c9232';
-    ctx.beginPath(); ctx.arc(x+4*scale+sway*0.2, y-14*scale, 5*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#449a38';
-    ctx.beginPath(); ctx.arc(x+sway*0.4, y-17*scale, 4*scale, 0, Math.PI*2); ctx.fill();
-    // Highlight
-    ctx.fillStyle = 'rgba(120,200,80,0.2)';
-    ctx.beginPath(); ctx.arc(x-2*scale, y-16*scale, 3*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 1) {
-    // Beech — smooth oval canopy, warm green
-    ctx.fillStyle = '#5a3a20';
-    ctx.fillRect(x-1*scale, y-4*scale, 2*scale, 5*scale);
-    ctx.fillStyle = '#3a8228';
-    ctx.beginPath(); ctx.ellipse(x+sway*0.2, y-13*scale, 7*scale, 9*scale, 0, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#4a9438';
-    ctx.beginPath(); ctx.ellipse(x-2*scale+sway*0.3, y-15*scale, 5*scale, 6*scale, -0.2, 0, Math.PI*2); ctx.fill();
-    // Dappled light
-    ctx.fillStyle = 'rgba(140,210,80,0.2)';
-    ctx.beginPath(); ctx.arc(x-3*scale, y-16*scale, 2.5*scale, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x+2*scale, y-12*scale, 2*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 2) {
-    // Bush / Krummholz — low, wide, multiple lumps
-    ctx.fillStyle = '#4a6a20';
-    ctx.beginPath(); ctx.ellipse(x, y-4*scale, 8*scale, 5*scale, 0, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#5a7a28';
-    ctx.beginPath(); ctx.arc(x-4*scale, y-6*scale, 4*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#3a5a18';
-    ctx.beginPath(); ctx.arc(x+3*scale, y-5*scale, 3.5*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#6a8a30';
-    ctx.beginPath(); ctx.arc(x, y-7*scale, 3*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 3) {
-    // Young sapling — thin, light green, hopeful
-    ctx.fillStyle = '#6a4a28';
-    ctx.fillRect(x-0.5*scale, y-3*scale, 1*scale, 4*scale);
-    ctx.fillStyle = '#48a838';
-    ctx.beginPath(); ctx.ellipse(x+sway*0.3, y-10*scale, 4*scale, 6*scale, 0, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#58b848';
-    ctx.beginPath(); ctx.arc(x-1*scale+sway*0.4, y-12*scale, 3*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 4) {
-    // Fruit tree — round, with visible fruit
-    ctx.fillStyle = '#7a4a20';
-    ctx.fillRect(x-1*scale, y-5*scale, 2*scale, 6*scale);
-    ctx.fillStyle = '#3a8a2a';
-    ctx.beginPath(); ctx.arc(x+sway*0.2, y-13*scale, 7*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#4a9a38';
-    ctx.beginPath(); ctx.arc(x-2*scale, y-15*scale, 5*scale, 0, Math.PI*2); ctx.fill();
-    // Fruit — red apples or pinkish blossoms
-    const fruitColors = ['#d04040','#e06040','#d05050','#c83838','#e05858'];
-    for (let i = 0; i < 4; i++) {
-      const fx = x + ((seedOffset+i)*7%11 - 5) * scale;
-      const fy = y - (10 + (seedOffset+i)*3%6) * scale;
-      ctx.fillStyle = fruitColors[(seedOffset+i)%5];
-      ctx.beginPath(); ctx.arc(fx, fy, 1.5*scale, 0, Math.PI*2); ctx.fill();
-    }
-  } else if (variant === 5) {
-    // Fir / Tanne — classic conifer but rounder and warmer than a spruce
-    ctx.fillStyle = '#4a2e10';
-    ctx.fillRect(x-1*scale, y-3*scale, 2*scale, 4*scale);
-    // Rounded triangular tiers with warm dark green
-    const tierColors = ['#1a4e1a','#1e5a1e','#226622','#2a7228'];
-    const tierW = [5, 7.5, 10, 12];
-    const tierH = [5, 6, 7, 6];
-    for (let i = 3; i >= 0; i--) {
-      const yo = y - 5*scale - i*6*scale;
-      ctx.fillStyle = tierColors[i];
-      // Rounded triangle using a curved path
-      const hw = tierW[i]*scale*0.5;
-      const th = tierH[i]*scale;
-      ctx.beginPath();
-      ctx.moveTo(x+sway*(i*0.1), yo - th);
-      ctx.quadraticCurveTo(x + hw*0.3+sway*(i*0.1), yo - th*0.3, x + hw+sway*(i*0.05), yo);
-      ctx.quadraticCurveTo(x+sway*(i*0.1), yo + 1*scale, x - hw+sway*(i*0.05), yo);
-      ctx.quadraticCurveTo(x - hw*0.3+sway*(i*0.1), yo - th*0.3, x+sway*(i*0.1), yo - th);
-      ctx.fill();
-    }
-    // Snow cap on top (subtle light highlight)
-    ctx.fillStyle = 'rgba(140,200,100,0.2)';
-    ctx.beginPath(); ctx.arc(x+sway*0.4, y-28*scale, 2.5*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 6) {
-    // Silver Birch — white trunk, airy light canopy
-    ctx.fillStyle = '#d8d4c8';
-    ctx.fillRect(x-1*scale+sway*0.05, y-4*scale, 2*scale, 6*scale);
-    // Bark marks
-    ctx.fillStyle = '#555';
-    ctx.fillRect(x-0.8*scale+sway*0.05, y-2*scale, 1.6*scale, 0.8*scale);
-    ctx.fillRect(x-0.8*scale+sway*0.05, y-5*scale, 1.6*scale, 0.6*scale);
-    // Airy canopy — transparent, warm yellow-green
-    ctx.fillStyle = 'rgba(150,200,70,0.6)';
-    ctx.beginPath(); ctx.arc(x+sway, y-14*scale, 6*scale, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = 'rgba(170,220,80,0.45)';
-    ctx.beginPath(); ctx.arc(x-3*scale+sway, y-12*scale, 4*scale, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x+4*scale+sway, y-13*scale, 3.5*scale, 0, Math.PI*2); ctx.fill();
-    // Leaf shimmer
-    ctx.fillStyle = 'rgba(200,240,100,0.15)';
-    ctx.beginPath(); ctx.arc(x-2*scale+sway, y-16*scale, 2.5*scale, 0, Math.PI*2); ctx.fill();
-  } else if (variant === 7) {
-    // Mixed conifer group — two trees close together, different heights
-    const offsets = [-3.5*scale, 3.5*scale];
-    const heights = [0.9, 1.1];
-    for (let j = 0; j < 2; j++) {
-      const ox = x + offsets[j];
-      const hs = heights[j];
-      // Trunk
-      ctx.fillStyle = '#4a3018';
-      ctx.fillRect(ox-0.8*scale, y-3*scale, 1.5*scale, 4*scale);
-      // Rounded tiers
-      const tc = j===0 ? ['#1a4e1a','#1e5820','#226222'] : ['#1e5a22','#266228','#2a6e2e'];
-      for (let i = 0; i < 3; i++) {
-        const tw = (4 + i*2.5) * scale * hs;
-        const th = (4 + i) * scale * hs;
-        const yo = y - 5*scale - i*5.5*scale*hs;
-        ctx.fillStyle = tc[i];
-        ctx.beginPath();
-        ctx.moveTo(ox + sway*(i*0.08), yo - th);
-        ctx.quadraticCurveTo(ox + tw*0.5, yo, ox - tw*0.5, yo);
-        ctx.quadraticCurveTo(ox, yo - th*0.5, ox + sway*(i*0.08), yo - th);
-        ctx.fill();
+  // ground shadow: soft ellipse rows, lower-left of the trunk (light upper-right)
+  const shadow = (rx, ry, a) => {
+    for (let dy = -ry; dy <= ry; dy++) {
+      const w = Math.floor(rx * Math.sqrt(Math.max(0, 1 - (dy / ry) ** 2)));
+      for (let dx = -w; dx <= w; dx++) {
+        const edge = Math.abs(dx) > w - 1 || Math.abs(dy) >= ry;
+        px(cx - 1 + dx, by + dy, 'rgba(8,18,4,' + ((edge ? 0.5 : 1) * (a || 0.2)).toFixed(2) + ')');
       }
     }
+  };
+  // trunk: w columns, h rows; shade left column, lit right column; bends with lean
+  const trunk = (w, h, T, marks) => {
+    for (let r = 0; r < h; r++) {
+      const uy = by - 1 - r, off = Math.round(lean * (r / h) * 0.9);
+      const x0 = cx - (w >> 1) + off;
+      for (let i = 0; i < w; i++) px(x0 + i, uy, i === 0 ? T[0] : i === w - 1 && w > 1 ? T[2] : T[1]);
+      if (marks && (H(r, 1) % 3 === 0)) px(x0 + (H(r, 2) % w), uy, marks);
+    }
+    px(cx - (w >> 1) - 1, by - 1, T[0]); px(cx + (w >> 1) + (w & 1 ? 0 : -1) + 1, by - 1, T[0]);   // root flare
+  };
+  // round crown: rows from an ellipse, lumpy rim, lit upper-right, hashed leaf dither
+  const crown = (ox, oy, rx, ry, P, o) => {
+    o = o || {};
+    const lump = o.lump == null ? 0.9 : o.lump, airy = o.airy || 0, rag = o.rag == null ? 0.93 : o.rag;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let dy = -ry - pass * 0 - (pass ? 0 : 1); dy <= ry + (pass ? 0 : 1); dy++) {
+        const r = pass ? ry : ry + 1, rr = pass ? rx : rx + 1;
+        let w = rr * Math.sqrt(Math.max(0, 1 - (dy / r) ** 2));
+        w += Math.sin(dy * 2.1 + seed) * lump;
+        if (w < 0.6) continue;
+        const uy = by + oy + dy;
+        for (let dx = -Math.round(w); dx <= Math.round(w); dx++) {
+          const ux = cx + ox + dx;
+          const rel = dx / (w || 1), vv = dy / (r || 1);
+          const dh = H(ux, uy);
+          if (!pass) { if (!(Math.abs(rel) > 0.55 && dh % 4 === 0)) px(ux, uy, P.rim); continue; }
+          if (airy && dh % airy === 0) continue;
+          if (Math.abs(rel) > rag && ((ux + uy * 3) % 3) === 0) continue;    // ragged edge
+          const lum = rel * 0.6 - vv * 0.5;
+          let col = P.mid;
+          if (lum > 0.45) col = P.lt;
+          if (lum > 0.8) col = P.hi;
+          if (lum < -0.45) col = P.sh;
+          if (dh % 7 === 0) col = col === P.mid ? P.lt : col === P.sh ? P.mid : col;
+          else if (dh % 11 === 1) col = col === P.lt ? P.mid : col === P.mid ? P.sh : col;
+          px(ux, uy, col);
+        }
+      }
+    }
+  };
+  // conifer tier: a trapezoid `h` rows high widening from wTop to wBot (half widths), hashed dither
+  const tier = (ox, top, h, wTop, wBot, P, o) => {
+    o = o || {};
+    for (let r = -1; r <= h; r++) {
+      const inner = r >= 0 && r < h;
+      const frac = Math.max(0, Math.min(1, r / Math.max(1, h - 1)));
+      let hw = wTop + (wBot - wTop) * frac + (inner ? 0 : 1);
+      if (o.droop && r === h - 1) hw += 1;
+      const uy = by + top + r, off = Math.round(lean * 0.3 * (1 - frac));
+      for (let dx = -Math.round(hw); dx <= Math.round(hw); dx++) {
+        const ux = cx + ox + off + dx, rel = dx / (hw || 1), dh = H(ux, uy);
+        if (!inner) { if (Math.abs(rel) > 0.4 && dh % 3 !== 0) px(ux, uy, P.rim); continue; }
+        if (o.gap && (dh % o.gap) === 0) continue;             // larch: light through the tiers
+        let col = P.mid;
+        if (rel < -0.45) col = P.sh;
+        else if (rel > 0.5) col = P.lt;
+        if (r === 0 && rel > 0.1) col = P.hi;                  // sun-kissed tips
+        if (((ux + uy) & 1) === 0 && rel > -0.2 && rel < 0.4 && col === P.mid) col = P.lt;
+        if (dh % 13 === 0) col = P.sh;
+        px(ux, uy, col);
+      }
+      // rim under the tier's skirt
+      if (r === h - 1) { px(cx + ox + off - Math.round(hw) - 1, uy, P.rim); px(cx + ox + off + Math.round(hw) + 1, uy, P.rim); }
+    }
+  };
+  const apple = (ux, uy) => { px(ux, uy, '#d83c3c'); px(ux + 1, uy + 1, '#8a1a1a'); px(ux, uy - 1, '#f08080'); };
+
+  if (variant === 0) {            // oak — thick trunk, broad lumpy crown, fork into the canopy
+    const P = TREE_PAL.oak;
+    shadow(9, 3, 0.22);
+    trunk(3, 8, P.trunk);
+    px(cx - 2 + lean, by - 9, P.trunk[0]); px(cx + 2 + lean, by - 9, P.trunk[1]); px(cx - 3 + lean, by - 10, P.trunk[0]);
+    crown(lean, -18, 9, 6.5, P, { lump: 1.1, rag: 0.9 });
+    crown(-5 + lean, -20, 5, 4.5, P, { lump: 0.6 });
+    crown(5 + lean, -19, 4.5, 4, P, { lump: 0.6 });
+    crown(lean, -24, 5, 3.5, P, { lump: 0.6 });
+    if (sv === 1) px(cx - 8 + lean, by - 19, '#2a2a2a');                                   // a bird
+  } else if (variant === 1) {     // beech — smooth tall oval crown
+    const P = TREE_PAL.beech;
+    shadow(7, 2.6, 0.2);
+    trunk(2, 8, P.trunk);
+    crown(lean, -19, 7, 10, P, { lump: 0.5, rag: 0.95 });
+    crown(-3 + lean, -22, 4, 5, P, { lump: 0.4 });
+  } else if (variant === 2) {     // bush / Krummholz — low, wide, several lumps
+    const P = TREE_PAL.bush;
+    shadow(8, 2.4, 0.16);
+    crown(lean, -4, 8, 4, P, { lump: 0.8 });
+    crown(-4 + lean, -6, 4, 3, P, { lump: 0.5 });
+    crown(4 + lean, -5, 3.5, 2.6, P, { lump: 0.5 });
+    crown(lean, -8, 3, 2.4, P, { lump: 0.4 });
+    px(cx + lean, by - 1, P.trunk[0]); px(cx + 1 + lean, by - 1, P.trunk[1]);
+  } else if (variant === 3) {     // young sapling — thin stem, light airy crown
+    const P = TREE_PAL.young;
+    shadow(4, 1.5, 0.14);
+    trunk(1, 5, P.trunk);
+    crown(lean, -11, 3.5, 5.5, P, { lump: 0.5, airy: 9 });
+    crown(-1 + lean, -14, 2.5, 2.5, P, { lump: 0.3 });
+  } else if (variant === 4) {     // fruit tree — short trunk, round crown, apples
+    const P = TREE_PAL.fruit;
+    shadow(7, 2.6, 0.2);
+    trunk(2, 7, P.trunk);
+    px(cx - 2 + lean, by - 8, P.trunk[0]); px(cx + 2 + lean, by - 8, P.trunk[2]);
+    crown(lean, -15, 7.5, 6.5, P, { lump: 0.9 });
+    crown(-3 + lean, -18, 4.5, 4, P, { lump: 0.5 });
+    for (let i = 0; i < 5; i++) { const a = seed * 0.9 + i * 1.3; apple(cx + lean + Math.round(Math.cos(a) * (2 + (H(i, 3) % 4))), by - 15 + Math.round(Math.sin(a) * (2 + (H(i, 4) % 3)))); }
+    if (sv === 2) { px(cx + 5 + lean, by - 1, '#d83c3c'); }                                   // windfall
+  } else if (variant === 5) {     // fir / Tanne — wide soft tiers, flat light top
+    const P = TREE_PAL.fir;
+    shadow(7, 2.4, 0.22);
+    trunk(2, 4, P.trunk);
+    const T = [[-11, 7, 2, 7], [-17, 7, 1.5, 5.5], [-22, 6, 1, 4], [-27, 6, 0.5, 2.5]];   // [top, h, wTop, wBot]
+    for (let i = 0; i < T.length; i++) tier(0, T[i][0], T[i][1], T[i][2], T[i][3], P);
+    px(cx - 1 + lean, by - 28, P.hi); px(cx + lean, by - 28, P.hi); px(cx + lean, by - 29, P.lt);
+    if (sv !== 3) { px(cx - 5, by - 9, '#6a3a20'); px(cx + 4, by - 15, '#6a3a20'); }        // cones
+  } else if (variant === 6) {     // silver birch — white trunk with bark marks, airy translucent crown, hanging twigs
+    const P = TREE_PAL.birch;
+    shadow(5, 1.8, 0.12);
+    trunk(2, 10, P.trunk, '#3c3a36');
+    crown(lean, -17, 6, 6, P, { lump: 0.8, airy: 5, rag: 0.8 });
+    crown(-3 + lean, -14, 3.5, 3, P, { lump: 0.5, airy: 5 });
+    crown(4 + lean, -15, 3, 3, P, { lump: 0.5, airy: 5 });
+    for (let i = -2; i <= 2; i++) { const tx = cx + lean + i * 2 + (H(i, 5) % 2); px(tx, by - 11, P.sh); px(tx + (i > 0 ? 1 : 0), by - 10, P.mid); if (i % 2) px(tx, by - 9, P.mid); }
+  } else if (variant === 7) {     // mixed conifer pair — two spruces, left one shorter
+    const P = TREE_PAL.spruce;
+    shadow(10, 2.8, 0.22);
+    const pair = [[-4, 0.8], [4, 1.05]];
+    for (const [ox, k] of pair) {
+      for (let r = 0; r < 4; r++) { px(cx + ox, by - 1 - r, P.trunk[0]); px(cx + ox + 1, by - 1 - r, P.trunk[1]); }
+      const tops = [-4 - 7 * k, -4 - 12 * k, -4 - 16.5 * k, -4 - 20 * k];
+      const wb = [5.5 * k, 4.5 * k, 3.5 * k, 2 * k];
+      for (let i = 0; i < 4; i++) tier(ox + 0.5, Math.round(tops[i]), Math.max(3, Math.round([7, 5, 4.5, 3.5][i] * k)), i === 3 ? 0.4 : 1.2 * k, wb[i], P, { droop: true });
+      px(cx + ox + 0.5, Math.round(by - 4 - 20 * k) - 1, P.lt);
+    }
+  } else if (variant === 8) {     // spruce / Fichte — slender, many narrow drooping tiers
+    const P = TREE_PAL.spruce;
+    shadow(6, 2.2, 0.22);
+    trunk(2, 4, P.trunk);
+    const T = [[-9, 5, 2.2, 5.5], [-13, 5, 1.8, 4.6], [-17, 5, 1.4, 3.8], [-21, 5, 1, 3], [-25, 5, 0.5, 2.2], [-29, 4, 0.2, 1.4]];
+    for (const t of T) tier(0, t[0], t[1], t[2], t[3], P, { droop: true });
+    px(cx + lean, by - 31, P.sh); px(cx + lean, by - 30, P.lt);                               // leader
+    if (sv === 0) { px(cx - 3, by - 12, '#6a3a20'); px(cx + 3, by - 16, '#6a3a20'); px(cx - 2, by - 20, '#6a3a20'); }   // cones
+  } else if (variant === 9) {     // larch / Lärche — airy light-green conifer, stem visible through open tiers
+    const P = TREE_PAL.larch;
+    shadow(6, 2.2, 0.14);
+    trunk(2, 26, P.trunk);
+    const T = [[-10, 4, 2.2, 5.5], [-15, 4, 1.8, 4.6], [-20, 4, 1.3, 3.6], [-24, 4, 0.8, 2.6], [-28, 3, 0.3, 1.5]];
+    for (const t of T) tier(0, t[0], t[1], t[2], t[3], P, { gap: 4 });
+    px(cx + lean, by - 29, P.hi);
+    for (let i = 0; i < 5; i++) px(cx + lean + (H(i, 6) % 7) - 3, by - 12 - i * 3 - (H(i, 7) % 2), P.hi);   // needle tufts
+  } else if (variant === 10) {    // pine / Kiefer — long bare reddish trunk, umbrella crown
+    const P = TREE_PAL.pine;
+    shadow(8, 2.6, 0.2);
+    trunk(2, 16, P.trunk, '#6a3818');
+    for (let i = 0; i < 4; i++) px(cx + 1 + i + lean, by - 13 - i, P.trunk[0]);              // side branch
+    px(cx - 1 + lean, by - 15, P.trunk[0]); px(cx - 2 + lean, by - 16, P.trunk[0]);
+    crown(lean, -22, 9, 3.6, P, { lump: 1.2, rag: 0.85 });
+    crown(-5 + lean, -24.5, 5, 2.6, P, { lump: 0.6 });
+    crown(5 + lean, -24, 4.5, 2.4, P, { lump: 0.6 });
+    crown(lean, -26.5, 4, 2.2, P, { lump: 0.5 });
+  } else if (variant === 11) {    // willow / Weide — short thick trunk, drooping curtain of twigs
+    const P = TREE_PAL.willow;
+    shadow(9, 2.8, 0.18);
+    trunk(3, 6, P.trunk);
+    px(cx - 2 + lean, by - 7, P.trunk[0]); px(cx + 2 + lean, by - 7, P.trunk[2]);
+    crown(lean, -16, 9, 6, P, { lump: 0.8, rag: 0.9 });
+    crown(-4 + lean, -20, 5, 3.5, P, { lump: 0.5 });
+    crown(4 + lean, -19, 4.5, 3.2, P, { lump: 0.5 });
+    for (let i = -8; i <= 8; i += 2) {                                                        // hanging strands
+      const tx = cx + lean + i + (H(i, 8) % 2), len = 3 + (H(i, 9) % 4), top = by - 12 + Math.round(Math.abs(i) * 0.25);
+      for (let r = 0; r < len; r++) px(tx, top + r, r === len - 1 ? P.hi : (r & 1) ? P.sh : P.mid);
+    }
+  } else if (variant === 12) {    // poplar / Pappel — tall narrow column
+    const P = TREE_PAL.poplar;
+    shadow(5, 2, 0.18);
+    trunk(2, 6, P.trunk);
+    crown(lean, -20, 4.5, 14, P, { lump: 0.7, rag: 0.85 });
+    crown(lean * 1.5, -30, 2, 4, P, { lump: 0.3 });
+  } else if (variant === 13) {    // maple / ash — broad domed crown of many lobes, lighter leaf
+    const P = TREE_PAL.maple;
+    shadow(8, 2.8, 0.2);
+    trunk(2, 8, P.trunk);
+    px(cx - 2 + lean, by - 9, P.trunk[0]); px(cx - 3 + lean, by - 10, P.trunk[0]); px(cx + 2 + lean, by - 9, P.trunk[2]);
+    crown(lean, -17, 8, 6, P, { lump: 1.0, rag: 0.9 });
+    crown(-5 + lean, -21, 4.5, 4, P, { lump: 0.6 });
+    crown(4 + lean, -22, 4.5, 4, P, { lump: 0.6 });
+    crown(-1 + lean, -25, 4, 3.5, P, { lump: 0.6 });
+    if (sv === 4) { px(cx + 7 + lean, by - 14, '#c86030'); px(cx - 6 + lean, by - 20, '#c86030'); }   // first autumn leaves
+  } else if (variant === 14) {    // hawthorn shrub / Weißdorn — dense thorny bush with red haws
+    const P = TREE_PAL.thorn;
+    shadow(7, 2.2, 0.16);
+    px(cx + lean, by - 1, P.trunk[0]); px(cx + 1 + lean, by - 1, P.trunk[1]); px(cx - 1 + lean, by - 2, P.trunk[0]);
+    crown(lean, -6, 7, 4.5, P, { lump: 0.9, rag: 0.8 });
+    crown(-3 + lean, -9, 4, 3, P, { lump: 0.6 });
+    crown(3 + lean, -9, 3.5, 3, P, { lump: 0.6 });
+    for (let i = 0; i < 6; i++) px(cx + lean + (H(i, 10) % 11) - 5, by - 4 - (H(i, 11) % 6), i % 2 ? '#d03020' : '#a82018');   // haws
+    px(cx - 7 + lean, by - 8, '#8a8a70'); px(cx + 6 + lean, by - 11, '#8a8a70');                          // thorns
+  } else if (variant === 15) {    // hazel / Hasel — multi-stemmed shrub, mid-size open crown
+    const P = TREE_PAL.hazel;
+    shadow(7, 2.4, 0.16);
+    for (let r = 0; r < 5; r++) { px(cx - 2 + lean, by - 1 - r, P.trunk[0]); px(cx + lean, by - 1 - Math.round(r * 1.2), P.trunk[1]); px(cx + 2 + lean, by - 1 - r, P.trunk[2]); }
+    crown(lean, -11, 7.5, 5.5, P, { lump: 0.9, rag: 0.85, airy: 11 });
+    crown(-4 + lean, -13, 4, 3.5, P, { lump: 0.5 });
+    crown(4 + lean, -13.5, 4, 3.5, P, { lump: 0.5 });
+    if (sv % 2) { px(cx - 3 + lean, by - 9, '#c8a850'); px(cx + 4 + lean, by - 11, '#c8a850'); }     // nuts
+  } else if (variant === 16) {    // juniper / Wacholder — narrow dark columnar shrub (Almen, Heide)
+    const P = TREE_PAL.juniper;
+    shadow(4, 1.6, 0.18);
+    px(cx + lean, by - 1, P.trunk[0]);
+    crown(lean, -8, 3.2, 7, P, { lump: 0.6, rag: 0.8 });
+    crown(lean, -14, 1.8, 2.5, P, { lump: 0.3 });
+    if (sv % 3 === 0) { px(cx - 1 + lean, by - 7, '#4a5a88'); px(cx + 2 + lean, by - 10, '#4a5a88'); }   // berries
+  } else if (variant === 17) {    // elder / sloe shrub — rounded shrub with dark berry clusters
+    const P = TREE_PAL.elder;
+    shadow(7, 2.4, 0.16);
+    px(cx + lean, by - 1, P.trunk[0]); px(cx + 1 + lean, by - 1, P.trunk[1]); px(cx + lean, by - 2, P.trunk[0]);
+    crown(lean, -8, 7, 5.5, P, { lump: 0.8, rag: 0.85 });
+    crown(-3 + lean, -12, 4, 3, P, { lump: 0.5 });
+    crown(3 + lean, -11, 4, 3, P, { lump: 0.5 });
+    for (let i = 0; i < 4; i++) { const bx = cx + lean + (H(i, 12) % 9) - 4, byy = by - 7 - (H(i, 13) % 5); px(bx, byy, '#2a2a5a'); px(bx + 1, byy, '#3a3a7a'); px(bx, byy + 1, '#2a2a5a'); }
   }
+  A.cv.set(key, cv);
+  return cv;
+}
+function drawTree(ctx, x, y, variant, seedOffset) {
+  const s = G.cam.zoom > 16 ? 1.2 : 0.8;
+  const A = TREE_ATLAS;
+  const sv = ((seedOffset || 0) >>> 0) % A.seeds;
+  const cv = treeAtlasSprite(variant, sv);
+  ctx.drawImage(cv, Math.round(x) - A.cx * s, Math.round(y) - A.by * s, A.W * s, A.H * s);
 }
 
 function drawTriangle(ctx, cx, top, w, h) {
@@ -13954,10 +14098,29 @@ function nearestLandPoint(lon, lat, waterF) {
 function apexTreesOf(pid) { return G.apexByParcel[pid] || null; }
 /** Sprite variant for a measured tree: species hint from crown shape, size class from height. */
 function apexVariant(t, hash) {
-  if (t.vitality === 'dead' || t.vitality === 'declining') return 6;   // snag / bare crown
-  if (t.species === 'larch' || t.species === 'birch') return (hash + Math.round(t.h)) % 2 ? 3 : 1;
-  if (t.broad) return (hash + Math.round(t.h)) % 2;      // oak / beech
-  return (hash + Math.round(t.h)) % 3 === 0 ? 7 : 5;      // fir / mixed conifer
+  const r = hash + Math.round(t.h);
+  if (t.vitality === 'dead') return -1;                                 // standing snag
+  if (t.vitality === 'declining') return r % 3 === 0 ? -1 : 6;          // thinning crown / snag
+  if (t.h < 6 && t.species !== 'fruit') {                               // low apex → shrub / hedge
+    if (t.species && NE_CONIFER.has(t.species)) return r % 2 ? 16 : 8;
+    return TREE_SHRUBS[r % TREE_SHRUBS.length];
+  }
+  switch (t.species) {
+    case 'birch': return 6;
+    case 'larch': return 9;
+    case 'pine': return 10;
+    case 'spruce': return r % 4 === 0 ? 7 : 8;
+    case 'fir': return 5;
+    case 'oak': return 0;
+    case 'beech': return r % 5 === 0 ? 13 : 1;
+    case 'maple': case 'ash': return 13;
+    case 'fruit': return 4;
+    case 'willow': return 11;
+    case 'poplar': return 12;
+    case 'alder': return r % 2 ? 1 : 11;
+  }
+  if (t.broad) return [0, 1, 13, 1, 0, 12][r % 6];                    // oak / beech / maple / poplar
+  return [5, 8, 7, 8][r % 4];                                         // fir / spruce / mixed conifer
 }
 // NE cells vocabulary (srtm v2.4 observed layer) → German labels
 const NE_BROADLEAF = new Set(['beech','oak','maple','ash','birch','alder','poplar','willow','fruit','broadleaf']);
