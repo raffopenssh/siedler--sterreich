@@ -187,6 +187,23 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   seconds during an srtm registry full refresh; run.sh retries 4× 30 s before using the fallback sample.
   `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json` files. Reads bevdirect directly, writes
   no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.** Public counter `GET /api/contrib/stats` (`srv/contrib_stats.go`: latest report per KG → kgs, Σ cells_n, Σ KG km² from the admin table, universe, 10 min cache) feeds the „Beitrag zum Nutzungsmonitoring“ callout on impressum/imprint (`static/contrib-stats.js`, `.legal-callout`/`.legal-stats` in legal.css).
+- **`ne_ready` is the v2.4 truth** (srtm afe147d, 2026-10-07): registry rows carry `ne_ready` (bool, authoritative),
+  `ne_status` (served|partial|pending|not_processed), `ne_cells_published_at`; `product_version` reads
+  `v2.4-pending` until the cells are ingested (metered, hours; ~365 pending now, self-promoting), raw value in
+  `product_version_registry`. `kgNEServed()` (landscape.go) = `ne_ready` when present (old v1/v2.3 rows with
+  `ne_ready:true` are real), else the product string (pre-afe147d mirror). `registry_hash` folds `ne_ready|ne_status`
+  in; `updated_at` is bumped on publication so `neAdoptKGs` purges + re-warms the KG then. `/api/enhanced-kgs`
+  `kgs[].ne_status`, `other.pending`. `/cells` meta: `kgs_missing` (union) + `kgs_pending` (poll after
+  `meta.retry_after_s`) + `kgs_not_processed`; a 200 cell with pending KGs is cached only until the hint (30 min–6 h),
+  a 404 `status:"pending"` likewise (≥ 5 min). Relayed as `ne.kgs_pending` on `/api/viewport` and `/api/ne`.
+- **NE confirmed, not flagged** (`srv/neobserved.go`, belt and braces under the above): srtm's registry flagged KGs
+  v2.4 hours before `/cells` served them (2026-10-07: 61 of 354 flagged KGs with built cells had no NE cells —
+  19454 Gerersdorf etc., two lucky players landed there). Every ready cell build notes `kgs[].ne` per KG
+  (`ne-obs:v1:<kg>` = 1/0, 24 h, positive wins; `neObservedSeed` scans cached cells at startup when no notes exist;
+  `neAdoptKGs` drops the note). `neConfirmedKGSet()` = registry v2.4 minus explicit 0 — **lucky uses only this**:
+  with ≥ `luckyV24Min` 10 warm confirmed KGs the playable set is v2.4-confirmed only (cluster cold list too), and
+  `spawnNEOK` rejects a spawn whose cached cell says the spawn KG has no NE (`lucky: spawn rejected, v2.4 KG without
+  NE cells`). `cellData.KGsNE` carries the per-KG flag.
 - `GET /api/lucky` → `{gemeinde_code, name, lon, lat, enhanced, warm, kgs[]}`,
   only Gemeinden whose KGs are warm (not expiring within 2 h) **and** srtm
   grid25 (`enhancedKGSet`); the spawn KG itself must be enhanced. Picks are
