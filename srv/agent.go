@@ -651,8 +651,8 @@ func (s *Server) handleLLMsTxt(w http.ResponseWriter, r *http.Request) {
 - [Datenschutz](%s/datenschutz)
 
 ## KG universe (contract)
-- All per-KG state is keyed on ` + "`kg_code`" + `: the 5-digit Katastralgemeinde code as a **string with its leading zero** (` + "`01004`" + `, not 1004).
-- The universe is **kg_count = 7850** KGs, fingerprint ` + "`universe_hash = sha256(join(sorted(kg_code), \"\\n\"))`" + ` hex. We verify our own list (BEV VGD) against umfeld-at ` + "`GET https://umfeld-at.exe.xyz/api/v1/kgs`" + ` (If-None-Match / 304) and srtm-lidar-at ` + "`/api/v1/kgs?processed_only=0`" + ` hourly; status in ` + "`%s/api/metrics`" + ` → ` + "`kg_universe`" + ` (` + "`ok`" + `, hashes, ` + "`alert`" + `). A different hash or count is a universe change — we alert and pause derived-cache work instead of proceeding silently.
+- All per-KG state is keyed on `+"`kg_code`"+`: the 5-digit Katastralgemeinde code as a **string with its leading zero** (`+"`01004`"+`, not 1004).
+- The universe is **kg_count = 7850** KGs, fingerprint `+"`universe_hash = sha256(join(sorted(kg_code), \"\\n\"))`"+` hex. We verify our own list (BEV VGD) against umfeld-at `+"`GET https://umfeld-at.exe.xyz/api/v1/kgs`"+` (If-None-Match / 304) and srtm-lidar-at `+"`/api/v1/kgs?processed_only=0`"+` hourly; status in `+"`%s/api/metrics`"+` → `+"`kg_universe`"+` (`+"`ok`"+`, hashes, `+"`alert`"+`). A different hash or count is a universe change — we alert and pause derived-cache work instead of proceeding silently.
 `, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL, siteURL)
 }
 

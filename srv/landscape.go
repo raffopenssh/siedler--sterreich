@@ -141,7 +141,7 @@ func (s *Server) buildEnhancedKGs(cacheKey string) ([]byte, int) {
 	}
 	out, _ := json.Marshal(map[string]any{
 		"count": len(all), "v24_count": nv24, "enhanced": "v2.4 full only",
-		"other": map[string]int{"processed": nProcessed, "v2_any": nv2, "partial": nPartial},
+		"other":    map[string]int{"processed": nProcessed, "v2_any": nv2, "partial": nPartial},
 		"kg_count": uni.KGsTotal, "kg_universe": kgUniverseCount,
 		"universe_hash": uni.UniverseHash, "registry_hash": uni.RegistryHash,
 		"source": source, "fetched_at": uni.FetchedAt, "upstream_etag": uni.ETag,

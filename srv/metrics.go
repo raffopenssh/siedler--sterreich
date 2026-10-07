@@ -11,11 +11,11 @@ package srv
 // pattern ("GET /api/session/{id}/parcels") rather than the raw path.
 
 import (
-	"log/slog"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"sort"
