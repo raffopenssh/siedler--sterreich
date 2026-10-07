@@ -1130,27 +1130,31 @@ function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
     // GW-7: subtle amber→red wash on water-stressed municipalities
     const tint = gwiTint(feature.properties.gemeinde_code);
     if (tint && !isHover) { ctx.fillStyle = tint; ctx.fill(); }
-    if (isEnh) {
-      // Cyan glow for lidar-enhanced municipalities
-      ctx.save();
-      ctx.shadowColor = 'rgba(80,230,255,0.9)';
-      ctx.shadowBlur = 8 + (glowPulse||0.5) * 8;
-      ctx.strokeStyle = 'rgba(80,230,255,' + (0.5 + 0.4*(glowPulse||0.5)).toFixed(2) + ')';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
-      ctx.fillStyle = 'rgba(80,230,255,' + (0.05 + 0.05*(glowPulse||0.5)).toFixed(3) + ')';
-      ctx.fill();
-    }
     ctx.strokeStyle = isHover ? '#ffd700' : '#2a4020';
     ctx.lineWidth = isHover ? 2.5 : 1;
     ctx.stroke();
   }
 
+  const b = geoBounds(geom);
+  const [cx, cy] = pickProject((b.w+b.e)/2, (b.s+b.n)/2);
+  // Enhanced / prewarmed: the same dot halo as on the Bundesländer overview
+  // (no polygon outlines — the Gemeinde border stays the plain border).
+  if (isEnh) {
+    const warm = warmGlowOf(String(feature.properties.gemeinde_code || feature.properties.code));
+    const col = warm ? '255,190,80' : '80,230,255';
+    const p = glowPulse || 0.5;
+    const dy = G.pick.cam.zoom >= 9 ? 10 : 0; // below the label
+    ctx.fillStyle = 'rgba(' + col + ',' + (0.25*p).toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(cx, cy+dy, 7, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(' + col + ',' + (0.8*p).toFixed(3) + ')';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy+dy, 5, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = warm ? '#ffd890' : '#a0f0ff';
+    ctx.fillRect(cx-2, cy+dy-2, 4, 4);
+  }
+
   // Label
   if (G.pick.cam.zoom >= 9) {
-    const b = geoBounds(geom);
-    const [cx, cy] = pickProject((b.w+b.e)/2, (b.s+b.n)/2);
     ctx.font = MAP_FONT.label;
     ctx.textAlign = 'center';
     ctx.fillStyle = '#000';
@@ -2290,12 +2294,6 @@ async function loadWarmGemeinden() {
     const res = await GET('/api/warm/gemeinden');
     if (!res || !res.gemeinden) return;
     G.warmGemeinden = res.gemeinden;
-    const lg = document.getElementById('pick-warm-legend');
-    if (lg) {
-      let n = 0; for (const c in res.gemeinden) if (warmGlowOf(c)) n++;
-      lg.style.display = n ? '' : 'none';
-      const cnt = lg.querySelector('b'); if (cnt) cnt.textContent = n;
-    }
     if (document.getElementById('screen-pick')?.classList.contains('active')) drawPick();
   } catch (e) { /* optional layer */ }
 }
