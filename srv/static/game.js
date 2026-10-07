@@ -508,6 +508,83 @@ function setUrlParams(obj) {
   history.replaceState(null, '', location.pathname + (qs ? '?'+qs : '') + location.hash);
 }
 
+// ================= WÜRFEL — the 🎲 emoji, spun while a request is in flight =================
+// Welcome reroll button. Static at rest; .rolling (CSS tumble) while a promise is pending.
+const Wuerfel = {
+  html() { return '<span class="wuerfel" aria-hidden="true">🎲</span>'; },
+  /** Mount a die into `host` (replaces its content). Returns the .wuerfel element. */
+  mount(host) { if (!host) return null; host.innerHTML = this.html(); return host.firstElementChild; },
+  /** Start rolling. Returns stop(). */
+  roll(el) {
+    if (!el) return () => {};
+    el.classList.remove('landed'); el.classList.add('rolling');
+    return () => { el.classList.remove('rolling'); el.classList.add('landed'); setTimeout(() => el.classList.remove('landed'), 520); };
+  },
+  /** Roll for the duration of a promise. */
+  async during(el, promise) {
+    const stop = this.roll(el);
+    try { return await promise; } finally { stop(); }
+  },
+};
+
+/** Type `text` into an input like the Herald speaks — ~12 ms per char (the
+ *  Herald uses 18–40), with a blinking pixel caret. Cancels a previous run. */
+function typeInto(inp, text, done) {
+  if (inp._typeT) { clearTimeout(inp._typeT); inp._typeT = 0; }
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) { inp.value = text; inp.classList.remove('typing'); done && done(); return; }
+  inp.classList.add('typing');
+  let i = 0;
+  const step = () => {
+    i++;
+    inp.value = text.slice(0, i) + (i < text.length ? '▌' : '');
+    if (i >= text.length) { inp.classList.remove('typing'); inp._typeT = 0; done && done(); return; }
+    inp._typeT = setTimeout(step, 9 + Math.random() * 8);
+  };
+  step();
+}
+
+// ================= VISITED KGs (URL only, no storage) =================
+// ?seen=12105.abc12,03301.abc13 — KG code + minutes-since-epoch (base36) of the
+// last visit; pruned after 60 min. Survives the door (leaveGame keeps the query)
+// and is sent to /api/lucky as avoid_kgs so it never drops the player back where
+// they were within the hour (min 30 km away).
+const SEEN_TTL_MIN = 60;
+function visitedKGs() {
+  const out = [];
+  const nowM = Math.floor(Date.now() / 60000);
+  for (const e of (getUrlParam('seen') || '').split(',')) {
+    const m = /^(\d{4,5})\.([0-9a-z]+)$/.exec(e);
+    if (!m) continue;
+    const t = parseInt(m[2], 36);
+    if (nowM - t <= SEEN_TTL_MIN) out.push({ kg: m[1].padStart(5, '0'), t });
+  }
+  return out;
+}
+let _seenLast = '';
+function noteVisitedKG(kg) {
+  if (!kg) return;
+  kg = String(kg).padStart(5, '0');
+  const nowM = Math.floor(Date.now() / 60000);
+  const list = visitedKGs().filter(e => e.kg !== kg);
+  list.push({ kg, t: nowM });
+  const v = list.slice(-40).map(e => e.kg + '.' + e.t.toString(36)).join(',');
+  if (v === _seenLast) return;
+  _seenLast = v;
+  setUrlParams({ seen: v });
+}
+/** Query string fragment for /api/lucky: visited KGs + last camera spot, 30 km. */
+function luckyAvoidQS() {
+  const kgs = visitedKGs().map(e => e.kg);
+  const last = getUrlParam('last');
+  const parts = [];
+  if (kgs.length) parts.push('avoid_kgs=' + kgs.join(','));
+  if (last) parts.push('avoid=' + encodeURIComponent(last));
+  if (!parts.length) return '';
+  parts.push('min_km=30');
+  return '?' + parts.join('&');
+}
+
 // ================= WELCOME =================
 (async () => {
   const inp = document.getElementById('input-name');
@@ -544,14 +621,17 @@ function setUrlParams(obj) {
 
   // Pre-fill name: from URL, else a server-checked free suggestion
   inp.value = savedName || '';
-  if (!savedName) suggestFreeName().then(n => { if (!inp.value) inp.value = n; });
-  document.getElementById('btn-reroll').onclick = async () => {
-    const btn = document.getElementById('btn-reroll');
-    btn.disabled = true;
-    inp.value = await suggestFreeName();
-    btn.disabled = false;
+  const rerollBtn = document.getElementById('btn-reroll');
+  const die = Wuerfel.mount(rerollBtn);
+  if (!savedName) Wuerfel.during(die, suggestFreeName()).then(n => { if (!inp.value) typeInto(inp, n); });
+  rerollBtn.onclick = async () => {
+    rerollBtn.disabled = true;
+    const n = await Wuerfel.during(die, suggestFreeName());
+    typeInto(inp, n, () => { rerollBtn.disabled = false; });
     inp.focus();
   };
+  // Typing over a half-typed suggestion: take over cleanly (drop the caret).
+  inp.addEventListener('keydown', () => { if (inp._typeT) { clearTimeout(inp._typeT); inp._typeT = 0; inp.classList.remove('typing'); inp.value = inp.value.replace('▌', ''); } });
 
   if (savedPid && savedName) {
     const note = (where) => {
@@ -648,8 +728,7 @@ function setUrlParams(obj) {
     setLoadProgress(2);
     startTipRotation();
     startLoadingCountdown(30);
-    const last = getUrlParam('last');
-    const luckyReq = GET('/api/lucky' + (last ? '?avoid=' + encodeURIComponent(last) + '&min_km=30' : '')).catch(e => ({error: e.message}));
+    const luckyReq = GET('/api/lucky' + luckyAvoidQS()).catch(e => ({error: e.message}));
     const p = await registerAndProceed(true);
     if (!p) { show('welcome'); return; }
     await startLucky(luckyReq);
@@ -3315,6 +3394,7 @@ function syncViewHash() {
     const nv = G.cam.lon.toFixed(5) + ',' + G.cam.lat.toFixed(5) + ',' + (Math.round(G.cam.zoom * 10) / 10);
     if (nv === _vhLast) return;
     _vhLast = nv;
+    try { noteVisitedKG(kgAtCamera()); } catch (e) {}
     try { history.replaceState(null, '', location.pathname + location.search + '#v=' + nv); } catch (e) {}
   }, 600);
 }
@@ -12238,6 +12318,8 @@ window.DEV = {
     if (act && Herald.action) { Herald.runAction(); await new Promise(r => setTimeout(r, 1200)); await this.idle(); render(); }
     return { id: c.id, lines: b.lines.map(l => l.html.replace(/<[^>]+>/g, '')), action: b.act ? b.act.label : null };
   },
+  /** Visited KGs of the last hour (URL ?seen=…) — lucky stays ≥ 30 km away from them. */
+  seen() { return visitedKGs(); },
   /** Herald (typewriter hint box): DEV.herald('intro'|'quest'|'off') or DEV.herald('hint','first_claim'). */
   herald(mode, key) {
     if (mode === 'off') return Herald.dismiss();

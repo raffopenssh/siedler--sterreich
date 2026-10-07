@@ -455,48 +455,99 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 	plan := &warmPlan{Date: now.Format("2006-01-02"), Started: map[string]bool{}, Boost: warmBoosted()}
 	usedState := map[string]int{}
 	perState := (patches + 8) / 9 * 2 // ≈ 2× the fair share per Bundesland
-	for _, seed := range seeds {
-		if len(plan.Patches) >= patches {
-			break
-		}
-		g := adm.Gemeinde[seed]
-		isV24 := false
-		for _, kg := range g.KGs {
-			if v24[kg] {
-				isV24 = true
-				break
+	// Spread: patch centres keep ≥ warmPatchSpacingKm apart (lucky's "somewhere
+	// new" rule is 30 km — there must always be warm destinations that far from
+	// wherever the player just was). Relaxed to half when the pass runs dry.
+	var centres [][2]float64
+	spaced := func(g *gemeindeAdmin, km float64) bool {
+		lon, lat := g.center()
+		for _, c := range centres {
+			if distM(lon, lat, c[0], c[1]) < km*1000 {
+				return false
 			}
 		}
-		if usedState[g.State] >= perState && !isV24 {
+		return true
+	}
+	// Gemeinden that are warm as a whole already count as occupied spots, so
+	// today's patches land away from yesterday's.
+	for _, g := range adm.Gemeinde {
+		if len(g.KGs) == 0 {
 			continue
 		}
-		allFresh := true
+		all := true
 		for _, kg := range g.KGs {
-			if used[kg] {
-				allFresh = false // overlaps an earlier patch
-				break
-			}
 			if !fresh[kg] {
-				allFresh = false
+				all = false
+				break
 			}
 		}
-		if allFresh {
-			continue // already warm (or taken) — pick a different destination
+		if all && !warmBoosted() { // boost focus is one dense blob by design
+			lon, lat := g.center()
+			centres = append(centres, [2]float64{lon, lat})
 		}
-		patch := s.growPatch(seed, used, fresh, enhKG)
-		if len(patch) == 0 {
-			continue
+	}
+	taken := map[string]bool{}
+	for pass, km := range []float64{warmPatchSpacingKm, warmPatchSpacingKm / 2} {
+		for _, seed := range seeds {
+			if len(plan.Patches) >= patches {
+				break
+			}
+			if taken[seed] {
+				continue
+			}
+			g := adm.Gemeinde[seed]
+			if !spaced(g, km) {
+				continue
+			}
+			isV24 := false
+			for _, kg := range g.KGs {
+				if v24[kg] {
+					isV24 = true
+					break
+				}
+			}
+			if usedState[g.State] >= perState && !isV24 {
+				continue
+			}
+			allFresh := true
+			for _, kg := range g.KGs {
+				if used[kg] {
+					allFresh = false // overlaps an earlier patch
+					break
+				}
+				if !fresh[kg] {
+					allFresh = false
+				}
+			}
+			if allFresh {
+				continue // already warm (or taken) — pick a different destination
+			}
+			patch := s.growPatch(seed, used, fresh, enhKG)
+			if len(patch) == 0 {
+				continue
+			}
+			taken[seed] = true
+			lon, lat := g.center()
+			centres = append(centres, [2]float64{lon, lat})
+			usedState[g.State]++
+			plan.Patches = append(plan.Patches, patch)
+			tag := ""
+			if isV24 {
+				tag = " · v2.4"
+			}
+			if pass > 0 {
+				tag += " · near"
+			}
+			plan.Seeds = append(plan.Seeds, g.Name+" ("+g.State+")"+tag)
 		}
-		usedState[g.State]++
-		plan.Patches = append(plan.Patches, patch)
-		tag := ""
-		if isV24 {
-			tag = " · v2.4"
-		}
-		plan.Seeds = append(plan.Seeds, g.Name+" ("+g.State+")"+tag)
 	}
 	return plan
 }
+
+// warmPatchSpacingKm: minimum distance between the day's patch centres —
+// equals the lucky "avoid" radius so a player leaving one patch always finds
+// another warm one far enough away.
+const warmPatchSpacingKm = 30.0
 
 // growPatch: *all* of the seed Gemeinde's KGs (a Gemeinde is only a lucky
 // destination once it is warm as a whole — never cut a big Gemeinde short),
@@ -653,21 +704,58 @@ func (s *Server) handleLucky(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]any{"lon": lon, "lat": lat, "known": known, "interest": sc})
 		return
 	}
-	// ?avoid=lon,lat[&min_km=30] → a *new* place: KGs within min_km of the
-	// previous spawn are dropped from the playable set (door button → lucky).
+	// ?avoid=lon,lat[;lon,lat…]&avoid_kgs=12105,03301[&min_km=30] → a *new*
+	// place: KGs within min_km of any previous spawn / visited KG are dropped
+	// from the playable set (door button → lucky, in-game Würfel; the client
+	// keeps the KGs of the last hour in its URL, see visitedKGs in game.js).
 	var av *luckyAvoid
-	if a := r.URL.Query().Get("avoid"); a != "" {
+	q := r.URL.Query()
+	add := func(lon, lat float64) {
+		if av == nil {
+			av = &luckyAvoid{km: 30}
+		}
+		av.pts = append(av.pts, [2]float64{lon, lat})
+	}
+	for _, a := range strings.Split(q.Get("avoid"), ";") {
 		if lon, lat, ok := parseLonLat(a); ok {
-			av = &luckyAvoid{lon: lon, lat: lat, km: 30}
-			if km, err := strconv.ParseFloat(r.URL.Query().Get("min_km"), 64); err == nil && km > 0 && km <= 300 {
-				av.km = km
-			}
+			add(lon, lat)
+		}
+	}
+	adm := admin()
+	for _, kg := range strings.Split(q.Get("avoid_kgs"), ",") {
+		kg = strings.TrimSpace(kg)
+		if len(kg) == 4 {
+			kg = "0" + kg
+		}
+		if k := adm.KGs[kg]; k != nil {
+			lon, lat := k.center()
+			add(lon, lat)
+		}
+	}
+	if av != nil {
+		if km, err := strconv.ParseFloat(q.Get("min_km"), 64); err == nil && km > 0 && km <= 300 {
+			av.km = km
+		}
+		if len(av.pts) > 200 {
+			av.pts = av.pts[len(av.pts)-200:]
 		}
 	}
 	jsonResp(w, s.luckyPickAvoid(av))
 }
 
-type luckyAvoid struct{ lon, lat, km float64 }
+type luckyAvoid struct {
+	pts [][2]float64 // spawns / visited KG centres to stay away from
+	km  float64
+}
+
+func (a *luckyAvoid) near(lon, lat float64) bool {
+	for _, p := range a.pts {
+		if distM(lon, lat, p[0], p[1]) < a.km*1000 {
+			return true
+		}
+	}
+	return false
+}
 
 func parseLonLat(s string) (float64, float64, bool) {
 	parts := strings.Split(s, ",")
@@ -697,16 +785,15 @@ func (s *Server) luckyPickAvoid(av *luckyAvoid) luckyPick {
 				continue
 			}
 			lon, lat := k.center()
-			if distM(lon, lat, av.lon, av.lat) >= av.km*1000 {
+			if !av.near(lon, lat) {
 				kept[kg] = true
 			}
 		}
-		// Nothing far enough warm → fall back to the unrestricted pick rather
-		// than the cold path (a warm spawn nearby beats a cold one far away).
-		if len(kept) > 0 {
-			slog.Info("lucky: avoid", "lon", av.lon, "lat", av.lat, "km", av.km, "fresh", len(fresh), "kept", len(kept))
-			fresh = kept
-		}
+		// Nothing far enough warm → the cold path below (an enhanced
+		// Gemeinde ≥ min_km away, warmed on the spot). The player asked for
+		// somewhere *new*; a warm spawn next door is exactly what they left.
+		slog.Info("lucky: avoid", "points", len(av.pts), "km", av.km, "fresh", len(fresh), "kept", len(kept))
+		fresh = kept
 	}
 	enhKG := s.enhancedKGSet()
 	enh := s.enhancedGemeindeSet()
@@ -845,11 +932,31 @@ func (s *Server) luckyPickAvoid(av *luckyAvoid) luckyPick {
 	}
 	// Nothing warm yet (fresh install): enhanced Gemeinde at random, and
 	// start warming it right away so the player's first pans are cheap.
+	farEnough := func(code string) bool {
+		if av == nil {
+			return true
+		}
+		g := adm.Gemeinde[code]
+		if g == nil {
+			return false
+		}
+		lon, lat := g.center()
+		return !av.near(lon, lat)
+	}
 	var codes []string
 	for code := range enh {
-		codes = append(codes, code)
+		if farEnough(code) {
+			codes = append(codes, code)
+		}
 	}
 	if len(codes) == 0 {
+		for code := range adm.Gemeinde {
+			if farEnough(code) {
+				codes = append(codes, code)
+			}
+		}
+	}
+	if len(codes) == 0 { // avoid list covers the whole country
 		for code := range adm.Gemeinde {
 			codes = append(codes, code)
 		}

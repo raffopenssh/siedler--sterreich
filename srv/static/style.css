@@ -178,13 +178,30 @@ input[type=text]:focus { border-color:var(--gold); }
 .name-row { display:flex; align-items:stretch; margin-bottom:14px; position:relative; }
 .name-row input { flex:1; padding-right:48px; }
 .btn-reroll {
-  position:absolute; right:4px; top:50%; transform:translateY(-50%);
-  font-size:20px; padding:4px 8px; line-height:1;
-  background:transparent; border:none; cursor:pointer; color:var(--text-dim);
-  transition:color .15s;
+  position:absolute; right:6px; top:50%; transform:translateY(-50%);
+  padding:2px; line-height:0; display:inline-flex;
+  background:transparent; border:none; box-shadow:none; cursor:pointer;
 }
-.btn-reroll:hover { color:var(--gold); background:transparent; border:none; }
+.btn-reroll:hover, .btn-reroll:focus-visible { background:transparent; border:none; box-shadow:none; transform:translateY(-50%); }
 .btn-reroll:active { transform:translateY(-50%) scale(0.9); }
+.btn-reroll .wuerfel { font-size:19px; opacity:.8; }
+.btn-reroll:hover .wuerfel { opacity:1; }
+/* Name typewriter: a pixel caret blinks at the end of the input while the suggestion types in */
+#input-name.typing { caret-color:transparent; }
+#input-name.typing::placeholder { color:transparent; }
+
+/* ===== Würfel — 🎲 emoji; .rolling = tumble while a request is in flight ===== */
+.wuerfel {
+  display:inline-grid; place-items:center; width:1.15em; height:1.15em; font-size:22px; line-height:1; vertical-align:middle; flex:none;
+  font-family:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
+  transform-origin:center center; will-change:transform, filter; transition:filter .25s;
+}
+.btn-reroll:active .wuerfel { filter:drop-shadow(0 0 5px rgba(240,200,90,.8)) brightness(1.15); }
+.wuerfel.rolling { animation:wuerfelRoll .42s linear infinite; filter:drop-shadow(0 0 6px rgba(240,200,90,.6)); }
+.wuerfel.landed { animation:wuerfelLand .5s cubic-bezier(.2,1.6,.4,1) 1; filter:drop-shadow(0 0 4px rgba(240,200,90,.5)); }
+@keyframes wuerfelRoll { 0% { transform:rotate(0) scale(1.05); } 50% { transform:rotate(180deg) scale(1.15); } 100% { transform:rotate(360deg) scale(1.05); } }
+@keyframes wuerfelLand { 0% { transform:scale(1.5) rotate(20deg); } 60% { transform:scale(.92) rotate(-4deg); } 100% { transform:scale(1) rotate(0); } }
+@media (prefers-reduced-motion: reduce) { .wuerfel.rolling, .wuerfel.landed { animation:none; } }
 .btn-lucky { background:#7a3ea0; color:#fff; border-color:#9a5ec0; flex:1; }
 .btn-lucky:hover { background:#8a4eb0; }
 .welcome-panel .btn-row { justify-content:stretch; }
