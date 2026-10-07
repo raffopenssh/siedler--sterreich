@@ -7176,10 +7176,17 @@ function neApexMode() { return G.neTreeCells.size > 0; }
 function neApexMinH() { const z = G.cam.zoom; return z < 14 ? 18 : z < 15 ? 14 : z < 16 ? 10 : z < 17 ? 6 : 4; }
 /** Procedural filler density factor: fixed-pixel sprites must thin as the parcel shrinks on screen. */
 function fillerZoomMul() { return Math.max(0.25, Math.min(1, Math.pow(2, G.cam.zoom - 15))); }
-/** Does this parcel lie in a cell whose apices we hold? (centroid cell; cached on the feature) */
+/** Does this parcel lie in a cell whose apices we hold? (centroid cell; cached on the feature)
+ *  Cells on a KG border are `partial`: the processed KG's trees arrive, the
+ *  neighbour KG (e.g. Wurmla 19139) has none. Only parcels that carry NE
+ *  enrichment themselves (`props.ne`, ≥ 30 % cell coverage) hand their stand
+ *  over to drawNEApices(); the rest keep the procedural filler — otherwise the
+ *  filler vanished the moment the NE cell arrived and the parcels went bare. */
 function parcelInNECell(f) {
   if (f._neCell === undefined) { const [lon, lat] = featureLonLat(f); f._neCell = cellOf(lon, lat).key; }
-  return G.neTreeCells.has(f._neCell);
+  if (!G.neTreeCells.has(f._neCell)) return false;
+  const partial = G.neTreePartial.has(f._neCell);
+  return !partial || !!f.properties.ne;
 }
 /** Device pixels per metre (N–S) at the current zoom. */
 function pxPerMetre() { return mapScale() * 1.35 / 111320; }
@@ -13829,6 +13836,7 @@ function loadLandmarks(b) {
 }
 G.apexByParcel = {};      // parcel_id → [{lon,lat,h,crown,broad}] (≤5 tallest measured trees; unbounded for NE cells)
 G.neTreeCells = new Map(); // cell key → every NE apex ≥ 4 m of that 0.02° cell, tallest first
+G.neTreePartial = new Set(); // cell keys whose NE trees cover only part of the cell (KG border)
 G.hofstellen = []; G.hofIds = new Set(); G.hofTiles = new Set(); G.hofAttempts = {};
 G.reliefOn = localStorage.getItem('reliefOn') !== '0';
 
@@ -14039,6 +14047,7 @@ function loadTrees(b) {
         for (const t of batch) { t.ne = true; arr.push(t); }
         arr.sort((a, b2) => b2.h - a.h);
         G.neTreeCells.set(c.key, arr);
+        if (data.partial) G.neTreePartial.add(c.key);
         noteNE({ epoch: data.epoch });
       }
       assignApexTrees();
