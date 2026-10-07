@@ -282,7 +282,7 @@ def main(argv=None):
     ap.add_argument("--work", default=os.path.join(REPO, "data", "ne-reports", "work"))
     ap.add_argument("--token-file", default=os.path.join(REPO, "ne-peer.key"))
     ap.add_argument("--inflight", type=int, default=2, help="concurrent bevdirect requests (default 2 — it serves the live game)")
-    ap.add_argument("--max-cells", type=int, default=60, help="refuse KGs needing more bevdirect cells than this")
+    ap.add_argument("--max-cells", type=int, default=600, help="sanity guard only: refuse KGs needing more bevdirect cells than this (largest KG in the admin table needs 345, with the 0.004° pad; every KG must be reportable)")
     ap.add_argument("--max-age-days", type=float, default=7, help="skip a KG with a report younger than this")
     ap.add_argument("--force", action="store_true", help="ignore --max-age-days")
     ap.add_argument("--keep-cells", action="store_true", help="keep the fetched cell_*.json under --work")
