@@ -277,6 +277,7 @@ func (s *Server) warmPlanner() {
 	// that is 1 300+ KGs and would re-download gigabytes a day with no player.
 	go func() {
 		for {
+			s.warmBoostFocusRun() // boost focus (warmboost.go): the whole v2.4 area around X
 			if !warmIdle() {
 				n := 0
 				for _, kg := range s.recentV24KGs(s.neReadyKGSet()) {
@@ -886,7 +887,7 @@ func (s *Server) warmStatusMap() map[string]any {
 		"v24_kgs": v24, "v24_warm": v24Warm, "kg_universe": kgUniverseStatus(),
 		"plan": plan, "policy": map[string]any{"daily_kgs": warmDailyKGs, "patches": warmPatches, "ttl_h": 24,
 			"tier": warmTier(), "idle_after_h": int(warmIdleAfter.Hours()), "idle_patches": warmPatches / warmIdleEvery, "keep_warm_cap": warmKeepCap,
-			"boost": warmBoostStatus()},
+			"boost": warmBoostStatus(), "boost_focus": s.warmBoostFocusStatus()},
 		"last_player": lastPlayerAt().UTC().Format(time.RFC3339),
 		"contrib":     s.contribStatusMap(),
 	}
@@ -950,6 +951,7 @@ func (s *Server) handleWarmRunPlan(w http.ResponseWriter, r *http.Request) {
 	if pulled > 0 {
 		s.savePlan(plan)
 	}
+	kgs += s.warmBoostFocusRun()
 	slog.Info("warm: plan pulled forward", "patches", pulled, "kgs", kgs, "remote", r.RemoteAddr)
 	jsonResp(w, map[string]any{"patches_queued": pulled, "kgs_queued": kgs, "plan_patches": len(plan.Patches), "queue_len": len(s.warm.queue)})
 }

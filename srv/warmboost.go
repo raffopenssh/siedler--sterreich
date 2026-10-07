@@ -21,7 +21,12 @@ package srv
 // (patches already past due are queued at once — the queue serialises them).
 
 import (
+	"fmt"
+	"log/slog"
+	"math"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,4 +101,174 @@ func warmBoostStatus() map[string]any {
 		m["until"] = u.UTC().Format(time.RFC3339)
 	}
 	return m
+}
+
+// ---------------------------------------------------------------------------
+// Boost focus — "keep everything v2.4 around X warm while boosted".
+//
+// Second line of WARM_BOOST: `focus=<Gemeinde name|Gemeinde code|lon,lat>,<km>`
+// e.g. `focus=Wien,30`. While the boost is active every v2.4 KG whose bbox
+// centre lies within the radius is (re-)queued every 2 h (prio 1, fresh ones
+// skipped), so the whole area is warm for the duration — not just the
+// 20-50 daily destinations. Wien + 30 km ≈ 230 v2.4 KGs ≈ 900 cells ≈ 270 MB
+// of BEV tiles per 24 h, inside the boost budget.
+
+type boostFocus struct {
+	Label    string  `json:"label"`
+	Lon      float64 `json:"lon"`
+	Lat      float64 `json:"lat"`
+	RadiusKm float64 `json:"radius_km"`
+}
+
+var focusCache struct {
+	sync.Mutex
+	at time.Time
+	f  *boostFocus
+}
+
+func warmBoostFocus() *boostFocus {
+	if !warmBoosted() {
+		return nil
+	}
+	focusCache.Lock()
+	defer focusCache.Unlock()
+	if time.Since(focusCache.at) < 20*time.Second {
+		return focusCache.f
+	}
+	focusCache.at = time.Now()
+	focusCache.f = readBoostFocus()
+	return focusCache.f
+}
+
+func readBoostFocus() *boostFocus {
+	path := warmBoostFile
+	if p := os.Getenv("SIEDLER_WARM_BOOST"); p != "" {
+		path = p
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "focus=") {
+			continue
+		}
+		parts := strings.Split(strings.TrimPrefix(line, "focus="), ",")
+		if len(parts) < 2 {
+			return nil
+		}
+		km, err := strconv.ParseFloat(strings.TrimSpace(parts[len(parts)-1]), 64)
+		if err != nil || km <= 0 {
+			return nil
+		}
+		if km > 60 {
+			km = 60 // sanity: ~ a Bundesland
+		}
+		f := &boostFocus{RadiusKm: km}
+		if len(parts) == 3 { // lon,lat,km
+			lon, e1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+			lat, e2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+			if e1 != nil || e2 != nil {
+				return nil
+			}
+			f.Lon, f.Lat, f.Label = lon, lat, fmt.Sprintf("%.3f,%.3f", lon, lat)
+			return f
+		}
+		name := strings.TrimSpace(parts[0])
+		adm := admin()
+		var g *gemeindeAdmin
+		if gg := adm.Gemeinde[name]; gg != nil {
+			g = gg
+		} else {
+			for _, gg := range adm.Gemeinde {
+				if strings.EqualFold(gg.Name, name) {
+					g = gg
+					break
+				}
+			}
+		}
+		if g == nil {
+			return nil
+		}
+		// Gemeinde centre = centre of its KGs' joint bbox.
+		minLon, minLat, maxLon, maxLat := 180.0, 90.0, -180.0, -90.0
+		for _, kg := range g.KGs {
+			if k := adm.KGs[kg]; k != nil {
+				minLon, minLat = math.Min(minLon, k.MinLon), math.Min(minLat, k.MinLat)
+				maxLon, maxLat = math.Max(maxLon, k.MaxLon), math.Max(maxLat, k.MaxLat)
+			}
+		}
+		f.Lon, f.Lat, f.Label = (minLon+maxLon)/2, (minLat+maxLat)/2, g.Name
+		return f
+	}
+	return nil
+}
+
+// boostFocusKGs lists the v2.4 KGs inside the focus radius, nearest first.
+func (s *Server) boostFocusKGs(f *boostFocus, v24 map[string]bool) []string {
+	if f == nil {
+		return nil
+	}
+	adm := admin()
+	type kd struct {
+		kg string
+		d  float64
+	}
+	var out []kd
+	for kg, k := range adm.KGs {
+		if !v24[kg] {
+			continue
+		}
+		cx, cy := k.center()
+		if d := distM(f.Lon, f.Lat, cx, cy); d <= f.RadiusKm*1000 {
+			out = append(out, kd{kg, d})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].d < out[j].d })
+	kgs := make([]string, len(out))
+	for i, x := range out {
+		kgs[i] = x.kg
+	}
+	return kgs
+}
+
+// warmBoostFocusRun queues the focus KGs (fresh ones are skipped by
+// enqueueWarm). Returns the number queued.
+func (s *Server) warmBoostFocusRun() int {
+	f := warmBoostFocus()
+	if f == nil {
+		return 0
+	}
+	n := 0
+	for _, kg := range s.boostFocusKGs(f, s.neReadyKGSet()) {
+		if s.enqueueWarm(kg, "boost-focus", 1) {
+			n++
+		}
+	}
+	if n > 0 {
+		slog.Info("warm: boost focus queued", "focus", f.Label, "km", f.RadiusKm, "kgs", n)
+	}
+	return n
+}
+
+func (s *Server) warmBoostFocusStatus() map[string]any {
+	f := warmBoostFocus()
+	if f == nil {
+		return nil
+	}
+	kgs := s.boostFocusKGs(f, s.neReadyKGSet())
+	fresh := s.freshWarmSet()
+	warm, cells := 0, 0
+	adm := admin()
+	for _, kg := range kgs {
+		if fresh[kg] {
+			warm++
+		}
+		if k := adm.KGs[kg]; k != nil {
+			cells += len(k.cells())
+		}
+	}
+	return map[string]any{"label": f.Label, "lon": f.Lon, "lat": f.Lat, "radius_km": f.RadiusKm,
+		"v24_kgs": len(kgs), "warm": warm, "cells": cells}
 }

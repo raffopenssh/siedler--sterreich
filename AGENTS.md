@@ -162,6 +162,10 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   adjacent KGs (low prio, debounced 1 h per cell).
 - **v2.4 first**: `neReadyKGSet()` (registry `v24` flag = srtm `product_version` v2.4) — the daily plan seeds Gemeinden with NE KGs first (no state quota), `neAdoptKGs` (on every registry refresh, once per KG generation `ne-adopt:v1:<kg>`) purges their `vp:v1`/`ne:`/`trees:ne`/`buildings:ne`/`neheat` caches + `kg_warm` (warming only for planned KGs, see activity tiers). `/api/warm/status` → `v24_kgs[]`, `v24_warm`. `/api/lucky` picks a v2.4 destination ~2 of 3 times (`ne:true`).
 - **Activity tiers** (`srv/warmactivity.go`): `playerSeen()` (viewport, session create/join, agent look; seeded at startup from the newest session/claim/chat row) → `warmTier()`. **idle** (no player for 24 h) runs only every 5th daily patch (4 destinations/day) and keeps nothing else warm; **active** runs the full plan and every 2 h re-queues the v2.4 KGs of Gemeinden played in the last 7 days (≤ 40). `neAdoptKGs` only *purges*; it enqueues warming solely for KGs in today's plan while active. Never keep the whole v2.4 universe warm (1 300+ KGs → GBs/day of BEV tiles + NE docs with nobody playing — that was the 72-min RX spike). `/api/warm/status` → `policy.tier`, `last_player`.
+- **Boost focus** (`srv/warmboost.go`): 2nd line of `WARM_BOOST` `focus=<Gemeinde name|code|lon,lat>,<km>`
+  (e.g. `focus=Wien,30`) — while boosted, *in addition to* the boost plan, every v2.4 KG whose centre lies within
+  the radius is queued (prio 1 → ahead of daily patches, nearest first, fresh skipped) at startup, every 2 h and
+  on `run-plan`; `/api/warm/status` → `policy.boost_focus{label, v24_kgs, warm, cells}`. Wien+30 km = 182 KGs / 1 477 cells.
 - **Session**: `POST /api/session/create` → `warmGemeinde` (medium prio);
   `prewarmKGs` (siblings.go) adds KGs along a water flowpath.
 - **Interest** (`srv/luckyinterest.go`): the spawn point inside a chosen cluster/Gemeinde is nudged to the most
