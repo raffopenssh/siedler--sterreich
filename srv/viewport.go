@@ -467,6 +467,11 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		kgs = append(kgs, k)
 	}
 	sort.Slice(kgs, func(i, j int) bool { return kgs[i].KG < kgs[j].KG })
+	if ne != nil && ready {
+		for _, k := range kgs {
+			s.noteNEObserved(k.KG, k.NE) // neobserved.go — lucky never trusts the registry flag alone
+		}
+	}
 
 	notice := vp.Notice
 	if notice == "" {

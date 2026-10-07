@@ -177,6 +177,13 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 		if g == nil {
 			continue
 		}
+		// The registry may flag a KG v2.4 before srtm serves its cells; the
+		// cached cell at the spawn knows (neobserved.go).
+		if !s.spawnNEOK(best.lon, best.lat, spawnKG.KG, v24) {
+			slog.Info("lucky: spawn rejected, v2.4 KG without NE cells", "kg", spawnKG.KG)
+			delete(playable, spawnKG.KG)
+			continue
+		}
 		warm := 0
 		for _, kg := range g.KGs {
 			if playable[kg] {

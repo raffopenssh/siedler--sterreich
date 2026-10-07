@@ -21,6 +21,7 @@ import (
 type cellData struct {
 	Parcels    []bevParcel
 	Footprints []bevFootprint
+	KGsNE      map[string]bool // kgs[].kg_code → ne (observed layer present), from the cell body
 	At         time.Time
 }
 
@@ -45,11 +46,18 @@ func (s *Server) cachedCell(c cellID) *cellData {
 	var d struct {
 		Parcels    []bevParcel    `json:"parcels"`
 		Footprints []bevFootprint `json:"footprints"`
+		KGs        []struct {
+			KG string `json:"kg_code"`
+			NE bool   `json:"ne"`
+		} `json:"kgs"`
 	}
 	if json.Unmarshal([]byte(raw), &d) != nil {
 		return nil
 	}
-	cd := &cellData{Parcels: d.Parcels, Footprints: d.Footprints, At: time.Now()}
+	cd := &cellData{Parcels: d.Parcels, Footprints: d.Footprints, KGsNE: map[string]bool{}, At: time.Now()}
+	for _, k := range d.KGs {
+		cd.KGsNE[k.KG] = k.NE
+	}
 	cellMemMu.Lock()
 	if len(cellMem) > 48 {
 		for k := range cellMem { // drop a few arbitrary entries

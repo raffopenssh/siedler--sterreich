@@ -198,6 +198,7 @@ func (s *Server) Serve(addr string) error {
 	go s.kgUniverseInit()
 	s.seedPlayerActivity()
 	go s.warmLoop()
+	go s.neObservedSeed()
 	go s.warmPlanner()
 
 	mux := http.NewServeMux()

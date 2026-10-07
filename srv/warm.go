@@ -655,6 +655,10 @@ func (s *Server) handleLucky(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, s.luckyPick())
 }
 
+// luckyV24Min: from this many warm v2.4-confirmed KGs on, lucky picks only
+// among them (observed layer guaranteed at the spawn).
+const luckyV24Min = 10
+
 func (s *Server) luckyPick() luckyPick {
 	adm := admin()
 	fresh := s.freshWarmSet()
@@ -670,9 +674,25 @@ func (s *Server) luckyPick() luckyPick {
 	// heightfield — the player would think the landscape layer is broken.
 	// Only when the registry is unknown (fresh install, srtm down) does warm
 	// alone count.
+	// With the observed layer available (v2.4 NE cells, confirmed by a
+	// built cell — neobserved.go) only such KGs are playable: a lucky player
+	// must never land in a KG without "👁 beobachtet" while v2.4 KGs are
+	// warm. Below luckyV24Min warm v2.4 KGs (fresh install) v2 suffices.
+	v24 := s.neConfirmedKGSet()
+	nV24 := 0
+	for kg := range fresh {
+		if v24[kg] {
+			nV24++
+		}
+	}
+	strict := nV24 >= luckyV24Min
 	playable := map[string]bool{}
 	for kg := range fresh {
-		if len(enhKG) == 0 || enhKG[kg] {
+		if strict {
+			if v24[kg] {
+				playable[kg] = true
+			}
+		} else if len(enhKG) == 0 || enhKG[kg] {
 			playable[kg] = true
 		}
 	}
@@ -680,7 +700,11 @@ func (s *Server) luckyPick() luckyPick {
 	// (luckycluster.go). Falls through to the per-Gemeinde tiers when no
 	// cluster qualifies yet (fresh install, few KGs warm).
 	if len(enhKG) > 0 {
-		if lp, ok := s.luckyClusterPick(playable, enhKG, s.neReadyKGSet()); ok {
+		pool := enhKG
+		if strict {
+			pool = v24 // cold candidates to warm around the spawn: v2.4 only
+		}
+		if lp, ok := s.luckyClusterPick(playable, pool, v24); ok {
 			return lp
 		}
 	}
@@ -746,7 +770,6 @@ func (s *Server) luckyPick() luckyPick {
 	}
 	// Prefer destinations with the observed layer (v2.4 NE cells) — about
 	// 2 of 3 picks when any are warm, so other warm places still get visits.
-	v24 := s.neReadyKGSet()
 	if len(v24) > 0 && rand.Intn(3) != 0 {
 		var pref []cand
 		for _, c := range append(append([]cand{}, full...), partial...) {
