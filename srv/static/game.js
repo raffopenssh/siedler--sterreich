@@ -560,8 +560,13 @@ function setUrlParams(obj) {
         : `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b> gespielt — <a onclick="quickLogin()">Weiter ▸</a>`);
   }
 
-  // Auto-rejoin: if sid is in URL, go directly to game
+  // Auto-rejoin: a rejoin link (pid + token, no invite) skips the welcome
+  // screen entirely — quickLogin picks the newest session and opens loading.
   const autoSid = getUrlParam('sid');
+  const rejoinTok = getUrlParam('rejoin');
+  if (savedPid && !autoSid && !inviteCode && rejoinTok && rejoinTok !== 'null') {
+    setTimeout(() => window.quickLogin(), 0);
+  }
   if (savedPid && autoSid) {
     (async () => {
       try {
