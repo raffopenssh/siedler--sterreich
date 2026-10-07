@@ -217,6 +217,7 @@ const G = {
   // ---- Enhanced mode (srtm-lidar + OSM + Natura-2000 + land prices) ----
   enhancedKGs: new Set(),   // kg_codes with lidar data available
   enhancedGemeinden: [],    // [{gemeinde_code, gemeinde_name, lon, lat, v2}] deduped
+  warmGemeinden: {},        // code → {warm, kgs, expires_in_h, destination} — cells prewarmed ≤ 24 h (/api/warm/gemeinden)
   v2KGs: new Set(),         // subset of enhancedKGs on srtm product 2.1 (richer trees / grids)
   enhancedLoaded: new Set(),// kg_codes whose enhanced data has been fetched
   terrainParcels: {},         // parcel_id → {elev, elevMin, elevMax, slope, aspect, tclass, dom, forestFrac}
@@ -896,6 +897,7 @@ function initPicker() {
   loadStates();
   // Load enhanced-KG registry so we can glow lidar-enhanced municipalities on the map
   if (G.enhancedGemeinden.length === 0) loadEnhancedRegistry().then(drawPick);
+  if (!pickData.warmLoadedAt || Date.now() - pickData.warmLoadedAt > 60000) { pickData.warmLoadedAt = Date.now(); loadWarmGemeinden(); }
 }
 
 async function findMuniAtPoint(lon, lat, name) {
@@ -1025,8 +1027,17 @@ function drawPick() {
       const [x, y] = pickProject(m.lon, m.lat);
       if (x < -5 || x > W+5 || y < -5 || y > H+5) continue;
       const isHover = pickData.hoverMuni === m;
-      const isEnh = pickData.enhancedCodes.has(String(m.gemeinde_code || m.code));
-      if (isEnh) {
+      const mcode = String(m.gemeinde_code || m.code);
+      const isEnh = pickData.enhancedCodes.has(mcode);
+      const warm = isEnh && warmGlowOf(mcode);
+      if (warm) {
+        // Same halo as enhanced, warm amber: cells prewarmed (≤ 24 h)
+        ctx.fillStyle = 'rgba(255,190,80,' + (0.25*glowPulse).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,205,110,' + (0.8*glowPulse).toFixed(3) + ')';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
+      } else if (isEnh) {
         // Cyan glow halo for lidar-enhanced municipalities
         ctx.fillStyle = 'rgba(80,230,255,' + (0.25*glowPulse).toFixed(3) + ')';
         ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI*2); ctx.fill();
@@ -1034,7 +1045,7 @@ function drawPick() {
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.stroke();
       }
-      ctx.fillStyle = isHover ? '#ffd700' : (isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
+      ctx.fillStyle = isHover ? '#ffd700' : (warm ? '#ffd890' : isEnh ? '#a0f0ff' : (stateColors[m.state] || '#888'));
       const sz = isHover ? 5 : (isEnh ? 4 : 3);
       ctx.fillRect(x-sz/2, y-sz/2, sz, sz);
     }
@@ -1084,6 +1095,16 @@ function drawPick() {
   if (pickData.enhancedCodes.size > 0 && document.getElementById('screen-pick')?.classList.contains('active')) {
     if (!pickData.glowTimer) pickData.glowTimer = setTimeout(() => { pickData.glowTimer = null; drawPick(); }, 120);
   }
+}
+
+/** Warm-glow descriptor for a Gemeinde in the picker: its v2.4 cells are
+ *  prewarmed (≤ 24 h, /api/warm/gemeinden) — at least half of its KGs, or
+ *  it is a live lucky destination. null otherwise. */
+function warmGlowOf(code) {
+  const w = G.warmGemeinden && G.warmGemeinden[code];
+  if (!w) return null;
+  if (w.warm >= Math.max(1, Math.ceil(w.kgs / 2)) || (w.destination && w.warm >= 3)) return w;
+  return null;
 }
 
 function drawMuniPoly(ctx, feature, isHover, isEnh, glowPulse) {
@@ -2260,6 +2281,25 @@ async function loadEnhancedRegistry() {
   } catch(e) { console.error('enhanced registry failed:', e); }
 }
 setInterval(loadEnhancedRegistry, 10*60*1000);
+
+/** Which Gemeinden have prewarmed cells right now (24 h cadastre TTL —
+ *  refreshed every 5 min, never persisted). Drives the amber glow + legend
+ *  in the picker. */
+async function loadWarmGemeinden() {
+  try {
+    const res = await GET('/api/warm/gemeinden');
+    if (!res || !res.gemeinden) return;
+    G.warmGemeinden = res.gemeinden;
+    const lg = document.getElementById('pick-warm-legend');
+    if (lg) {
+      let n = 0; for (const c in res.gemeinden) if (warmGlowOf(c)) n++;
+      lg.style.display = n ? '' : 'none';
+      const cnt = lg.querySelector('b'); if (cnt) cnt.textContent = n;
+    }
+    if (document.getElementById('screen-pick')?.classList.contains('active')) drawPick();
+  } catch (e) { /* optional layer */ }
+}
+setInterval(loadWarmGemeinden, 5*60*1000);
 
 /** Kick off background enhanced-data fetches for loaded KGs that are srtm-processed. Never blocks. */
 function loadEnhancedForKGs() {

@@ -273,6 +273,7 @@ func (s *Server) warmPlanner() {
 	// The plan prefers v2.4 (NE cells) Gemeinden — make sure the srtm KG
 	// registry is loaded before the first plan of the day is made.
 	s.enhancedKGsRaw()
+	go s.warmSpreadLoop() // far destinations ≥ 30 km apart (warmspread.go)
 	// Keep-warm (active tier only): the v2.4 KGs of Gemeinden played in the
 	// last week, capped (warmactivity.go). Never the whole v2.4 universe —
 	// that is 1 300+ KGs and would re-download gigabytes a day with no player.
@@ -425,18 +426,30 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 				}
 			}
 		}
-		// Densest enhanced neighbourhood first: the biggest cluster a
-		// Gemeinde's KGs sit in (luckycluster.go), ties by code — so the
-		// day's early patches build contiguous enhanced blocks.
-		size := map[string]int{}
+		// Biggest contiguous v2.4 patch first (warmspread.go v24Patches —
+		// a destination inside a large enhanced region has room to roam),
+		// Bundesländer without a live warm destination ahead of the rest,
+		// ties by code — so the day's early patches land where it matters.
+		patchOf, patches := s.v24Patches(v24)
+		size := map[string]float64{}
 		for _, code := range first {
 			for _, kg := range adm.Gemeinde[code].KGs {
-				if n := enhancedClusterSize(kg, enhKG); n > size[code] {
-					size[code] = n
+				if id, ok := patchOf[kg]; ok && patches[id].Km2 > size[code] {
+					size[code] = patches[id].Km2
 				}
 			}
 		}
+		stateLive := map[string]bool{}
+		for _, g := range s.warmSpreadGroups() {
+			if g.live() {
+				stateLive[g.State] = true
+			}
+		}
 		sort.Slice(first, func(i, j int) bool {
+			a, b := adm.Gemeinde[first[i]], adm.Gemeinde[first[j]]
+			if stateLive[a.State] != stateLive[b.State] {
+				return !stateLive[a.State]
+			}
 			if size[first[i]] != size[first[j]] {
 				return size[first[i]] > size[first[j]]
 			}
@@ -468,22 +481,12 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 		}
 		return true
 	}
-	// Gemeinden that are warm as a whole already count as occupied spots, so
-	// today's patches land away from yesterday's.
-	for _, g := range adm.Gemeinde {
-		if len(g.KGs) == 0 {
-			continue
-		}
-		all := true
-		for _, kg := range g.KGs {
-			if !fresh[kg] {
-				all = false
-				break
-			}
-		}
-		if all && !warmBoosted() { // boost focus is one dense blob by design
-			lon, lat := g.center()
-			centres = append(centres, [2]float64{lon, lat})
+	// Warm destination groups (warmspread.go — the boost blob around Wien is
+	// one of them) already count as occupied spots, so today's patches land
+	// away from yesterday's and from the focus.
+	for _, g := range s.warmSpreadGroups() {
+		if g.live() {
+			centres = append(centres, [2]float64{g.Lon, g.Lat})
 		}
 	}
 	taken := map[string]bool{}
@@ -506,8 +509,8 @@ func (s *Server) makePlan(now time.Time) *warmPlan {
 					break
 				}
 			}
-			if usedState[g.State] >= perState && !isV24 {
-				continue
+			if usedState[g.State] >= perState && (!isV24 || pass == 0) {
+				continue // spread over the Bundesländer; v2.4 may exceed the quota in the relaxed pass
 			}
 			allFresh := true
 			for _, kg := range g.KGs {
@@ -793,6 +796,9 @@ func (s *Server) luckyPickAvoid(av *luckyAvoid) luckyPick {
 		// Gemeinde ≥ min_km away, warmed on the spot). The player asked for
 		// somewhere *new*; a warm spawn next door is exactly what they left.
 		slog.Info("lucky: avoid", "points", len(av.pts), "km", av.km, "fresh", len(fresh), "kept", len(kept))
+		if len(kept) == 0 {
+			slog.Warn("lucky: nothing warm beyond the avoid radius — cold pick ahead (warmspread.go should prevent this)", "km", av.km)
+		}
 		fresh = kept
 	}
 	enhKG := s.enhancedKGSet()
@@ -836,6 +842,26 @@ func (s *Server) luckyPickAvoid(av *luckyAvoid) luckyPick {
 		pool := enhKG
 		if strict {
 			pool = v24 // cold candidates to warm around the spawn: v2.4 only
+		}
+		// Somewhere *new*: try the warm groups farthest from where the
+		// player was first (weighted draw, warmspread.go), each restricted
+		// to its own KGs, so the hop is really across the country.
+		if av != nil {
+			for i, g := range s.luckyFarGroups(playable, av) {
+				if i >= 4 {
+					break
+				}
+				sub := map[string]bool{}
+				for _, kg := range g.kgs {
+					if playable[kg] {
+						sub[kg] = true
+					}
+				}
+				if lp, ok := s.luckyClusterPick(sub, pool, v24); ok {
+					slog.Info("lucky: far group", "group", g.Label, "state", g.State, "kgs", g.KGs, "patch_km2", g.PatchKm2, "rank", i)
+					return lp
+				}
+			}
 		}
 		if lp, ok := s.luckyClusterPick(playable, pool, v24); ok {
 			return lp
@@ -1065,6 +1091,7 @@ func (s *Server) warmStatusMap() map[string]any {
 			"tier": warmTier(), "idle_after_h": int(warmIdleAfter.Hours()), "idle_patches": warmPatches / warmIdleEvery, "keep_warm_cap": warmKeepCap,
 			"boost": warmBoostStatus(), "boost_focus": s.warmBoostFocusStatus()},
 		"last_player": lastPlayerAt().UTC().Format(time.RFC3339),
+		"spread":      s.warmSpreadStatus(),
 		"contrib":     s.contribStatusMap(),
 	}
 }
