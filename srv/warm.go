@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -652,16 +653,61 @@ func (s *Server) handleLucky(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, map[string]any{"lon": lon, "lat": lat, "known": known, "interest": sc})
 		return
 	}
-	jsonResp(w, s.luckyPick())
+	// ?avoid=lon,lat[&min_km=30] → a *new* place: KGs within min_km of the
+	// previous spawn are dropped from the playable set (door button → lucky).
+	var av *luckyAvoid
+	if a := r.URL.Query().Get("avoid"); a != "" {
+		if lon, lat, ok := parseLonLat(a); ok {
+			av = &luckyAvoid{lon: lon, lat: lat, km: 30}
+			if km, err := strconv.ParseFloat(r.URL.Query().Get("min_km"), 64); err == nil && km > 0 && km <= 300 {
+				av.km = km
+			}
+		}
+	}
+	jsonResp(w, s.luckyPickAvoid(av))
 }
 
-// luckyV24Min: from this many warm v2.4-confirmed KGs on, lucky picks only
-// among them (observed layer guaranteed at the spawn).
-const luckyV24Min = 10
+type luckyAvoid struct{ lon, lat, km float64 }
 
-func (s *Server) luckyPick() luckyPick {
+func parseLonLat(s string) (float64, float64, bool) {
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	lon, e1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	lat, e2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	return lon, lat, e1 == nil && e2 == nil && lon != 0 && lat != 0
+}
+
+func (s *Server) luckyPick() luckyPick { return s.luckyPickAvoid(nil) }
+
+func (s *Server) luckyPickAvoid(av *luckyAvoid) luckyPick {
+
+	// luckyV24Min: from this many warm v2.4-confirmed KGs on, lucky picks only
+	// among them (observed layer guaranteed at the spawn).
+	const luckyV24Min = 10
+
 	adm := admin()
 	fresh := s.freshWarmSet()
+	if av != nil {
+		kept := map[string]bool{}
+		for kg := range fresh {
+			k := adm.KGs[kg]
+			if k == nil {
+				continue
+			}
+			lon, lat := k.center()
+			if distM(lon, lat, av.lon, av.lat) >= av.km*1000 {
+				kept[kg] = true
+			}
+		}
+		// Nothing far enough warm → fall back to the unrestricted pick rather
+		// than the cold path (a warm spawn nearby beats a cold one far away).
+		if len(kept) > 0 {
+			slog.Info("lucky: avoid", "lon", av.lon, "lat", av.lat, "km", av.km, "fresh", len(fresh), "kept", len(kept))
+			fresh = kept
+		}
+	}
 	enhKG := s.enhancedKGSet()
 	enh := s.enhancedGemeindeSet()
 	type cand struct {

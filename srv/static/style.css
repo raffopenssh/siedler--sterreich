@@ -314,6 +314,12 @@ input[type=text]:focus { border-color:var(--gold); }
   padding:10px 12px; background:rgba(0,0,0,.3); border-bottom:3px solid var(--panel-border);
 }
 .sb-header .btn-small { padding:6px 8px; line-height:1; }
+.sb-header .btn-door { padding:3px 4px; margin-right:8px; flex:none; display:inline-flex; align-items:center; background:none; border:none; box-shadow:none; opacity:.55; transition:opacity .15s; }
+.sb-header .btn-door:hover, .sb-header .btn-door:focus-visible { opacity:1; background:none; transform:none; }
+.sb-header .btn-door svg { display:block; image-rendering:pixelated; filter:drop-shadow(1px 1px 0 rgba(0,0,0,.6)); }
+.sb-header .btn-door:hover svg rect:nth-child(8) { fill:#fff3a0; }
+.sb-header #game-title { flex:1; }
+.sb-header #game-title small { font:inherit; color:var(--text-dim, #c9b98a); }
 .sb-header span { font:10px var(--font-pixel); color:var(--gold); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
 .sb-section {
   padding:10px 12px; border-bottom:2px solid rgba(100,80,40,.3);

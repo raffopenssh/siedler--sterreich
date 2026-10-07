@@ -564,7 +564,7 @@ function setUrlParams(obj) {
   // screen entirely — quickLogin picks the newest session and opens loading.
   const autoSid = getUrlParam('sid');
   const rejoinTok = getUrlParam('rejoin');
-  if (savedPid && !autoSid && !inviteCode && rejoinTok && rejoinTok !== 'null') {
+  if (savedPid && !autoSid && !inviteCode && rejoinTok && rejoinTok !== 'null' && !getUrlParam('back')) {
     setTimeout(() => window.quickLogin(), 0);
   }
   if (savedPid && autoSid) {
@@ -621,7 +621,8 @@ function setUrlParams(obj) {
     setLoadProgress(2);
     startTipRotation();
     startLoadingCountdown(30);
-    const luckyReq = GET('/api/lucky').catch(e => ({error: e.message}));
+    const last = getUrlParam('last');
+    const luckyReq = GET('/api/lucky' + (last ? '?avoid=' + encodeURIComponent(last) + '&min_km=30' : '')).catch(e => ({error: e.message}));
     const p = await registerAndProceed(true);
     if (!p) { show('welcome'); return; }
     await startLucky(luckyReq);
@@ -1595,6 +1596,7 @@ async function startGameWithLoading() {
   if (minWait) await new Promise(r => setTimeout(r, minWait));
   stopTipRotation();
   stopLoadingCountdown();
+  setUrlParams({back: null, last: null});
   show('game');
   setTimeout(() => Herald.start(G.freshPlayer ? 'intro' : 'quest'), 400);
 
@@ -1605,7 +1607,7 @@ async function startGameWithLoading() {
   mctx = mc.getContext('2d');
   initMiniInput();
   const gt = document.getElementById('game-title');
-  gt.textContent = G.session.municipality_name;
+  updateGameTitle();
   gt.classList.add('kg-link');
   gt.title = 'KG-Übersicht anzeigen';
   gt.onclick = async () => {
@@ -1634,6 +1636,7 @@ async function startGameWithLoading() {
   // dedups, so later pans don't refetch.
   loadToponyms().catch(e => console.error(e));
 
+  document.getElementById('btn-leave').onclick = leaveGame;
   document.getElementById('btn-invite').onclick = () => {
     navigator.clipboard.writeText(inviteUrl(G.session.invite_code));
     toast('📋 Einladung kopiert!','ok');
@@ -2106,6 +2109,27 @@ async function fetchKGPolygons() {
   loadEnhancedForKGs();
   updateEnhancedBadge();
   updateWaterChip();
+  updateGameTitle();
+}
+
+/** Sidebar title: Gemeinde, plus the KG under the camera in brackets when it has its own name ("Wien (Hernals)"). */
+function updateGameTitle() {
+  const gt = document.getElementById('game-title');
+  if (!gt || !G.session) return;
+  const muni = String(G.session.municipality_name || 'Siedler').replace(/\s*\(.*\)\s*$/, '');
+  const kg = kgAtCamera();
+  const kn = kg ? kgName(kg) : '';
+  const sub = kn && kn.toLowerCase() !== muni.toLowerCase() ? kn : '';
+  const html = esc(muni) + (sub ? ' <small>(' + esc(sub) + ')</small>' : '');
+  if (gt.innerHTML !== html) gt.innerHTML = html;
+}
+
+/** Door button: leave the map and return to the welcome screen (player + token kept in the URL, no auto-rejoin). */
+function leaveGame() {
+  const sp = new URLSearchParams(location.search);
+  sp.delete('sid'); sp.delete('dev'); sp.set('back', '1');
+  if (G.cam) sp.set('last', G.cam.lon.toFixed(4) + ',' + G.cam.lat.toFixed(4)); // lucky avoids ±30 km around here
+  location.href = location.pathname + '?' + sp.toString();
 }
 
 // ================= ENHANCED MODE (lidar terrain, OSM lines, Natura 2000) =================
@@ -13796,6 +13820,7 @@ function ensureKGName(kg) {
     const hit = r && r.kg;
     if (!hit || !hit.kg_name) return;
     G.kgNames[k] = { name: hit.kg_name, gemeinde: hit.gemeinde_name || '', gemeinde_code: hit.gemeinde_code || '' };
+    updateGameTitle();
     if (G.sel && G.sel.properties && String(G.sel.properties.kg_code) === k) showParcelPopup(G.sel, G.selFp);
   }).catch(() => { G._kgNameReq.delete(k); });
 }
