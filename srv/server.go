@@ -740,6 +740,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// enhanced (srtm v2.4) KG into a bare one: /api/lucky spawns in the
 	// middle of a warm+enhanced cluster, and the village centre of the same
 	// Gemeinde may well lie in an unprocessed KG (Hafnerbach 19469 vs Korning 19500).
+	t0 := time.Now()
 	if !req.SpawnExact {
 		if lon, lat, ok := s.settlementCenter(req.MunicipalityName, req.CenterLon, req.CenterLat); ok {
 			if s.snapDowngrades(req.CenterLon, req.CenterLat, lon, lat) {
@@ -750,6 +751,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	tSnap := time.Since(t0)
 	err := s.Q.CreateSession(r.Context(), dbgen.CreateSessionParams{
 		ID:               sessionID,
 		Name:             req.Name,
@@ -783,6 +785,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	s.warmGemeinde(req.MunicipalityCode, 0, "session") // cadastre cells for the whole Gemeinde, background
 
 	session, _ := s.Q.GetSession(r.Context(), sessionID)
+	slog.Info("session: created", "id", sessionID, "gemeinde", req.MunicipalityCode, "snap_ms", tSnap.Milliseconds(), "total_ms", time.Since(t0).Milliseconds(), "spawn_exact", req.SpawnExact)
 	jsonResp(w, map[string]any{
 		"session":     session,
 		"invite_code": inviteCode,
@@ -3316,11 +3319,23 @@ func (s *Server) kgCodeAt(lon, lat float64) string {
 	if c, err := s.Q.GetCachedData(context.Background(), key); err == nil {
 		raw = []byte(c)
 	} else {
+		// Session create sits on this path: bevdirect assembles the cell's
+		// tiles for a cold point (5–10 s) — never wait for that, the
+		// register's bbox heuristic below is good enough for the snap guard.
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
 		u := fmt.Sprintf("%s/municipality?lon=%.6f&lat=%.6f", bevAPI, lon, lat)
-		code, _, body, err := upstreamGetWait(u, 2*time.Second, 1<<20)
-		if err == nil && code == 200 {
-			raw = body
-			s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(raw), ExpiresAt: time.Now().Add(time.Duration(cadastreTTL))})
+		if rq, err := http.NewRequestWithContext(ctx, "GET", u, nil); err == nil {
+			if resp, err := upstreamClient.Do(rq); err == nil {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+				resp.Body.Close()
+				if resp.StatusCode == 200 {
+					raw = body
+					s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(raw), ExpiresAt: time.Now().Add(time.Duration(cadastreTTL))})
+				}
+			} else {
+				slog.Info("kgCodeAt: bevdirect /municipality skipped", "err", err)
+			}
 		}
 	}
 	if len(raw) > 0 {

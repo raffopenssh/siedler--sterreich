@@ -605,6 +605,15 @@ function setUrlParams(obj) {
 
   async function registerAndProceed(goLucky) {
     let name = inp.value.trim();
+    // Came back through the door (pid + token in the URL) and kept the name:
+    // stay the same player — coins, XP and claims carry over to the new place.
+    const keepPid = getUrlParam('pid'), keepTok = getUrlParam('rejoin');
+    if (keepPid && keepTok && keepTok !== 'null' && (!name || name === savedName)) {
+      try {
+        const p = await GET('/api/player/' + keepPid);
+        if (p && !p.error) { G.playerToken = keepTok; savePlayer(p); return p; }
+      } catch (e) {}
+    }
     if (!name || name.length < 2) { name = await suggestFreeName(); inp.value = name; }
     let res = await POST('/api/register', {name});
     // Name taken (someone grabbed it between suggestion and submit, or the user
