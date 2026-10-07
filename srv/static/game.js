@@ -554,10 +554,28 @@ function setUrlParams(obj) {
   };
 
   if (savedPid && savedName) {
-    document.getElementById('quick-rejoin').innerHTML =
-      (window.LANG === 'en'
-        ? `Last played as <b style="color:var(--gold)">${esc(savedName)}</b> — <a onclick="quickLogin()">Continue ▸</a>`
-        : `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b> gespielt — <a onclick="quickLogin()">Weiter ▸</a>`);
+    const note = (where) => {
+      const w = where ? ` ${window.LANG === 'en' ? 'in' : 'in'} <b style="color:var(--gold)">${esc(where)}</b>` : '';
+      document.getElementById('quick-rejoin').innerHTML =
+        (window.LANG === 'en'
+          ? `Last played as <b style="color:var(--gold)">${esc(savedName)}</b>${w} — <a onclick="quickLogin()">Continue ▸</a>`
+          : `Zuletzt als <b style="color:var(--gold)">${esc(savedName)}</b>${w} gespielt — <a onclick="quickLogin()">Weiter ▸</a>`);
+    };
+    note(getUrlParam('where'));
+    // No hint in the URL (rejoin link): the newest session's Gemeinde.
+    if (!getUrlParam('where')) GET('/api/player/' + savedPid + '/sessions').then(async ss => {
+      const s0 = ss && ss[0];
+      const n = s0 && s0.municipality_name;
+      if (!n) return;
+      const muni = String(n).replace(/\s*\(.*\)\s*$/, '');
+      note(muni);
+      // KG of the session centre ("Wien (Brigittenau)") when it has its own name.
+      if (s0.center_lon && s0.center_lat) {
+        const r = await GET('/api/municipality?lon=' + s0.center_lon.toFixed(5) + '&lat=' + s0.center_lat.toFixed(5)).catch(() => null);
+        const kg = r && r.kg && r.kg.kg_name;
+        if (kg && kg.toLowerCase() !== muni.toLowerCase()) note(muni + ' (' + kg + ')');
+      }
+    }).catch(() => {});
   }
 
   // Auto-rejoin: a rejoin link (pid + token, no invite) skips the welcome
@@ -1596,7 +1614,7 @@ async function startGameWithLoading() {
   if (minWait) await new Promise(r => setTimeout(r, minWait));
   stopTipRotation();
   stopLoadingCountdown();
-  setUrlParams({back: null, last: null});
+  setUrlParams({back: null, last: null, where: null});
   show('game');
   setTimeout(() => Herald.start(G.freshPlayer ? 'intro' : 'quest'), 400);
 
@@ -2129,6 +2147,8 @@ function leaveGame() {
   const sp = new URLSearchParams(location.search);
   sp.delete('sid'); sp.delete('dev'); sp.set('back', '1');
   if (G.cam) sp.set('last', G.cam.lon.toFixed(4) + ',' + G.cam.lat.toFixed(4)); // lucky avoids ±30 km around here
+  const where = document.getElementById('game-title')?.textContent?.trim();
+  if (where) sp.set('where', where); // "Wien (Brigittenau)" for the welcome note
   location.href = location.pathname + '?' + sp.toString();
 }
 
