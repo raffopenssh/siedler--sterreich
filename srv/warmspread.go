@@ -40,7 +40,7 @@ import (
 
 const (
 	warmSpreadKm           = warmPatchSpacingKm // 30 — the lucky "somewhere new" radius
-	warmSpreadTargetActive = 6                  // destination groups ≥ 30 km apart (active / boost)
+	warmSpreadTargetActive = 9                  // destination groups ≥ 30 km apart (active / boost) — one per Bundesland
 	warmSpreadTargetIdle   = 3                  // idle tier: still enough for one far hop
 	warmSpreadExpiring     = 3 * time.Hour      // a group this close to expiry is replaced early
 	warmSpreadDailyCap     = 12                 // seeds queued per day (≈ 12 × 10–25 cells)
@@ -197,7 +197,7 @@ func (s *Server) spreadGroupsOf(playable map[string]bool, expiry map[string]time
 		if !g.Destination {
 			for _, kg := range g.kgs {
 				lon, lat := adm.KGs[kg].center()
-				if c, ok := s.clusterAt(lon, lat, playable, nil); ok && c.n >= luckyMinN && c.share >= luckyMinSh {
+				if c, ok := s.clusterAt(lon, lat, playable, nil); ok && c.grade() {
 					g.Destination = true
 					break
 				}
@@ -317,6 +317,7 @@ type spreadSeed struct {
 	lat   float64
 	kgs   []string
 	cells int
+	km2   float64  // playable v2.4 land in the ~4.5 km neighbourhood (luckycluster.go)
 	patch v24Patch // the contiguous v2.4 patch the seed sits in
 	code  string   // Gemeinde code (rotation memory key)
 	used  int      // 0 fresh, 1 patch used in the last spreadPatchMemory, 2 seed used in the last spreadSeedMemory
@@ -357,8 +358,9 @@ func (s *Server) spreadMarkUsed(sd spreadSeed) {
 }
 
 // spreadSeeds lists every candidate destination that is not warm yet:
-// cluster-grade v2.4 KGs (≥ luckyMinN v2.4 KGs in the lucky box, share ≥
-// luckyMinSh) and all-v2.4 Gemeinden, each with its KG list (own cluster +
+// cluster-grade v2.4 KGs (luckyCluster.grade: ≥ luckyMinN v2.4 KGs *or* ≥
+// luckyMinKm2 of v2.4 land in the neighbourhood, share ≥ luckyMinSh — one
+// big KG counts like several small ones) and all-v2.4 Gemeinden, each with its KG list (own cluster +
 // nearest v2.4 neighbours up to warmSpreadSeedKGs) and cell cost.
 func (s *Server) spreadSeeds(v24, fresh map[string]bool) []spreadSeed {
 	adm := admin()
@@ -451,13 +453,15 @@ func (s *Server) spreadSeeds(v24, fresh map[string]bool) []spreadSeed {
 				in = append(in, o)
 			}
 		}
-		if len(in) < luckyMinN || total == 0 || float64(len(in))/float64(total) < luckyMinSh || allFresh(in) {
+		c := luckyCluster{kg: k, lon: lon, lat: lat, n: len(in), total: total}
+		clusterArea(&c, lon, lat, v24)
+		if !c.grade() || allFresh(in) {
 			continue
 		}
-		if b, ok := bestOf[k.Gemeinde]; ok && len(b.kgs) >= len(in) {
+		if b, ok := bestOf[k.Gemeinde]; ok && b.km2 >= c.km2 {
 			continue
 		}
-		bestOf[k.Gemeinde] = spreadSeed{label: k.GemName + " · " + k.Name, state: k.State, lon: lon, lat: lat, kgs: in, patch: patch(kg), code: k.Gemeinde}
+		bestOf[k.Gemeinde] = spreadSeed{label: k.GemName + " · " + k.Name, state: k.State, lon: lon, lat: lat, kgs: in, km2: c.km2, patch: patch(kg), code: k.Gemeinde}
 	}
 	for _, sd := range bestOf {
 		sd.kgs = grow(sd.kgs, sd.lon, sd.lat)

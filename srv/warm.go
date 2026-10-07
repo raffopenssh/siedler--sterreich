@@ -693,6 +693,7 @@ type luckyPick struct {
 	SpawnKG      string   `json:"spawn_kg,omitempty"`
 	ClusterKGs   int      `json:"cluster_kgs,omitempty"`   // warm+enhanced KGs within ~1.5 km of the spawn
 	ClusterTotal int      `json:"cluster_total,omitempty"` // all KGs within that box
+	ClusterKm2   float64  `json:"cluster_km2,omitempty"`   // playable land in the ~4.5 km neighbourhood (bbox-clipped)
 	ClusterShare float64  `json:"cluster_share,omitempty"`
 	Interest     float64  `json:"interest"` // luckyInterest 0..1 of the spawn surroundings (luckyinterest.go)
 	InterestWhy  string   `json:"interest_why,omitempty"`

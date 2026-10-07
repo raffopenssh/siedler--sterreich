@@ -190,7 +190,7 @@ func (s *Server) luckyInterest(lon, lat float64) (interestScore, bool) {
 
 // luckySpot searches a ~1 km × 0.9 km grid around (lon,lat) for the most
 // interesting point whose spawn KG is playable and whose cluster is not
-// worse than the proposal (n ≥ n0-1, share ≥ luckyMinSh). Returns the
+// worse than the proposal (playable km² ≥ 70 %, share ≥ luckyMinSh). Returns the
 // proposal itself (scored) when nothing beats it. Only cached cells are
 // read; ~60 points × parcelsNear over the in-memory parsed cells.
 func (s *Server) luckySpot(c luckyCluster, playable, enhanced map[string]bool) (luckyCluster, interestScore) {
@@ -217,7 +217,7 @@ func (s *Server) luckySpot(c luckyCluster, playable, enhanced map[string]bool) (
 			continue
 		}
 		cc, ok := s.clusterAt(p.lon, p.lat, playable, enhanced)
-		if !ok || cc.n < c.n-1 || cc.share < luckyMinSh {
+		if !ok || cc.weight() < c.weight()*0.7 || cc.share < luckyMinSh {
 			continue
 		}
 		best, bestScore = cc, sc

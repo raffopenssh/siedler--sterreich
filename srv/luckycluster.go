@@ -18,8 +18,15 @@ import (
 const (
 	luckyBoxLon = 0.020 // ≈ 1.5 km at 47.5° N
 	luckyBoxLat = 0.0135
-	luckyMinN   = 3   // ≥ 3 playable KGs around the spawn = "centre of several"
-	luckyMinSh  = 0.6 // ≥ 60 % of the KGs around the spawn playable
+	luckyMinN   = 3   // ≥ 3 playable KGs around the spawn = "centre of several" …
+	luckyMinKm2 = 10  // … or ≥ 10 km² of playable land in the neighbourhood (one big Alpine/Seewinkel KG)
+	luckyMinSh  = 0.6 // ≥ 60 % of the land around the spawn playable
+	// Neighbourhood for the area measures: ± 0.03° × 0.02° ≈ 4.5 × 4.5 km,
+	// what the first pans show. KG count alone punished big KGs (Vorarlberg,
+	// Burgenland, Alpine valleys): one 30 km² v2.4 KG is as good a destination
+	// as three 4 km² ones — the player sees cells, not register rows.
+	luckyNbLon = 0.030
+	luckyNbLat = 0.020
 )
 
 type luckyCluster struct {
@@ -28,8 +35,54 @@ type luckyCluster struct {
 	lat   float64
 	n     int     // playable KGs in the box
 	total int     // all KGs in the box
-	share float64 // n/total
+	km2   float64 // playable land in the neighbourhood (bbox-clipped km²)
+	tot   float64 // all land in the neighbourhood
+	share float64 // km2/tot (area share)
 	cold  []string
+}
+
+// grade: cluster-grade = enough playable land (KG count or km²) and share.
+func (c luckyCluster) grade() bool {
+	return (c.n >= luckyMinN || c.km2 >= luckyMinKm2) && c.share >= luckyMinSh
+}
+
+// weight: how much playable land the cluster offers (draw weight, ranking).
+func (c luckyCluster) weight() float64 { return c.km2 }
+
+// clipKm2 approximates the KG's land inside the box by bbox overlap.
+func clipKm2(k *kgAdmin, w, s, e, n float64) float64 {
+	bw, bh := k.MaxLon-k.MinLon, k.MaxLat-k.MinLat
+	if bw <= 0 || bh <= 0 {
+		return 0
+	}
+	ow := math.Min(k.MaxLon, e) - math.Max(k.MinLon, w)
+	oh := math.Min(k.MaxLat, n) - math.Max(k.MinLat, s)
+	if ow <= 0 || oh <= 0 {
+		return 0
+	}
+	return k.AreaKm2 * (ow * oh) / (bw * bh)
+}
+
+// clusterArea fills km2/tot/share from the neighbourhood around (lon,lat).
+func clusterArea(c *luckyCluster, lon, lat float64, playable map[string]bool) {
+	adm := admin()
+	w, s, e, n := lon-luckyNbLon, lat-luckyNbLat, lon+luckyNbLon, lat+luckyNbLat
+	c.km2, c.tot = 0, 0
+	for _, kg := range adm.kgsInBBox(w, s, e, n) {
+		k := adm.KGs[kg]
+		if k == nil {
+			continue
+		}
+		a := clipKm2(k, w, s, e, n)
+		c.tot += a
+		if playable[kg] {
+			c.km2 += a
+		}
+	}
+	c.share = 0
+	if c.tot > 0 {
+		c.share = c.km2 / c.tot
+	}
 }
 
 // clusterAt counts the KGs whose bbox intersects the ~1.5 km box around
@@ -50,9 +103,7 @@ func (s *Server) clusterAt(lon, lat float64, playable, enhanced map[string]bool)
 			c.cold = append(c.cold, kg)
 		}
 	}
-	if c.total > 0 {
-		c.share = float64(c.n) / float64(c.total)
-	}
+	clusterArea(&c, lon, lat, playable)
 	return c, true
 }
 
@@ -80,15 +131,13 @@ func (s *Server) luckyClusters(playable, enhanced map[string]bool) []luckyCluste
 					c.cold = append(c.cold, o)
 				}
 			}
-			if c.total > 0 {
-				c.share = float64(c.n) / float64(c.total)
-			}
+			clusterArea(&c, lon, lat, playable)
 		}
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].n != out[j].n {
-			return out[i].n > out[j].n
+		if out[i].weight() != out[j].weight() {
+			return out[i].weight() > out[j].weight()
 		}
 		if out[i].share != out[j].share {
 			return out[i].share > out[j].share
@@ -108,7 +157,7 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 	all := s.luckyClusters(playable, enhanced)
 	var pool []luckyCluster
 	for _, c := range all {
-		if c.n >= luckyMinN && c.share >= luckyMinSh {
+		if c.grade() {
 			pool = append(pool, c)
 		}
 	}
@@ -118,7 +167,7 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 	// Weighted draw; a few attempts so a bad spawn point is skipped.
 	var sum float64
 	for _, c := range pool {
-		sum += float64(c.n * c.n)
+		sum += c.weight() * c.weight()
 	}
 	var dull *luckyPick
 	var dullCold []string
@@ -126,7 +175,7 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 		r := rand.Float64() * sum
 		c := pool[len(pool)-1]
 		for _, p := range pool {
-			r -= float64(p.n * p.n)
+			r -= p.weight() * p.weight()
 			if r <= 0 {
 				c = p
 				break
@@ -142,10 +191,10 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 		// centre. Take the one with the best cluster whose spawn KG is
 		// playable; the settlement wins ties (it is where parcels are dense).
 		better := func(a, b luckyCluster) bool {
-			return a.n > b.n || (a.n == b.n && a.share > b.share)
+			return a.weight() > b.weight() || (a.weight() == b.weight() && a.share > b.share)
 		}
 		if slon, slat, ok := s.settlementCenter(g.Name, c.lon, c.lat); ok {
-			if sc, ok := s.clusterAt(slon, slat, playable, enhanced); ok && sc.n >= c.n-1 && sc.share >= luckyMinSh {
+			if sc, ok := s.clusterAt(slon, slat, playable, enhanced); ok && sc.weight() >= c.weight()*0.7 && sc.share >= luckyMinSh {
 				best = sc
 			}
 		}
@@ -193,7 +242,7 @@ func (s *Server) luckyClusterPick(playable, enhanced, v24 map[string]bool) (luck
 		lp := luckyPick{
 			GemeindeCode: g.Code, Name: g.Name, Lon: best.lon, Lat: best.lat, State: g.State,
 			Enhanced: true, NE: v24[spawnKG.KG], Warm: true, WarmKGs: warm, KGs: g.KGs, Pool: len(pool),
-			SpawnKG: spawnKG.KG, ClusterKGs: best.n, ClusterTotal: best.total, ClusterShare: math.Round(best.share*100) / 100,
+			SpawnKG: spawnKG.KG, ClusterKGs: best.n, ClusterTotal: best.total, ClusterKm2: math.Round(best.km2*10) / 10, ClusterShare: math.Round(best.share*100) / 100,
 			Interest: interest.Score, InterestWhy: interest.Why,
 		}
 		// Dull surroundings (flat field, nothing in view): draw another
