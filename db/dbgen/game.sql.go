@@ -463,6 +463,29 @@ func (q *Queries) GetChatMessage(ctx context.Context, id int64) (ChatMessage, er
 	return i, err
 }
 
+const getHarvestState = `-- name: GetHarvestState :one
+SELECT session_id, parcel_hash, kind, crop_group, harvested_at, harvests FROM parcel_harvest_state WHERE session_id = ? AND parcel_hash = ?
+`
+
+type GetHarvestStateParams struct {
+	SessionID  string `json:"session_id"`
+	ParcelHash string `json:"parcel_hash"`
+}
+
+func (q *Queries) GetHarvestState(ctx context.Context, arg GetHarvestStateParams) (ParcelHarvestState, error) {
+	row := q.db.QueryRowContext(ctx, getHarvestState, arg.SessionID, arg.ParcelHash)
+	var i ParcelHarvestState
+	err := row.Scan(
+		&i.SessionID,
+		&i.ParcelHash,
+		&i.Kind,
+		&i.CropGroup,
+		&i.HarvestedAt,
+		&i.Harvests,
+	)
+	return i, err
+}
+
 const getOfferByID = `-- name: GetOfferByID :one
 SELECT id, session_id, parcel_hash, claim_id, buyer_id, seller_id, offer_price, status, created_at, resolved_at FROM parcel_offers WHERE id = ?
 `
@@ -1349,6 +1372,40 @@ func (q *Queries) ListBlocks(ctx context.Context, playerID string) ([]ListBlocks
 	return items, nil
 }
 
+const listHarvestStates = `-- name: ListHarvestStates :many
+SELECT session_id, parcel_hash, kind, crop_group, harvested_at, harvests FROM parcel_harvest_state WHERE session_id = ?
+`
+
+func (q *Queries) ListHarvestStates(ctx context.Context, sessionID string) ([]ParcelHarvestState, error) {
+	rows, err := q.db.QueryContext(ctx, listHarvestStates, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ParcelHarvestState{}
+	for rows.Next() {
+		var i ParcelHarvestState
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.ParcelHash,
+			&i.Kind,
+			&i.CropGroup,
+			&i.HarvestedAt,
+			&i.Harvests,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const logSafetyEvent = `-- name: LogSafetyEvent :exec
 INSERT INTO safety_events (kind, player_id, session_id, detail) VALUES (?, ?, ?, ?)
 `
@@ -1437,6 +1494,21 @@ func (q *Queries) ReporterAlreadyReported(ctx context.Context, arg ReporterAlrea
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const seedClaimHarvest = `-- name: SeedClaimHarvest :exec
+UPDATE parcel_claims SET harvested_at = ?, harvests = ? WHERE id = ?
+`
+
+type SeedClaimHarvestParams struct {
+	HarvestedAt *time.Time `json:"harvested_at"`
+	Harvests    int64      `json:"harvests"`
+	ID          int64      `json:"id"`
+}
+
+func (q *Queries) SeedClaimHarvest(ctx context.Context, arg SeedClaimHarvestParams) error {
+	_, err := q.db.ExecContext(ctx, seedClaimHarvest, arg.HarvestedAt, arg.Harvests, arg.ID)
+	return err
 }
 
 const setCachedData = `-- name: SetCachedData :exec
@@ -1652,5 +1724,33 @@ type UpdatePlayerXPParams struct {
 
 func (q *Queries) UpdatePlayerXP(ctx context.Context, arg UpdatePlayerXPParams) error {
 	_, err := q.db.ExecContext(ctx, updatePlayerXP, arg.Xp, arg.ID)
+	return err
+}
+
+const upsertHarvestState = `-- name: UpsertHarvestState :exec
+INSERT INTO parcel_harvest_state (session_id, parcel_hash, kind, crop_group, harvested_at, harvests)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_id, parcel_hash) DO UPDATE SET kind = excluded.kind, crop_group = excluded.crop_group,
+  harvested_at = excluded.harvested_at, harvests = excluded.harvests
+`
+
+type UpsertHarvestStateParams struct {
+	SessionID   string    `json:"session_id"`
+	ParcelHash  string    `json:"parcel_hash"`
+	Kind        string    `json:"kind"`
+	CropGroup   string    `json:"crop_group"`
+	HarvestedAt time.Time `json:"harvested_at"`
+	Harvests    int64     `json:"harvests"`
+}
+
+func (q *Queries) UpsertHarvestState(ctx context.Context, arg UpsertHarvestStateParams) error {
+	_, err := q.db.ExecContext(ctx, upsertHarvestState,
+		arg.SessionID,
+		arg.ParcelHash,
+		arg.Kind,
+		arg.CropGroup,
+		arg.HarvestedAt,
+		arg.Harvests,
+	)
 	return err
 }

@@ -270,7 +270,7 @@ SQLite, WAL, busy_timeout 5 s, `SetMaxOpenConns(8)`. Tables: `players`
 `session_players`, `parcel_claims` (hashed parcel/EZ, kg_code, area, landuse,
 converted_to, purchase_price, harvested_at, harvests, well_at, well_depth_m),
 `treasures`, `challenges`, `chat_messages`, `offers`, `api_cache` (hourly
-`cacheJanitor` prunes expired rows), `kg_warm`.
+`cacheJanitor` prunes expired rows), `kg_warm`, `parcel_harvest_state` (hashed, regrowth clock per parcel).
 
 `s.Q` is `Store` (`srv/cachestore.go`) wrapping sqlc: api_cache bodies > 2 KB
 are stored gzipped (gzip magic detected on read, transparent to callers) —
@@ -298,7 +298,7 @@ Query: edit `db/queries/game.sql` (`-- name: X :one|:many|:exec`) → `go genera
 **Actions.** `POST /api/claim-parcel` (parcel_id, kg_code, gnr, ez, area_sqm,
 landuse, building_count, total_building_area, tall_tree_*, gw_station),
 `/claim-ez` (20 % off, ≤100), `/convert-parcel` (biodiversity|forest|wildforest),
-`/sell-parcel` (60 %), `/harvest-parcel`, `/harvest-forest`, `/dig-well`,
+`/sell-parcel` (60 % × regrowth), `/harvest-parcel`, `/harvest-forest`, `/dig-well`,
 `/claim-treasure`, `/complete-challenge`, `/offer-parcel`, `/offer-respond`,
 chat + rules + block/report.
 
@@ -435,6 +435,34 @@ whenever game.js/style.css change.** Gzip middleware level 5.
   0..1 on size ratio, landuse-area composition, built density, terrain
   (`fracs` histogram); `source:"cells"`, cached 1 h (`similar:v6:`). Feeds agent
   inspect `similar` (top 8).
+
+## Harvest state, regrowth value & the deal ceremony (`srv/harveststate.go`)
+
+- **Harvest state outlives ownership.** `parcel_harvest_state(session_id, parcel_hash, kind forest|field|meadow,
+  crop_group, harvested_at, harvests)` — hashes only, like every other table. Written on every harvest
+  (`recordHarvestState`) and on sale (`handleSellParcel`), seeded into the next claim (`inheritedHarvest` →
+  `seedInheritedHarvest`, also on `/api/claim-ez`; stale rows — forest > 510 min, field > 4 h — are ignored).
+  `GET /api/session/{id}/harvests` lists it; client `G.harvestStates` (loaded with `loadClaimed`, resolved by
+  hash like claims) and **`harvestOf(pid, claim)`** is the single accessor — `fieldStage`, `forestStage(hv)`,
+  `getParcelTerrain`, `drawForestOverlay`, the sprites and the popup all take it, so an unowned Kahlschlag
+  still shows stumps and a stubble field stays stubble. Offers transfer the claim row in place (clock kept).
+- **Value follows the stand/crop.** `regenFactor(kind, harvestedAt, pid, crop, now)` → price multiplier:
+  forest `0.4 + 0.6·min(1, min/510)`, crop field `0.75 + 0.25·progress` (stubble/harvested = 0, ripe = 1),
+  meadows/others 1. Claim price = `calculatePrice × regen` (answer carries `base_price, regen, regen_progress,
+  inherited`), sell = `sellPrice(purchase, regen)` = 60 % × regen (answer `sell_price, regen`). Client mirror
+  `regenOf(p, claim)` / `regenLabel` / `sellQuote` (popup row **Wert** `#pp-regen` with the pixel bar, sell button
+  shows the quote; `REGEN_FLOOR_*` must match). Agent inspect `game.regrowth{}` + discounted `price_coins`.
+- **Per-crop cycles.** `cropCycle(crop, kind)` / JS `cropCycleS`: Getreide 60 min, Mais 90, Feldfrucht (sonst) 45,
+  Obst 180, Wein 240; hash kinds 60/90/150; meadow Förderung stays `fieldCycle` 60; timber `forestFullValueMin`
+  510. `fieldPhase.Cycle` carries it (`nextPayoutAt`). The phase offset stays hash-based (mod 60 min) so
+  neighbours still ripen at different times. Claim/sell requests send `crop_group` (`parcelCrop(p)`).
+- **Deal ceremony** (`dealFX(kind, f, coins, hold?)` → `G.fx` entries with `deal`, drawn by `drawDealFX` from
+  `drawCollectFX`, so the treasure anim loop drives it; geometry in lon/lat): buy = coins arc from the purse
+  (`hudCoinPoint()` = `#st-coins`/`#s-coins`), gold survey outline, banner pole in the player colour drops in with
+  dust puffs, `−N 🪙`; sell = banner yanked out, wooden `VERKAUFT` sign stamps, coins arc back, `+N 🪙`. The purse
+  ticks (`tweenCoins`, `.coin-tick/.coin-up/.coin-down`; `updateStats` leaves the counter alone while
+  `COINTWEEN.active`). Pixel unit `u` by zoom like the living overlays. QA: `DEV.deal('buy'|'sell', hold 0..1,
+  pid?)`, `DEV.deal('clear')`; xbrowser scenes `deal-buy`, `deal-sell`.
 
 ## Nature reserves (Naturschutz / Brache)
 

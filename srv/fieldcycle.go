@@ -47,6 +47,7 @@ type fieldPhase struct {
 	CycleStart time.Time // when the current cycle (ploughing) began
 	RipeAt     time.Time // start of the ripe window (this or next cycle)
 	RipeUntil  time.Time // NPC harvest time of that window
+	Cycle      time.Duration // length of this field's cycle (per crop, cropCycle)
 }
 
 // cropMeadow mirrors CROP_MEADOW in game.js (FARM-2 INVEKOS crop groups that
@@ -69,10 +70,14 @@ func fieldPhaseAtCrop(parcelID string, now time.Time, crop string) fieldPhase {
 			k = 0
 		}
 	}
-	cs := fieldCycle.Seconds()
-	off := float64(hashMix(jsHash(parcelID)) % uint32(cs))
+	cyc := fieldCycle
+	if k != 3 {
+		cyc = cropCycle(crop, k)
+	}
+	cs := cyc.Seconds()
+	off := float64(hashMix(jsHash(parcelID)) % uint32(fieldCycle.Seconds()))
 	t := math.Mod(float64(now.Unix())+off, cs) / cs
-	fp := fieldPhase{Kind: k, T: t}
+	fp := fieldPhase{Kind: k, T: t, Cycle: cyc}
 	fp.CycleStart = now.Add(-time.Duration(t * cs * float64(time.Second)))
 	if k == 3 {
 		fp.Stage = "meadow"
@@ -90,7 +95,7 @@ func fieldPhaseAtCrop(parcelID string, now time.Time, crop string) fieldPhase {
 	}
 	base := fp.CycleStart
 	if t >= fieldStubbleAt {
-		base = base.Add(fieldCycle)
+		base = base.Add(cyc)
 	}
 	fp.RipeAt = base.Add(time.Duration(fieldRipeAt * cs * float64(time.Second)))
 	fp.RipeUntil = base.Add(time.Duration(fieldStubbleAt * cs * float64(time.Second)))

@@ -524,5 +524,5 @@ func nextPayoutAt(fp fieldPhase, now time.Time) time.Time {
 	if fp.Stage == "meadow" {
 		return now.Add(fieldCycle)
 	}
-	return fp.RipeAt.Add(fieldCycle)
+	return fp.RipeAt.Add(fp.Cycle)
 }

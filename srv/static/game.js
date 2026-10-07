@@ -2496,7 +2496,23 @@ function updateEnhancedBadge() {
   el.textContent = txt;
 }
 
-async function loadClaimed() { G.claimed = await GET('/api/session/'+G.session.id+'/parcels') || []; resolveClaims(); updateParcelCount(); }
+async function loadClaimed() {
+  const [cl, hs] = await Promise.all([GET('/api/session/'+G.session.id+'/parcels'), GET('/api/session/'+G.session.id+'/harvests').catch(() => null)]);
+  G.claimed = cl || [];
+  if (Array.isArray(hs)) G.harvestStates = hs;
+  resolveClaims(); updateParcelCount();
+}
+/** Harvest state that outlives ownership (server parcel_harvest_state, hashes
+ *  only): [{parcel_hash, parcel_id?, kind, crop_group, harvested_at, harvests}]. */
+G.harvestStates = [];
+/** The regrowth clock of a parcel: the claim's own harvested_at, else the
+ *  state a previous owner left behind. null = mature / never harvested. */
+function harvestOf(pid, claim) {
+  if (claim && claim.harvested_at) return claim;
+  if (!pid) return null;
+  for (const h of G.harvestStates) if (h.parcel_id === pid) return h;
+  return null;
+}
 async function loadOffers() { try { G.offers = await GET('/api/session/'+G.session.id+'/offers') || []; } catch(e) { G.offers = []; } resolveClaims(); }
 
 /** The server stores no cadastre ids: claims/offers carry parcel_hash (HMAC of
@@ -2513,6 +2529,7 @@ function resolveClaims() {
   };
   for (const c of (G.claimed || [])) fix(c);
   for (const o of (G.offers || [])) fix(o);
+  for (const h of (G.harvestStates || [])) fix(h);
   return n;
 }
 /** Hash of a loaded parcel (from its viewport row), or null. */
@@ -2569,13 +2586,13 @@ async function loadChat() {
 function updateStats() {
   if (!G.player) return;
   document.getElementById('s-name').textContent = G.player.name;
-  document.getElementById('s-coins').textContent = G.player.coins;
+  if (!COINTWEEN.active) document.getElementById('s-coins').textContent = G.player.coins;
   if (G.players && G.players.length) renderPlayerList();   // keep the Mitspieler row in step
   document.getElementById('s-xp').textContent = G.player.xp;
   document.getElementById('s-level').textContent = Math.floor(G.player.xp/200)+1;
   // Mobile toggle stats
   const stc = document.getElementById('st-coins');
-  if (stc) stc.textContent = G.player.coins;
+  if (stc && !COINTWEEN.active) stc.textContent = G.player.coins;
   const stx = document.getElementById('st-xp');
   if (stx) stx.textContent = G.player.xp;
 }
@@ -5263,8 +5280,9 @@ function extractLuCode(lu, p) {
 function getParcelTerrain(p, claim) {
   if (claim?.converted_to === 'wildforest') return TERRAIN.wildforest;
   if (claim?.converted_to) return TERRAIN.bio;
-  if (claim?.harvested_at && claimIsForest(p, claim)) {
-    const st = forestStage(claim).stage;
+  const hvT = harvestOf(p.parcel_id, claim);
+  if (hvT && claimIsForest(p, claim)) {
+    const st = forestStage(hvT).stage;
     if (st === 'schlag') return TERRAIN.schlag;
     if (st === 'jungwuchs' || st === 'stangenholz') return TERRAIN.regrow;
   }
@@ -5518,6 +5536,12 @@ function cropLabel(f) {
 // end of the ripe window — unless the owner does it first, which is the only
 // thing ever stored (claim.harvested_at). Converted fields lie fallow (Brache).
 const FIELD_CYCLE_S = 60 * 60, FIELD_GROW_AT = 0.30, FIELD_RIPE_AT = 0.60, FIELD_STUBBLE_AT = 0.85;
+/** Cycle length per crop (mirrors cropCycle() in harveststate.go): grain 60 min,
+ *  maize 90, other field crops 45, orchards 180, vineyards 240; hash kinds 60/90/150.
+ *  Meadows (Förderung) stay on FIELD_CYCLE_S. Timber takes FOREST.fullMin (510). */
+const CROP_CYCLE_MIN = {getreide: 60, mais: 90, sonst: 45, obst: 180, wein: 240};
+function cropCycleS(crop, kind) { const m = CROP_CYCLE_MIN[crop]; return (m || (kind === 1 ? 90 : kind === 2 ? 150 : 60)) * 60; }
+function parcelCrop(p) { const f = parcelSchlag(p); return f ? f.properties.crop_group : ''; }
 /** Avalanche mix so sequential GNRs don't share a phase (mirrors hashMix in fieldcycle.go). */
 function hashMix(h) { h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0; return (h ^ (h >>> 16)) >>> 0; }
 function isCropField(p) { return extractLuCode('', p) === '48'; }
@@ -5527,18 +5551,19 @@ function fieldStage(p, claim, now = Date.now()) {
   const hash = simpleHash(p.parcel_id || '');
   const kind = fieldKindFor(p, hash);
   const mine = !!claim && claim.player_id === G.player?.id;
-  if (claim?.converted_to) return {kind, stage: 'fallow', t: 0, ripeInS: 0, harvested: false, mine};
-  if (kind === 3) return {kind, stage: 'meadow', t: 0, ripeInS: 0, harvested: false, mine};
-  const sec = now / 1000;
-  const t = ((sec + (hashMix(hash) % FIELD_CYCLE_S)) % FIELD_CYCLE_S) / FIELD_CYCLE_S;
-  const cycleStart = sec - t * FIELD_CYCLE_S;
-  const harvested = !!claim?.harvested_at && Date.parse(claim.harvested_at) / 1000 >= cycleStart;
+  if (claim?.converted_to) return {kind, stage: 'fallow', t: 0, ripeInS: 0, harvested: false, mine, cycleS: FIELD_CYCLE_S};
+  if (kind === 3) return {kind, stage: 'meadow', t: 0, ripeInS: 0, harvested: false, mine, cycleS: FIELD_CYCLE_S};
+  const sec = now / 1000, cyc = cropCycleS(parcelCrop(p), kind);
+  const t = ((sec + (hashMix(hash) % FIELD_CYCLE_S)) % cyc) / cyc;
+  const cycleStart = sec - t * cyc;
+  const hv = harvestOf(p.parcel_id, claim);
+  const harvested = !!hv && Date.parse(hv.harvested_at) / 1000 >= cycleStart;
   let stage = t < FIELD_GROW_AT ? 'ploughed' : t < FIELD_RIPE_AT ? 'growing' : t < FIELD_STUBBLE_AT ? 'ripe' : 'stubble';
   if (harvested) stage = 'stubble';
   const ripeT = (t >= FIELD_STUBBLE_AT || harvested ? 1 : 0) + FIELD_RIPE_AT;
-  const ripeInS = stage === 'ripe' ? 0 : Math.round((ripeT - t) * FIELD_CYCLE_S);
-  const ripeLeftS = stage === 'ripe' ? Math.round((FIELD_STUBBLE_AT - t) * FIELD_CYCLE_S) : 0;
-  return {kind, stage, t, ripeInS, ripeLeftS, harvested, mine};
+  const ripeInS = stage === 'ripe' ? 0 : Math.round((ripeT - t) * cyc);
+  const ripeLeftS = stage === 'ripe' ? Math.round((FIELD_STUBBLE_AT - t) * cyc) : 0;
+  return {kind, stage, t, ripeInS, ripeLeftS, harvested, mine, cycleS: cyc};
 }
 function fmtMin(sec) { const m = Math.max(1, Math.ceil(sec / 60)); return m + ' min'; }
 function fieldStageLabel(fs) {
@@ -5548,7 +5573,7 @@ function fieldStageLabel(fs) {
     case 'ploughed': return '🚜 ' + tr('Gepflügt') + ' · ' + tr('reif in') + ' ' + fmtMin(fs.ripeInS);
     case 'growing':  return '🌱 ' + tr('Wächst') + ' · ' + tr('reif in') + ' ' + fmtMin(fs.ripeInS);
     case 'ripe':     return '🌾 ' + tr('Reif!') + ' · ' + tr('noch') + ' ' + fmtMin(fs.ripeLeftS);
-    case 'stubble':  return (fs.harvested ? '✅ ' + tr('Geerntet') : '🌾 ' + tr('Abgeerntet')) + ' · ' + tr('nächste Ernte in') + ' ' + fmtMin(fs.ripeInS);
+    case 'stubble':  return (fs.harvested && fs.mine ? '✅ ' + tr('Geerntet') : '🌾 ' + tr('Abgeerntet')) + ' · ' + tr('nächste Ernte in') + ' ' + fmtMin(fs.ripeInS);
   }
   return '';
 }
@@ -6540,9 +6565,10 @@ function claimIsForest(p, claim) {
 function isForestParcel(f, claim) { return claimIsForest(f.properties || f, claim); }
 
 /** Stage of a (harvested) forest stand. Mirrors forestPhase() in timber.go. */
-function forestStage(claim, now = Date.now()) {
-  const ha = claim?.harvested_at ? Date.parse(claim.harvested_at) : NaN;
-  if (!claim || isNaN(ha)) return { stage: 'baumholz', t: 1, factor: 1, min: Infinity, nextInS: 0 };
+function forestStage(hv, now = Date.now()) {
+  // hv = claim or harvest state ({harvested_at}); see harvestOf()
+  const ha = hv?.harvested_at ? Date.parse(hv.harvested_at) : NaN;
+  if (!hv || isNaN(ha)) return { stage: 'baumholz', t: 1, factor: 1, min: Infinity, nextInS: 0 };
   const min = (now - ha) / 60000, t = Math.min(1, min / FOREST.stangenMin);
   if (min < FOREST.schlagMin) return { stage: 'schlag', t, factor: 0, min, nextInS: (FOREST.schlagMin - min) * 60, readyInS: (FOREST.stangenMin - min) * 60 };
   if (min < FOREST.jungMin) return { stage: 'jungwuchs', t, factor: 0, min, nextInS: (FOREST.jungMin - min) * 60, readyInS: (FOREST.stangenMin - min) * 60 };
@@ -6588,8 +6614,8 @@ function forestPopupRows(fv, claim) {
     .filter(([k]) => (sp[k] || 0) >= 0.08).sort((a, b) => sp[b[0]] - sp[a[0]]).map(([k, n]) => n + ' ' + Math.round(sp[k] * 100) + '%').join(' · ');
   if (mix) rows.push(['🌲 ' + tr('Bestand'), mix + (e.dead_frac >= 0.1 ? ' · <span style="color:#d0a060">' + Math.round(e.dead_frac * 100) + '% ' + tr('abgestorben') + '</span>' : '') + ' <span style="color:var(--text-dim)">· ' + src + '</span>']);
   const pr = e.prices || {};
-  const fs = forestStage(claim);
-  const eur = e.net_eur * (claim ? fs.factor : 1);
+  const fs = forestStage(harvestOf(e.parcel_id, claim) || claim);
+  const eur = e.net_eur * fs.factor;
   rows.push(['💶 ' + tr('Holzerlös'), '<b style="color:var(--gold)">≈ ' + fmtEur(eur) + '</b> <span style="color:var(--text-dim)">' + tr('netto') + ' · ' + Math.round(e.efm) + ' Efm · ' +
     tr('Fichte') + ' ' + Math.round(pr.spruce_eur_efm || 0) + ' €/Efm' + (pr.date ? ' (' + (pr.live ? pr.state + ' ' + pr.date : tr('Richtwert')) + ')' : '') + '</span>']);
   rows.push(['🌍 CO₂', '~' + Math.round(e.co2_t).toLocaleString('de-AT') + ' t ' + tr('im Holz gespeichert') +
@@ -6893,10 +6919,11 @@ function drawForestOverlay(ctx, claimMap) {
   ctx.save();
   for (const f of G.parcelPolys) {
     const claim = claimMap[f.properties.parcel_id];
-    if (!claim || !isAreaGeom(f.geometry)) continue;
+    const hv = harvestOf(f.properties.parcel_id, claim);
+    if ((!claim && !hv) || !isAreaGeom(f.geometry)) continue;
     let mode = null, fs = null;
-    if (claim.converted_to === 'wildforest') mode = 'wild';
-    else if (!claim.converted_to && claim.harvested_at && claimIsForest(f.properties, claim)) { fs = forestStage(claim, now); if (fs.stage !== 'baumholz') mode = 'schlag'; }
+    if (claim?.converted_to === 'wildforest') mode = 'wild';
+    else if (!claim?.converted_to && hv && claimIsForest(f.properties, claim)) { fs = forestStage(hv, now); if (fs.stage !== 'baumholz') mode = 'schlag'; }
     if (!mode) continue;
     const b = geoBounds(f.geometry);
     const [sx1, sy1] = toScreen(b.w, b.n), [sx2, sy2] = toScreen(b.e, b.s);
@@ -6961,8 +6988,9 @@ function drawForestSprites(ctx, claimMap) {
     // Naturwald: the living overlay draws the stand at zoom ≥ 15; below that
     // fall back to the plain forest sprites so it never reads as bare ground.
     if (claim?.converted_to === 'wildforest') return G.cam.zoom < 15 ? 'forest' : null;
-    if (claim && !claim.converted_to && claim.harvested_at && claimIsForest(f.properties, claim)) {
-      const fs = forestStage(claim);
+    const hv = harvestOf(f.properties.parcel_id, claim);
+    if (!claim?.converted_to && hv && claimIsForest(f.properties, claim)) {
+      const fs = forestStage(hv);
       if (fs.stage !== 'baumholz') return null;            // stumps / regrowth → drawForestOverlay
       if (fs.factor < 1) return 'young';                    // regrown, not yet full value
     }
@@ -7714,8 +7742,9 @@ function spawnCollectFX(t, text, rar) {
 function drawCollectFX(ctx) {
   if (!G.fx.length) return;
   const now = performance.now();
-  G.fx = G.fx.filter(f => now - f.t0 < f.dur);
+  G.fx = G.fx.filter(f => f.hold != null || now - f.t0 < f.dur);
   for (const f of G.fx) {
+    if (f.deal) { drawDealFX(ctx, f, f.hold != null ? f.t0 + f.hold * f.dur : now); continue; }
     const [x, y] = toScreen(f.lon, f.lat);
     const k = (now - f.t0) / f.dur;            // 0..1
     const tt = (now - f.t0) / 1000;
@@ -7740,6 +7769,185 @@ function drawCollectFX(ctx) {
     ctx.fillStyle = f.color; ctx.fillText(f.text, Math.round(x), fy);
     ctx.globalAlpha = 1;
   }
+}
+
+// ================= DEAL FX — Siedler-style buy / sell ceremony =================
+// Buying: coins fly from the purse (HUD counter) to the parcel, the outline is
+// surveyed in gold, a banner pole in the player's colour drops in with a dust
+// puff. Selling: the banner is yanked out, a wooden VERKAUFT sign stamps down
+// and the coins arc back into the purse, which ticks up as they land. Entries
+// live in G.fx (deal:true) so the treasure anim loop already drives them; all
+// geometry is in lon/lat so panning mid-ceremony keeps everything attached.
+const COINTWEEN = { active: false, raf: 0 };
+function hudCoinPoint() {
+  const el = ['st-coins', 's-coins'].map(id => document.getElementById(id)).find(e => e && e.offsetParent !== null && e.getBoundingClientRect().width > 0);
+  const cr = gc.getBoundingClientRect();
+  if (!el) return [gc.width - 40, 30];
+  const r = el.getBoundingClientRect();
+  return [r.left + r.width / 2 - cr.left, r.top + r.height / 2 - cr.top];
+}
+/** Animate the purse: counts the HUD coins from `from` to `to` with a bump. */
+function tweenCoins(from, to, delayMs, durMs) {
+  const els = ['s-coins', 'st-coins'].map(id => document.getElementById(id)).filter(Boolean);
+  if (from === to || !els.length) return;
+  COINTWEEN.active = true;
+  const t0 = performance.now() + delayMs, up = to > from;
+  let lastShown = from;
+  const step = () => {
+    const now = performance.now();
+    if (now < t0) { COINTWEEN.raf = requestAnimationFrame(step); return; }
+    const k = Math.min(1, (now - t0) / durMs), e = 1 - Math.pow(1 - k, 3);
+    const v = Math.round(from + (to - from) * e);
+    if (v !== lastShown) {
+      lastShown = v;
+      for (const el of els) { el.textContent = v; el.classList.remove('coin-tick'); void el.offsetWidth; el.classList.add('coin-tick'); el.classList.toggle('coin-up', up); el.classList.toggle('coin-down', !up); }
+    }
+    if (k < 1) COINTWEEN.raf = requestAnimationFrame(step);
+    else { COINTWEEN.active = false; for (const el of els) { el.textContent = to; setTimeout(() => el.classList.remove('coin-tick', 'coin-up', 'coin-down'), 400); } }
+  };
+  cancelAnimationFrame(COINTWEEN.raf);
+  COINTWEEN.raf = requestAnimationFrame(step);
+}
+/** @param kind 'buy'|'sell' @param f parcel feature @param coins price paid / received
+ *  @param hold QA: freeze the ceremony at phase 0..1 (DEV.deal) */
+function dealFX(kind, f, coins, hold) {
+  if (!f || !G.player) return null;
+  const [lon, lat] = featureLonLat(f);
+  const rings = isAreaGeom(f.geometry) ? geomAllRings(f.geometry) : [];
+  const n = Math.max(3, Math.min(9, 3 + Math.round(Math.log2(Math.max(1, coins) / 8))));
+  const coinsFrom = G.player.coins, coinsTo = coinsFrom + (kind === 'buy' ? -coins : coins);
+  const buy = kind === 'buy';
+  const fx = {
+    deal: kind, lon, lat, rings, t0: performance.now(), dur: buy ? 1700 : 1800, n, coins,
+    color: G.pcolors[G.player.id] || PLAYER_COLORS[0],
+    puffs: Array.from({ length: 10 }, (_, i) => ({ a: i / 10 * Math.PI * 2 + Math.random() * 0.5, v: 18 + Math.random() * 22, sz: 2 + Math.random() * 3 })),
+    hud: hudCoinPoint(),
+  };
+  if (hold != null) { fx.hold = hold; G.fx.push(fx); render(); return fx; }
+  G.fx.push(fx);
+  if (buy) tweenCoins(coinsFrom, coinsTo, 60, 650);
+  else tweenCoins(coinsFrom, coinsTo, 650, 900);
+  if (navigator.vibrate && isCoarsePointer()) try { navigator.vibrate(buy ? [12, 40, 18] : [18, 60, 12]); } catch (e) {}
+  render();
+  return fx;
+}
+function pxCoin(ctx, x, y, r, spin) {
+  const w = Math.max(0.15, Math.abs(Math.cos(spin)));
+  ctx.save(); ctx.translate(Math.round(x), Math.round(y)); ctx.scale(w, 1);
+  ctx.fillStyle = '#8a6a00'; ctx.beginPath(); ctx.arc(0, 0, r + 1, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#ffd34a'; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff2a8'; ctx.fillRect(-r * 0.4, -r * 0.6, r * 0.35, r * 0.35);
+  ctx.fillStyle = '#c99a10'; ctx.fillRect(-1, -r * 0.5, 2, r); 
+  ctx.restore();
+}
+function pxBanner(ctx, x, y, h, col, t, alpha) {
+  // pole + waving pennant, drawn with its foot at (x,y)
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#3a2410'; ctx.fillRect(Math.round(x) - 1, Math.round(y - h), 3, h);
+  ctx.fillStyle = '#d8b040'; ctx.fillRect(Math.round(x) - 2, Math.round(y - h) - 2, 5, 3);
+  const bw = Math.round(h * 0.55), bh = Math.round(h * 0.38);
+  for (let i = 0; i < bw; i++) {
+    const dy = Math.sin(t * 9 + i * 0.45) * (i / bw) * 2.5;
+    ctx.fillStyle = col; ctx.fillRect(Math.round(x) + 2 + i, Math.round(y - h + 1 + dy), 1, bh - (i > bw * 0.6 ? Math.round((i - bw * 0.6) / (bw * 0.4) * bh * 0.5) : 0));
+    if (i % 4 === 0) { ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(Math.round(x) + 2 + i, Math.round(y - h + 1 + dy), 1, 2); }
+  }
+  ctx.restore();
+}
+function pxSign(ctx, x, y, text, scale, alpha) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(Math.round(x), Math.round(y)); ctx.scale(scale, scale);
+  ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const w = Math.ceil(ctx.measureText(text).width) + 16, h = 20;
+  ctx.fillStyle = '#2a1a08'; ctx.fillRect(-w / 2 - 2, -h / 2 - 2, w + 4, h + 4);
+  ctx.fillStyle = '#9a6a33'; ctx.fillRect(-w / 2, -h / 2, w, h);
+  ctx.fillStyle = '#b8824a'; ctx.fillRect(-w / 2, -h / 2, w, 3);
+  ctx.fillStyle = '#5a3a18'; ctx.fillRect(-w / 2 + 3, -h / 2 + 3, 2, 2); ctx.fillRect(w / 2 - 5, -h / 2 + 3, 2, 2);
+  ctx.fillStyle = '#1a0e04'; ctx.fillText(text, 1, 2);
+  ctx.fillStyle = '#ffe9a0'; ctx.fillText(text, 0, 1);
+  ctx.fillStyle = '#3a2410'; ctx.fillRect(-1, h / 2, 3, 10);
+  ctx.restore();
+}
+function drawDealFX(ctx, f, now) {
+  const k = (now - f.t0) / f.dur, tt = (now - f.t0) / 1000;
+  const [x, y] = toScreen(f.lon, f.lat);
+  const [hx, hy] = f.hud;
+  const buy = f.deal === 'buy';
+  const u = G.cam.zoom > 19 ? 3 : G.cam.zoom > 17.5 ? 2 : G.cam.zoom > 15.5 ? 1.5 : 1;   // pixel unit, like the living overlays
+  const ease = v => 1 - Math.pow(1 - Math.max(0, Math.min(1, v)), 3);
+  const win = (a, b) => Math.max(0, Math.min(1, (k - a) / (b - a)));
+  ctx.save();
+  // parcel outline survey + fill flash
+  if (f.rings.length) {
+    const o = buy ? win(0.25, 0.75) : win(0, 0.5);
+    ctx.beginPath();
+    for (const ring of f.rings) ring.forEach((c, i) => { const pt = toScreen(c[0], c[1]); i ? ctx.lineTo(pt[0], pt[1]) : ctx.moveTo(pt[0], pt[1]); });
+    ctx.closePath();
+    const flash = buy ? Math.sin(Math.min(1, win(0.45, 1)) * Math.PI) * 0.3 : (1 - win(0.1, 0.9)) * 0.3;
+    ctx.fillStyle = buy ? '#ffd700' : f.color; ctx.globalAlpha = flash; ctx.fill('evenodd'); ctx.globalAlpha = 1;
+    ctx.strokeStyle = buy ? '#ffd700' : 'rgba(255,255,255,0.85)'; ctx.lineWidth = buy ? 3 : 2;
+    ctx.setLineDash([10, 6]); ctx.lineDashOffset = -tt * 90;
+    ctx.shadowColor = buy ? '#ffd700' : '#fff'; ctx.shadowBlur = 8;
+    ctx.globalAlpha = buy ? Math.min(1, o * 3) * (1 - win(0.8, 1)) : 1 - win(0.3, 0.9);
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  }
+  // coins: purse → parcel (buy) / parcel → purse (sell)
+  const cStart = buy ? 0 : 0.3, cEnd = buy ? 0.55 : 0.9, stag = (cEnd - cStart) * 0.45;
+  for (let i = 0; i < f.n; i++) {
+    const a = cStart + stag * (i / f.n), b = a + (cEnd - cStart - stag);
+    const q = (k - a) / (b - a);
+    if (q <= 0 || q >= 1) continue;
+    const e = buy ? ease(q) : q * q * (3 - 2 * q);
+    const [sx, sy] = buy ? [hx, hy] : [x + (i % 3 - 1) * 8, y - 8];
+    const [ex, ey] = buy ? [x + (i % 3 - 1) * 8, y - 6] : [hx, hy];
+    const px = sx + (ex - sx) * e, py = sy + (ey - sy) * e - Math.sin(e * Math.PI) * (70 + i * 9);
+    pxCoin(ctx, px, py, 4 + 2 * u, tt * 14 + i);
+    if (q > 0.9) { ctx.fillStyle = 'rgba(255,240,160,' + ((1 - q) * 10).toFixed(2) + ')'; ctx.fillRect(px - 7 * u, py - 1, 14 * u, 2); ctx.fillRect(px - 1, py - 7 * u, 2, 14 * u); }
+  }
+  if (buy) {
+    // banner drops in, bounces, dust puffs
+    const d = win(0.45, 0.72), land = win(0.68, 1);
+    if (k >= 0.45) {
+      const drop = 1 - Math.pow(1 - d, 2), bounce = d >= 1 ? Math.abs(Math.sin(land * Math.PI * 2)) * (1 - land) * 6 : 0;
+      const h = 22 * u * (d >= 1 && land < 0.25 ? 1 - Math.sin(land * Math.PI * 4) * 0.18 : 1);
+      pxBanner(ctx, x, y - (1 - drop) * 90 - bounce, h, f.color, tt, 1);
+    }
+    if (k >= 0.7) {
+      const q = win(0.7, 1);
+      for (const p of f.puffs) {
+        const r = p.v * u * ease(q), px = x + Math.cos(p.a) * r, py = y + Math.sin(p.a) * r * 0.45 - q * 6;
+        ctx.fillStyle = 'rgba(214,190,140,' + (0.8 * (1 - q)).toFixed(2) + ')';
+        ctx.fillRect(Math.round(px - p.sz * u / 2), Math.round(py - p.sz * u / 2), p.sz * u, p.sz * u);
+      }
+    }
+  } else {
+    // banner yanked out, sign stamps down
+    const y1 = win(0, 0.3);
+    if (y1 < 1) pxBanner(ctx, x + Math.sin(y1 * 14) * 3 * y1, y - ease(y1) * 70, 22 * u, f.color, tt, 1 - y1 * y1);
+    const st = win(0.12, 0.42);
+    if (st > 0) {
+      const sc = (st < 1 ? 1.9 - 0.9 * ease(st) + (st > 0.8 ? Math.sin((st - 0.8) * 5 * Math.PI) * 0.08 : 0) : 1) * Math.max(1, u * 0.75);
+      pxSign(ctx, x, y - 12 * u, tr('VERKAUFT'), sc, Math.min(1, st * 3) * (1 - win(0.85, 1)));
+    }
+    if (st >= 0.95 && k < 0.6) {
+      const q = win(0.4, 0.6);
+      for (const p of f.puffs) {
+        const r = p.v * 0.7 * u * ease(q), px = x + Math.cos(p.a) * r, py = y + Math.sin(p.a) * r * 0.4;
+        ctx.fillStyle = 'rgba(214,190,140,' + (0.7 * (1 - q)).toFixed(2) + ')';
+        ctx.fillRect(Math.round(px - p.sz * u / 2), Math.round(py - p.sz * u / 2), p.sz * u, p.sz * u);
+      }
+    }
+  }
+  // floating amount
+  const ft = buy ? win(0.55, 1) : win(0.3, 0.95);
+  if (ft > 0) {
+    ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const txt = (buy ? '−' : '+') + f.coins + ' 🪙', fy = Math.round(y - 30 * u - ease(ft) * 34);
+    ctx.save(); ctx.translate(Math.round(x), fy); ctx.scale(Math.max(1, u * 0.8), Math.max(1, u * 0.8));
+    ctx.globalAlpha = 1 - ft * ft;
+    ctx.fillStyle = '#000'; ctx.fillText(txt, 1, 1);
+    ctx.fillStyle = buy ? '#ffb0a0' : '#b8ffb0'; ctx.fillText(txt, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
 }
 
 // ================= SCHILDERSTURM — smashable map labels (hidden feature) =================
@@ -10156,7 +10364,9 @@ function showParcelPopup(f, tappedFp) {
   const area = p.area_sqm||0;
   const bldgCount = p.building_count || 0;
   const bldgArea = p.total_building_area_sqm || 0;
-  const price = calcPrice(area, luCode, bldgCount, bldgArea);
+  const basePrice = calcPrice(area, luCode, bldgCount, bldgArea);
+  const rg = regenOf(p, claim);
+  const price = Math.max(10, Math.round(basePrice * rg.factor));
 
   document.getElementById('pp-title').textContent = '📍 ' + (p.gnr || pid);
   document.getElementById('pp-id').textContent = pid;
@@ -10189,10 +10399,10 @@ function showParcelPopup(f, tappedFp) {
     fieldEl.style.display = fieldL.style.display = '';
     fieldL.textContent = tr('Feld');
     fieldEl.textContent = fieldStageLabel(fieldStage(p, claim));
-  } else if (claim && isForestParcel(G.sel, claim) && (claim.harvested_at || claim.converted_to === 'wildforest')) {
+  } else if (isForestParcel(G.sel, claim) && (harvestOf(pid, claim) || claim?.converted_to === 'wildforest')) {
     fieldEl.style.display = fieldL.style.display = '';
     fieldL.textContent = tr('Wald');
-    fieldEl.textContent = claim.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') + ' · ' + tr('außer Nutzung') : forestStageLabel(forestStage(claim));
+    fieldEl.textContent = claim?.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') + ' · ' + tr('außer Nutzung') : forestStageLabel(forestStage(harvestOf(pid, claim)));
   } else { fieldEl.style.display = fieldL.style.display = 'none'; }
   {
     // FARM-2: the real crop on this field (AMA INVEKOS Schlag under the parcel centroid)
@@ -10207,6 +10417,13 @@ function showParcelPopup(f, tappedFp) {
   }
   renderFieldEconomyRows(f, claim);
   document.getElementById('pp-price').textContent = claim ? (claim.player_id===G.player.id?'Dein Besitz':'Besetzt') : price+' 🪙';
+  {
+    const rgEl = document.getElementById('pp-regen'), rgL = document.getElementById('pp-regen-l');
+    if (rg.factor < 1) {
+      rgEl.style.display = rgL.style.display = '';
+      rgEl.innerHTML = regenLabel(rg) + (!claim ? ' <span style="color:var(--text-dim)">· ' + tr('statt') + ' ' + basePrice + '🪙</span>' : '');
+    } else rgEl.style.display = rgL.style.display = 'none';
+  }
 
   renderBuildingRows(tappedFp);
   renderEnhancedPopupRows(pid, price);
@@ -10240,7 +10457,7 @@ function showParcelPopup(f, tappedFp) {
     if (isForestParcel(G.sel, claim)) {
       // Forest stand: harvest the timber (coins now, stand regrows) or set it
       // aside as Naturwald (XP, permanent). Values come from /api/forest-value.
-      const fs = forestStage(claim), fv = G.forestValues[pid], e = fv?.estimate;
+      const fs = forestStage(harvestOf(pid, claim)), fv = G.forestValues[pid], e = fv?.estimate;
       const coinsNow = e ? Math.max(5, Math.round(e.coins * fs.factor)) : null;
       if (fs.stage === 'baumholz') html += `<button class="btn btn-gold btn-small" onclick="doHarvestForest()">🪓 ${tr('Holzernte')} (${coinsNow != null ? '+' + coinsNow + '🪙' : '…'})</button>`;
       else html += `<span style="font:16px VT323;color:var(--text-dim);width:100%">${forestStageLabel(fs)}</span>`;
@@ -10252,7 +10469,7 @@ function showParcelPopup(f, tappedFp) {
       <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')" ${wpHere ? 'title="' + tr('Wasserschutzgebiet: Trinkwasser-Bonus ×1,5') + '"' : ''}>🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')} (+${wpHere ? '150⚡ 💧' : '100⚡'})</button>
       <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>`;
     }
-    html += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})">💰 Verkaufen</button>`;
+    html += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})" title="${rg.factor < 1 ? tr('Wert erholt sich') + ' · ' + Math.round(rg.factor * 100) + ' %' : '60 % ' + tr('des Kaufpreises')}">💰 ${tr('Verkaufen')} (+${sellQuote(claim, rg)}🪙)</button>`;
     // Show incoming offers for this parcel
     const incomingOffers = (G.offers||[]).filter(o => o.parcel_id === pid && o.seller_id === G.player.id && o.status === 'pending');
     if (incomingOffers.length > 0) {
@@ -11254,6 +11471,39 @@ function calcPrice(area, lu, buildingCount, totalBuildingArea) {
   return Math.max(10, Math.min(5000, Math.round(area * ppm * densityMult)));
 }
 
+// ---- Regrowth value (contract with regenFactor() in srv/harveststate.go) ----
+// The standing crop is part of the price: a stand cut by any previous owner
+// is worth REGEN_FLOOR_FOREST (40 %) of its mature price and recovers over
+// FOREST.fullMin; a field recovers over its own crop cycle from 75 %.
+const REGEN_FLOOR_FOREST = 0.40, REGEN_FLOOR_FIELD = 0.75;
+/** @returns {{factor, progress, kind, fullInS, label}} */
+function regenOf(p, claim) {
+  const pid = p.parcel_id, hv = harvestOf(pid, claim);
+  if (claim?.converted_to) return {factor: 1, progress: 1, kind: ''};
+  if (claimIsForest(p, claim)) {
+    if (!hv) return {factor: 1, progress: 1, kind: 'forest'};
+    const min = (Date.now() - Date.parse(hv.harvested_at)) / 60000, pr = Math.max(0, Math.min(1, min / FOREST.fullMin));
+    return {factor: REGEN_FLOOR_FOREST + (1 - REGEN_FLOOR_FOREST) * pr, progress: pr, kind: 'forest', fullInS: Math.max(0, (FOREST.fullMin - min) * 60), stage: forestStage(hv).stage};
+  }
+  if (isCropField(p)) {
+    const fs = fieldStage(p, claim);
+    if (fs.stage === 'meadow' || fs.stage === 'fallow') return {factor: 1, progress: 1, kind: 'meadow'};
+    let pr = fs.stage === 'ripe' ? 1 : fs.stage === 'stubble' ? 0 : Math.max(0, Math.min(1, fs.t / FIELD_RIPE_AT));
+    return {factor: REGEN_FLOOR_FIELD + (1 - REGEN_FLOOR_FIELD) * pr, progress: pr, kind: 'field', fullInS: fs.ripeInS, stage: fs.stage};
+  }
+  return {factor: 1, progress: 1, kind: ''};
+}
+function regenLabel(rg) {
+  const pct = Math.round(rg.factor * 100) + ' %';
+  const bar = '<span class="regen-bar"><i style="width:' + Math.round(rg.progress * 100) + '%"></i></span>';
+  const when = rg.fullInS > 0 ? ' · ' + tr('voll in') + ' ' + fmtDur(rg.fullInS) : '';
+  const ico = rg.kind === 'forest' ? (rg.stage === 'schlag' ? '🪓' : '🌱') : '🌾';
+  return ico + ' ' + pct + ' ' + bar + '<span style="color:var(--text-dim)">' + when + '</span>';
+}
+function fmtDur(sec) { const m = Math.ceil(sec / 60); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60 ? (m % 60) + ' min' : '') : m + ' min'; }
+/** What the server will pay right now (sellPrice() in harveststate.go). */
+function sellQuote(claim, rg) { return Math.max(1, Math.round((claim.purchase_price || 0) * 0.6 * (rg ? rg.factor : 1))); }
+
 window.doClaim = async function() {
   if (!G.sel) return;
   const p = G.sel.properties;
@@ -11267,8 +11517,11 @@ window.doClaim = async function() {
     tall_tree_count:tt.count, tall_tree_max_h:tt.maxH,
     gw_station: !!stationOnParcel(p.parcel_id),
     lon: featureLonLat(G.sel)[0], lat: featureLonLat(G.sel)[1],
+    crop_group: parcelCrop(p),
   });
   if (res.error) { toast(res.error,'err'); return; }
+  dealFX('buy', G.sel, res.price);
+  if (res.inherited && res.regen < 1) setTimeout(() => toast('🌱 ' + tr('Günstig erworben') + ': ' + tr('Bestand erholt sich noch') + ' · ' + Math.round(res.regen * 100) + ' % ' + tr('Wert'), 'ok'), 600);
   if (res.ne_bonus_xp > 0) { const v = NE_VERDICT[res.ne_verdict] || NE_VERDICT.unknown; setTimeout(() => toast('👁 ' + tr('Spurenleser') + ': +' + res.ne_bonus_xp + '⚡ · ' + v.ico + ' ' + tr(v.de), 'ok'), 1400); }
   if (res.station_bonus_xp > 0) setTimeout(() => toast('📏 ' + tr('Pegelwart') + ': +' + res.station_bonus_xp + '⚡ ' + tr('für die Messstelle'), 'ok'), 900);
   if (res.tall_bonus_xp > 0) {
@@ -11314,9 +11567,11 @@ window.doConvert = async function(to) {
 };
 
 window.doSell = async function(claimId) {
-  const res = await POST('/api/sell-parcel', {session_id:G.session.id, player_id:G.player.id, claim_id:claimId, parcel_id: G.sel && G.sel.properties.parcel_id});
+  const sel = G.sel;
+  const res = await POST('/api/sell-parcel', {session_id:G.session.id, player_id:G.player.id, claim_id:claimId, parcel_id: sel && sel.properties.parcel_id, crop_group: sel ? parcelCrop(sel.properties) : ''});
   if (res.error) { toast(res.error,'err'); return; }
-  toast('💰 Verkauft für '+res.sell_price+'🪙','ok');
+  if (sel) dealFX('sell', sel, res.sell_price);
+  toast('💰 Verkauft für '+res.sell_price+'🪙' + (res.regen < 1 ? ' · ' + Math.round(res.regen * 100) + ' % ' + tr('Wert') : ''),'ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render();
   document.getElementById('parcel-popup').classList.remove('open');
@@ -11649,6 +11904,13 @@ pickObs.observe(document.getElementById('screen-pick'), {attributes:true, attrib
 window.DEV = {
   /** Schildersturm: DEV.smash() → stats + labels on screen; DEV.smash(true) → shatter the first label
    *  (returns the fx so a scene can freeze it); DEV.smash('reset') → regrow everything. */
+  /** Buy/sell ceremony on the selected (or given) parcel; hold = freeze at phase 0..1, 'clear' removes. */
+  deal(kind = 'buy', hold, pid) {
+    if (kind === 'clear') { G.fx = G.fx.filter(f => !f.deal); render(); return 0; }
+    const f = pid ? DEV.find(pid) : G.sel; if (!f) return null;
+    G.fx = G.fx.filter(x => !x.deal);
+    return dealFX(kind, f, kind === 'buy' ? 98 : 59, hold);
+  },
   smash(act) {
     if (act === 'reset') { SMASH.gone.clear(); render(); return 'regrown'; }
     renderNow();

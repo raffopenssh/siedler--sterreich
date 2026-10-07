@@ -262,6 +262,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/session/{id}", s.handleGetSession)
 	mux.HandleFunc("GET /api/session/{id}/players", s.handleGetSessionPlayers)
 	mux.HandleFunc("GET /api/session/{id}/parcels", s.handleGetSessionParcels)
+	mux.HandleFunc("GET /api/session/{id}/harvests", s.handleSessionHarvests)
 	mux.HandleFunc("GET /api/session/{id}/treasures", s.handleGetSessionTreasures)
 	mux.HandleFunc("POST /api/session/{id}/treasures/roam", s.handleRoamTreasures)
 	mux.HandleFunc("GET /api/session/{id}/challenges", s.handleGetChallenges)
@@ -971,6 +972,7 @@ type claimReq struct {
 	Lat               float64 `json:"lat,omitempty"`
 	TallTreeCount     int     `json:"tall_tree_count"`
 	TallTreeMaxH      float64 `json:"tall_tree_max_h"`
+	CropGroup         string  `json:"crop_group"` // FARM-2 INVEKOS class under the parcel ("" = hash kind)
 }
 
 func (s *Server) handleClaimParcel(w http.ResponseWriter, r *http.Request) {
@@ -993,8 +995,21 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 		return
 	}
 
-	// Calculate price based on area, landuse, and building density
-	price := calculatePrice(req.AreaSqm, req.Landuse, req.BuildingCount, req.TotalBuildingArea)
+	// Calculate price based on area, landuse, and building density — then the
+	// state of the stand/crop: a clear-cut or stubble parcel (harvest state
+	// left by a previous owner, parcel_harvest_state) is cheaper while it regrows.
+	basePrice := calculatePrice(req.AreaSqm, req.Landuse, req.BuildingCount, req.TotalBuildingArea)
+	inherited := s.inheritedHarvest(r.Context(), req.SessionID, req.ParcelID)
+	var inheritedAt *time.Time
+	if inherited != nil {
+		t := inherited.HarvestedAt
+		inheritedAt = &t
+	}
+	regen, regenProgress := regenFactor(harvestKindOf(req.Landuse, req.CropGroup, req.ParcelID), inheritedAt, req.ParcelID, req.CropGroup, time.Now())
+	price := int(math.Round(float64(basePrice) * regen))
+	if price < 10 {
+		price = 10
+	}
 
 	// Authenticate and check player has enough coins
 	player, ok := s.authPlayer(r, req.PlayerID)
@@ -1068,6 +1083,9 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 		jsonErr(w, "Failed to claim parcel", 500)
 		return
 	}
+	if inherited != nil {
+		s.seedInheritedHarvest(r.Context(), req.SessionID, req.ParcelID)
+	}
 
 	s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{
 		Coins: int64(-price),
@@ -1100,6 +1118,10 @@ func (s *Server) claimParcel(w http.ResponseWriter, r *http.Request, req claimRe
 	jsonResp(w, map[string]any{
 		"success":          true,
 		"price":            price,
+		"base_price":       basePrice,
+		"regen":            regen,
+		"regen_progress":   regenProgress,
+		"inherited":        inherited != nil,
 		"player":           updatedPlayer,
 		"tall_bonus_xp":    tallBonus,
 		"station_bonus_xp": stationBonus,
@@ -1150,7 +1172,7 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 		}); err == nil {
 			continue
 		}
-		totalPrice += calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.TotalBuildingArea)
+		totalPrice += s.regenPrice(r.Context(), req.SessionID, p.ParcelID, p.Landuse, calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.TotalBuildingArea))
 	}
 
 	// 20% discount for bulk EZ claim
@@ -1177,7 +1199,7 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 		}); err == nil {
 			continue
 		}
-		price := calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.TotalBuildingArea)
+		price := s.regenPrice(r.Context(), req.SessionID, p.ParcelID, p.Landuse, calculatePrice(p.AreaSqm, p.Landuse, p.BuildingCount, p.TotalBuildingArea))
 		// Each parcel gets its proportional discounted price
 		discPrice := int64(float64(price) * 0.8)
 		landuse := p.Landuse
@@ -1192,6 +1214,7 @@ func (s *Server) handleClaimEZ(w http.ResponseWriter, r *http.Request) {
 			Landuse:       &landuse,
 			PurchasePrice: discPrice,
 		})
+		s.seedInheritedHarvest(r.Context(), req.SessionID, p.ParcelID)
 		claimed++
 	}
 
@@ -1417,6 +1440,7 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 	xp := 10 + coins/5
 	ctx := r.Context()
 	s.Q.HarvestParcel(ctx, claim.ID)
+	s.recordHarvestState(ctx, req.SessionID, req.ParcelID, map[bool]string{true: "meadow", false: "field"}[fp.Stage == "meadow"], req.CropGroup, now, claim.Harvests+1)
 	s.Q.UpdatePlayerCoins(ctx, dbgen.UpdatePlayerCoinsParams{Coins: coins, ID: req.PlayerID})
 	s.Q.UpdatePlayerXP(ctx, dbgen.UpdatePlayerXPParams{Xp: xp, ID: req.PlayerID})
 	quests := s.autoCompleteChallenges(ctx, req.SessionID, req.PlayerID)
@@ -1427,7 +1451,7 @@ func (s *Server) handleHarvestParcel(w http.ResponseWriter, r *http.Request) {
 	})
 	jsonResp(w, map[string]any{
 		"success": true, "coins": coins, "xp": xp, "player": player, "quests": quests, "economy": eco,
-		"harvested_at": now, "next_ripe_at": nextPayoutAt(fp, now),
+		"harvested_at": now, "next_ripe_at": nextPayoutAt(fp, now), "cycle_s": fp.Cycle.Seconds(),
 	})
 }
 
@@ -1436,7 +1460,8 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 		SessionID string `json:"session_id"`
 		PlayerID  string `json:"player_id"`
 		ClaimID   int64  `json:"claim_id"`
-		ParcelID  string `json:"parcel_id"` // optional, echoed in the broadcast only
+		ParcelID  string `json:"parcel_id"`  // needed for the regrowth clock (hash) + broadcast
+		CropGroup string `json:"crop_group"` // FARM-2 class, decides the field cycle
 	}
 	if err := readJSON(r, &req); err != nil {
 		jsonErr(w, "invalid request", 400)
@@ -1470,12 +1495,24 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sell at 60% of purchase price
-	sellPrice := int64(float64(claim.PurchasePrice) * 0.6)
+	// Sell at 60 % of the purchase price × current regrowth: a stand cut
+	// after buying is worth less than the mature one that was paid for.
+	now := time.Now()
+	regen, regenProgress := claimRegen(claim, req.ParcelID, req.CropGroup, now)
+	payout := sellPrice(claim.PurchasePrice, regen)
 	s.Q.UpdatePlayerCoins(r.Context(), dbgen.UpdatePlayerCoinsParams{
-		Coins: sellPrice,
+		Coins: payout,
 		ID:    req.PlayerID,
 	})
+
+	// The regrowth clock survives the sale (parcel_harvest_state, hash only).
+	if claim.HarvestedAt != nil && req.ParcelID != "" {
+		lu := ""
+		if claim.Landuse != nil {
+			lu = *claim.Landuse
+		}
+		s.recordHarvestState(r.Context(), req.SessionID, req.ParcelID, harvestKindOf(lu, req.CropGroup, req.ParcelID), req.CropGroup, *claim.HarvestedAt, claim.Harvests)
+	}
 
 	// Delete claim
 	s.DB.ExecContext(r.Context(), "DELETE FROM parcel_claims WHERE id = ?", req.ClaimID)
@@ -1488,7 +1525,7 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 		"player":      player.Name,
 	})
 
-	jsonResp(w, map[string]any{"success": true, "sell_price": sellPrice, "player": player})
+	jsonResp(w, map[string]any{"success": true, "sell_price": payout, "regen": regen, "regen_progress": regenProgress, "player": player})
 }
 
 // ---- Parcel Offer System ----

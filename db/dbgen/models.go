@@ -91,6 +91,15 @@ type ParcelClaim struct {
 	NeVerdict     string     `json:"ne_verdict"`
 }
 
+type ParcelHarvestState struct {
+	SessionID   string    `json:"session_id"`
+	ParcelHash  string    `json:"parcel_hash"`
+	Kind        string    `json:"kind"`
+	CropGroup   string    `json:"crop_group"`
+	HarvestedAt time.Time `json:"harvested_at"`
+	Harvests    int64     `json:"harvests"`
+}
+
 type ParcelOffer struct {
 	ID         int64      `json:"id"`
 	SessionID  string     `json:"session_id"`

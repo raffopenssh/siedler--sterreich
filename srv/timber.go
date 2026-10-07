@@ -779,6 +779,7 @@ func (s *Server) handleHarvestForest(w http.ResponseWriter, r *http.Request) {
 	xp := 5 + coins/25
 	ctx := r.Context()
 	s.Q.HarvestParcel(ctx, claim.ID)
+	s.recordHarvestState(ctx, req.SessionID, req.ParcelID, "forest", "", now, claim.Harvests+1)
 	s.Q.UpdatePlayerCoins(ctx, dbgen.UpdatePlayerCoinsParams{Coins: coins, ID: req.PlayerID})
 	s.Q.UpdatePlayerXP(ctx, dbgen.UpdatePlayerXPParams{Xp: xp, ID: req.PlayerID})
 	quests := s.autoCompleteChallenges(ctx, req.SessionID, req.PlayerID)

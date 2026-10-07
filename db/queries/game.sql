@@ -249,3 +249,18 @@ UPDATE parcel_claims SET well_at = CURRENT_TIMESTAMP, well_depth_m = ? WHERE id 
 
 -- name: SetPlayerAgent :exec
 UPDATE players SET agent = ? WHERE id = ?;
+
+-- name: UpsertHarvestState :exec
+INSERT INTO parcel_harvest_state (session_id, parcel_hash, kind, crop_group, harvested_at, harvests)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_id, parcel_hash) DO UPDATE SET kind = excluded.kind, crop_group = excluded.crop_group,
+  harvested_at = excluded.harvested_at, harvests = excluded.harvests;
+
+-- name: GetHarvestState :one
+SELECT * FROM parcel_harvest_state WHERE session_id = ? AND parcel_hash = ?;
+
+-- name: ListHarvestStates :many
+SELECT * FROM parcel_harvest_state WHERE session_id = ?;
+
+-- name: SeedClaimHarvest :exec
+UPDATE parcel_claims SET harvested_at = ?, harvests = ? WHERE id = ?;

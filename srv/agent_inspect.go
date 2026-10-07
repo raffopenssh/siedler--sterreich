@@ -751,7 +751,7 @@ func (s *Server) inspectField(lon, lat float64) any {
 			if pointInGeom(lon, lat, f.Geometry) {
 				out["schlag"] = map[string]any{"crop": f.SnarName, "crop_group": f.CropGroup, "area_ha": r2(f.AreaHa), "organic": f.Organic, "year": r.Year}
 				if f.CropGroup != "" {
-					out["field_kind"] = map[bool]string{true: "meadow (Förderung only)", false: "crop (harvest every 60 min)"}[cropMeadow[f.CropGroup]]
+					out["field_kind"] = map[bool]string{true: "meadow (Förderung only)", false: "crop (harvest once per cycle: " + cropCycle(f.CropGroup, 0).String() + ")"}[cropMeadow[f.CropGroup]]
 				}
 				break
 			}
@@ -975,6 +975,27 @@ func (s *Server) inspectGame(ctx context.Context, sess dbgen.GameSession, p agen
 	g := map[string]any{"price_coins": p.Price, "owner": p.Owner, "converted_to": p.ConvertedTo}
 	acts := []map[string]any{}
 	mine := me != nil && p.OwnerID == me.ID
+	// Regrowth: a stand/crop harvested by any previous owner is worth less
+	// until it regrows (parcel_harvest_state, harveststate.go). Unowned →
+	// the quoted price is already discounted; owned → the sell quote is.
+	regen, regenProg := 1.0, 1.0
+	{
+		var hAt *time.Time
+		if claim != nil {
+			hAt = claim.HarvestedAt
+		} else if st := s.inheritedHarvest(ctx, sess.ID, p.ParcelID); st != nil {
+			t := st.HarvestedAt
+			hAt = &t
+		}
+		if hAt != nil {
+			regen, regenProg = regenFactor(harvestKindOf(p.Landuse, "", p.ParcelID), hAt, p.ParcelID, "", time.Now())
+			g["regrowth"] = map[string]any{"factor": r2(regen), "progress": r2(regenProg), "harvested_at": hAt, "note": "price × factor while the stand/crop regrows (timber 510 min to full value, crops one cycle)"}
+			if p.Owner == nil {
+				p.Price = int(math.Max(10, math.Round(float64(p.Price)*regen)))
+				g["price_coins"] = p.Price
+			}
+		}
+	}
 	water, _ := blocks["water"].(map[string]any)
 	inWP := water != nil && water["water_protection"] != nil
 	bioXP := 100
@@ -1037,7 +1058,7 @@ func (s *Server) inspectGame(ctx context.Context, sess dbgen.GameSession, p agen
 			eco := s.harvestPayout(p.KgCode, *claim, base, organic)
 			acts = append(acts, map[string]any{"action": "harvest", "call": "POST /api/harvest-parcel {session_id, player_id, parcel_id, crop_group, organic}", "economy": eco})
 		}
-		acts = append(acts, map[string]any{"action": "sell", "call": "POST /api/sell-parcel {session_id, player_id, claim_id}", "claim_id": p.ClaimID, "coins": p.Price * 6 / 10})
+		acts = append(acts, map[string]any{"action": "sell", "call": "POST /api/sell-parcel {session_id, player_id, claim_id, parcel_id, crop_group?}", "claim_id": p.ClaimID, "coins": sellPrice(int64(p.Price), regen), "note": "60 % of the purchase price × regrowth factor"})
 	}
 	g["actions"] = acts
 	if bio, err := s.Q.GetSessionBiodiversityPercent(ctx, sess.ID); err == nil {
