@@ -960,6 +960,21 @@ func (s *Server) handleWarmRunPlan(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 	plan := s.loadOrMakePlan(time.Now())
+	// ?reset=1: forget which patches were kicked (the queue is in-memory —
+	// after a restart "started" patches never run) and re-queue only the
+	// ones already due by the clock; the rest fire on their normal slots.
+	if r.URL.Query().Get("reset") == "1" {
+		plan.Started = map[string]bool{}
+		now := time.Now()
+		midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		slot := 24 * time.Hour / time.Duration(max(len(plan.Patches), 1))
+		limit = 0
+		for i := range plan.Patches {
+			if now.After(midnight.Add(time.Duration(i) * slot)) {
+				limit++
+			}
+		}
+	}
 	pulled, kgs := 0, 0
 	for i := range plan.Patches {
 		if pulled >= limit {
@@ -976,7 +991,7 @@ func (s *Server) handleWarmRunPlan(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if pulled > 0 {
+	if pulled > 0 || r.URL.Query().Get("reset") == "1" {
 		s.savePlan(plan)
 	}
 	kgs += s.warmBoostFocusRun()

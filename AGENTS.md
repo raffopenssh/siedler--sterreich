@@ -165,7 +165,7 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
 - **Boost focus** (`srv/warmboost.go`): 2nd line of `WARM_BOOST` `focus=<Gemeinde name|code|lon,lat>,<km>`
   (e.g. `focus=Wien,30`) — while boosted, *in addition to* the boost plan, every v2.4 KG whose centre lies within
   the radius is queued (prio 1 → ahead of daily patches, nearest first, fresh skipped) at startup, every 2 h and
-  on `run-plan`; `/api/warm/status` → `policy.boost_focus{label, v24_kgs, warm, cells}`. Wien+15 km = 73 KGs / 218 distinct cells (~40 min); 30 km would be ~960 cells. `POST /api/warm/trim?reason=daily|max=N` drops queued jobs (queue is in-memory — a restart empties it; started plan patches are not re-queued).
+  on `run-plan`; `/api/warm/status` → `policy.boost_focus{label, v24_kgs, warm, cells}`. Wien+15 km = 73 KGs / 218 distinct cells (~40 min); 30 km would be ~960 cells. `POST /api/warm/run-plan?reset=1` re-arms today's plan after a restart (clears `started`, queues only the patches already due; the rest fire on their slots). `POST /api/warm/trim?reason=daily|max=N` drops queued jobs (queue is in-memory — a restart empties it; started plan patches are not re-queued).
 - **Session**: `POST /api/session/create` → `warmGemeinde` (medium prio);
   `prewarmKGs` (siblings.go) adds KGs along a water flowpath.
 - **Interest** (`srv/luckyinterest.go`): the spawn point inside a chosen cluster/Gemeinde is nudged to the most
