@@ -12,11 +12,12 @@ per chunk.
 ## Files
 
 ```
-tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.1.1,
+tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (0.2.0, commit 0ccea07,
                                 bevdirect client `cells_for`/`BevDirect.cell`) + ./ne_cells with pins;
                                 INSTALL_UNITS=1 also installs+enables the systemd units (sudo)
-tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless-py 0.1.1's copy; algo/pack byte-identical
-                                to umfeld commit 3f26b3b, 2026-10-04) + pyproject.toml
+tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless-py 0.2.0's copy; algo/pack byte-identical
+                                to umfeld commit 3f26b3b, 2026-10-04) + change.py (NOT frozen: ap digests,
+                                chunk rows, NECH packing — change protocol) + pyproject.toml
 tools/ne-report/ne_report.py    the pipeline for one or more KGs (see --help)
 tools/ne-report/run.sh          driver: KG list = today's rotation from GET /api/contrib/plan (srv/contrib.go),
                                 else a 3-KG fallback sample — never the whole v2.4 universe
@@ -93,6 +94,26 @@ nor `api_cache` cells, so `/api/lucky` is unaffected. ≈ 16 KGs × ~10 cells �
   same bodies/answers; the old path still answers for now). `/head` stays on the public `/api/v1`.
 - Expected: the first report per KG with `bevdirect@v0.3.0` is stored as the new baseline
   (`baseline:"this_report"`); `chunks_changed` appears again from the second run on.
+
+## Change protocol (vtcseamless-py 0.2.0, 2026-10-08)
+
+umfeld's NE change protocol is live and backwards compatible (spec: umfeld `/api/v1/docs/llm.txt` § NE cells).
+Same token, same report POST; two additions in `ne_report.py`:
+
+1. The report is built in-process with `ne_cells.change.epoch_report_ap` (= `ne_cells report` +
+   `chunks_ap{chunk: digest_ap}` + `ap_version:"ap-1"`): per res-10 chunk the sha256[:16] of its LU rows with the
+   two register-derived bytes (`gk`, `n_parc`) zeroed and K rows dropped — so a split/merge that leaves the
+   statistics untouched never counts as change.
+2. When the answer lists `want_chunks[]` (chunks whose statistics are new to the server: **every chunk once** for
+   the baseline, afterwards only changed ones) `send_wanted_chunks` posts the stripped rows of exactly those chunks
+   from the NEC1 section already in RAM to `POST /contrib/api/v1/ne/{kg}/chunks?observer=siedler-oesterreich`
+   (binary `NECH` bodies, split ≤ 1.5 MB, 429 honoured). Register bytes, K rows and inputs never leave us; nothing
+   new is written to disk. `meta.chunks{wanted, posted, bodies, stored, seen, rejected, deltas, http[]}`,
+   log line `chunks wanted=… → stored=…`. Public result: `GET umfeld /api/v1/ne/stats?kg=<kg>` and `chg` on
+   `/api/v1/ne/cell/{h3}`.
+
+Verify after a run: `meta.post.answer.want_chunks` present, `meta.chunks.stored > 0` on the first (baseline) pass,
+`want_chunks: []` / "nothing to upload" on an unchanged re-run.
 
 ## Validation 2026-10-04 (bevdirect-serve v0.2.1, epoch 2026-10)
 

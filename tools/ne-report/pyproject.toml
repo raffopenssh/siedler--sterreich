@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ne_cells"
-version = "2.1.0"
-description = "Nutzungseinheit cells: deterministic H3-cell statistics from the Austrian cadastre (algo ne-cells-2)"
+version = "2.2.0"
+description = "Nutzungseinheit cells: deterministic H3-cell statistics from the Austrian cadastre (algo ne-cells-2) + change.py (ap digests, chunk rows)"
 requires-python = ">=3.11"
 # PINNED: bit-identity across peers depends on the bundled GEOS in this exact shapely wheel.
 dependencies = ["shapely==2.1.2", "h3==4.5.0"]

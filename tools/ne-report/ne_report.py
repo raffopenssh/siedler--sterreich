@@ -14,9 +14,13 @@ Pipeline (contract: docs/ne-report.md, umfeld's docs/ne-cells.md):
      cells_n wins; a lossy build is flagged change_suspect:"coverage_lossy" and its diffs are ignored).
      Source is derived from bevdirect_version in the documents — never pass --source.
      A report is only built from ≥ 1 full aligned cell; a viewport that cannot be covered is skipped.
-  4. python -m ne_cells report KG.nec --observer siedler-oesterreich  → data/ne-reports/KG.<date>.json
+  4. ne_cells.change.epoch_report_ap(KG.nec) (= `ne_cells report` + chunks_ap: per chunk the digest of its rows with
+     the register bytes gk/n_parc zeroed, change protocol ≥ vtcseamless-py 0.2.0) → data/ne-reports/KG.<date>.json
   5. POST {umfeld}/contrib/api/v1/ne/{kg}/report with `Authorization: Bearer $NE_PEER_TOKEN` if a token is configured,
-     else a logged no-op. The answer's coverage{} / change_suspect is logged and stored; chunks_changed from an
+     else a logged no-op. When the answer lists want_chunks (chunks whose statistics are new to the server — every
+     chunk once for the baseline, then only changed ones) the stripped rows of exactly those chunks are posted from
+     RAM as NECH bodies ≤ 1.5 MB to POST …/ne/{kg}/chunks?observer=<label> (register bytes zeroed, no K rows, nothing
+     new on disk); meta.chunks{posted,stored,seen,rejected,deltas}. The answer's coverage{} / change_suspect is logged and stored; chunks_changed from an
      answer that carries change_suspect is never surfaced as change (`change` in the meta is then null).
 
 Run through the venv: tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py 05007
@@ -32,9 +36,12 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from vtcseamless.bevdirect import BevDirect, PendingError, ServerError, cell_bbox, cells_for
+from ne_cells.change import chunk_rows, epoch_report_ap, pack_chunk_rows
+from ne_cells.pack import MAGIC_LU, unpack_sections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -185,6 +192,67 @@ def post_report(umfeld, kg, report_bytes, token, prefix="/contrib"):
         return e.code, e.read()
 
 
+CHUNKS_BODY_MAX = 1_500_000   # umfeld's limit is 2 MB per POST …/chunks
+
+
+def split_chunk_bodies(rows, limit=CHUNKS_BODY_MAX):
+    """Chunk-row dicts whose packed NECH size stays under `limit` (order = chunk id)."""
+    out, cur, size = [], {}, 6
+    for c in sorted(rows):
+        n = 12 + len(rows[c])
+        if cur and size + n > limit:
+            out.append(cur)
+            cur, size = {}, 6
+        cur[c] = rows[c]
+        size += n
+    if cur:
+        out.append(cur)
+    return out
+
+
+def post_chunks(umfeld, kg, observer, body, token, prefix="/contrib"):
+    url = f"{umfeld}{prefix}/api/v1/ne/{kg}/chunks?observer={urllib.parse.quote(observer)}"
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"User-Agent": UA, "Accept": "application/json",
+                                          "Content-Type": "application/octet-stream", "Authorization": "Bearer " + token})
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                time.sleep(max(1, int(e.headers.get("Retry-After") or 2)))
+                continue
+            return e.code, e.read()
+    return 0, b""
+
+
+def send_wanted_chunks(a, kg, section, want, token):
+    """Change protocol step 2: the stripped rows of exactly the chunks umfeld asked for, from the section in RAM."""
+    rows = chunk_rows(section.raw, section.header["cells_n"], want)
+    missing = sorted(set(want) - set(rows))
+    if missing:
+        log(f"{kg}: want_chunks lists {len(missing)} chunks we have no rows for (ignored): {missing[:5]}")
+    tot = dict(wanted=len(want), posted=len(rows), bodies=0, stored=0, seen=0, rejected=0, deltas=0, http=[])
+    for part in split_chunk_bodies(rows):
+        st, body = post_chunks(a.umfeld, kg, a.observer, pack_chunk_rows(part), token, a.contrib_prefix)
+        tot["bodies"] += 1
+        tot["http"].append(st)
+        try:
+            ans = json.loads(body)
+        except Exception:
+            ans = {}
+        if st != 200 or not isinstance(ans, dict):
+            log(f"{kg}: POST chunks ({len(part)} chunks) HTTP {st}: {body[:300].decode('utf-8', 'replace')}")
+            continue
+        for k in ("stored", "seen", "rejected"):
+            tot[k] += int(ans.get(k) or 0)
+        tot["deltas"] += len(ans.get("deltas") or [])
+    log(f"{kg}: chunks wanted={tot['wanted']} posted={tot['posted']} in {tot['bodies']} bodies → "
+        f"stored={tot['stored']} seen={tot['seen']} rejected={tot['rejected']} deltas={tot['deltas']}")
+    return tot
+
+
 def classify_change(kg, ans):
     """Read the /contrib answer: coverage{} (the operator's per-bbox rule: identical bbox → most cells_n
     wins) and change_suspect. Logged in full; `chunks_changed` is surfaced as change ONLY when the answer
@@ -289,8 +357,10 @@ def process_kg(a, kg):
     log(f"{kg}: build ok in {time.time() - t0:.0f}s: source={summary['source']} cells={summary['cells']} kcells={summary['kcells']} "
         f"digest={summary['digest']} (umfeld lu cells_n={umfeld_lu_n}, Δ={summary['cells'] - umfeld_lu_n if umfeld_lu_n is not None else '?'})")
 
-    report_s = run_ne_cells(["report", nec, "--observer", a.observer], capture_stdout=True)
-    report = json.loads(report_s)
+    with open(nec, "rb") as f:
+        section = [sec for sec in unpack_sections(f.read()) if sec.magic == MAGIC_LU][0]
+    report = epoch_report_ap(section, a.observer)   # `ne_cells report` + chunks_ap / ap_version
+    report_s = json.dumps(report, separators=(",", ":"))
     report_path = os.path.join(a.out, f"{kg}.{today}.json")
     with open(report_path + ".tmp", "w") as f:
         f.write(report_s)
@@ -299,8 +369,10 @@ def process_kg(a, kg):
                 input_rule="union-of-aligned-cells", cells=[dict(i=i, j=j) for i, j in cells], full_cells=len(full), fetched=fetched,
                 build=summary, umfeld=dict(lu_cells_n=umfeld_lu_n, lu_digest=umfeld_lu_digest, lu_source=hdr.get("source"),
                                            bev_cells_n=bev_hdr.get("cells_n"), bev_digest=bev_hdr.get("digest"), bev_source=bev_hdr.get("source")),
-                report=dict(digest=report["digest"], cells_n=report["cells_n"], chunks=len(report["chunks"]), chunks_total=report["chunks_total"]))
-    log(f"{kg}: report → {report_path}: digest={report['digest']} cells_n={report['cells_n']} chunks={len(report['chunks'])}/{report['chunks_total']}")
+                report=dict(digest=report["digest"], cells_n=report["cells_n"], chunks=len(report["chunks"]), chunks_total=report["chunks_total"],
+                            chunks_ap=len(report.get("chunks_ap") or {}), ap_version=report.get("ap_version")))
+    log(f"{kg}: report → {report_path}: digest={report['digest']} cells_n={report['cells_n']} chunks={len(report['chunks'])}/{report['chunks_total']} "
+        f"chunks_ap={len(report.get('chunks_ap') or {})}")
 
     token, token_src = load_token(a.token_file)
     if not token:
@@ -315,6 +387,11 @@ def process_kg(a, kg):
         meta["post"] = dict(status=st, answer=ans, token_source=token_src)
         if st == 200:
             meta["change"] = classify_change(kg, ans)
+            want = ans.get("want_chunks") or []
+            if want:
+                meta["chunks"] = send_wanted_chunks(a, kg, section, want, token)
+            else:
+                log(f"{kg}: want_chunks empty — nothing to upload")
         else:
             log(f"{kg}: POST HTTP {st}: {json.dumps(ans)[:400]}")
     with open(os.path.join(a.out, f"{kg}.{today}.meta.json"), "w") as f:

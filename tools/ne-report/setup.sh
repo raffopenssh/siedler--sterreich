@@ -15,9 +15,9 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/pip install --quiet --upgrade pip
 # vtcseamless-py (MIT) — the bevdirect-serve client on the 0.02° grid (`cells_for`, `BevDirect.cell`);
-# pinned to a tag. It ships its own copy of ne_cells (algo/pack byte-identical to ours), which the
+# pinned to a commit (0.2.0 change protocol, no tag yet). ne_cells/change.py (not frozen) is vendored from the same commit. It ships its own copy of ne_cells (algo/pack byte-identical to ours), which the
 # vendored package below overwrites so the frozen reference in ./ne_cells stays authoritative.
-.venv/bin/pip install --quiet --no-deps "git+https://github.com/raffopenssh/vtcseamless-py@${VTCSEAMLESS_PY_TAG:-v0.1.1}"
+.venv/bin/pip install --quiet --no-deps "git+https://github.com/raffopenssh/vtcseamless-py@${VTCSEAMLESS_PY_TAG:-0ccea07}"
 # `pip install .` honours the pins in pyproject.toml (shapely==2.1.2, h3==4.5.0).
 .venv/bin/pip install --quiet "$HERE"
 .venv/bin/python - <<'EOF'
