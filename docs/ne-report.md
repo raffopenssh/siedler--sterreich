@@ -112,8 +112,15 @@ Same token, same report POST; two additions in `ne_report.py`:
    log line `chunks wanted=… → stored=…`. Public result: `GET umfeld /api/v1/ne/stats?kg=<kg>` and `chg` on
    `/api/v1/ne/cell/{h3}`.
 
+3. **Step 0, header first** (umfeld 2026-10-08): the report is first POSTed *without* `chunks{}`/`chunks_ap{}`
+   (~300 B). umfeld dedupes a header-only report on token + source class + algo + digest + epoch — bbox-independent —
+   and answers `unchanged:true` when our last report of that KG carried the same digest; the chunk list (40–400 KB)
+   is then not sent at all (`meta.post.header_only:true`, log "header-only report: unchanged"). Any other answer
+   (changed digest, first report, old server → 4xx) is followed by the full report as before. `meta.post_head{}`
+   keeps the step-0 answer. Full reports with `chunks{}` behave unchanged. Protocol: umfeld `/api/v1/docs/ne-change.md`.
+
 Verify after a run: `meta.post.answer.want_chunks` present, `meta.chunks.stored > 0` on the first (baseline) pass,
-`want_chunks: []` / "nothing to upload" on an unchanged re-run.
+`unchanged:true` + `header_only:true` (no chunk list sent) on an unchanged re-run.
 
 ## Validation 2026-10-04 (bevdirect-serve v0.2.1, epoch 2026-10)
 

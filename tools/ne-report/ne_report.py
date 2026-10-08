@@ -17,7 +17,9 @@ Pipeline (contract: docs/ne-report.md, umfeld's docs/ne-cells.md):
   4. ne_cells.change.epoch_report_ap(KG.nec) (= `ne_cells report` + chunks_ap: per chunk the digest of its rows with
      the register bytes gk/n_parc zeroed, change protocol ≥ vtcseamless-py 0.2.0) → data/ne-reports/KG.<date>.json
   5. POST {umfeld}/contrib/api/v1/ne/{kg}/report with `Authorization: Bearer $NE_PEER_TOKEN` if a token is configured,
-     else a logged no-op. When the answer lists want_chunks (chunks whose statistics are new to the server — every
+     else a logged no-op. Step 0 first: the header alone (no chunks{}/chunks_ap{}) — umfeld dedupes it on token +
+     source class + algo + digest + epoch (bbox-independent) and answers unchanged:true when our last report of the KG
+     had the same digest, so an unchanged re-pass never sends the chunk list; otherwise the full report follows. When the answer lists want_chunks (chunks whose statistics are new to the server — every
      chunk once for the baseline, then only changed ones) the stripped rows of exactly those chunks are posted from
      RAM as NECH bodies ≤ 1.5 MB to POST …/ne/{kg}/chunks?observer=<label> (register bytes zeroed, no K rows, nothing
      new on disk); meta.chunks{posted,stored,seen,rejected,deltas}. The answer's coverage{} / change_suspect is logged and stored; chunks_changed from an
@@ -379,12 +381,28 @@ def process_kg(a, kg):
         log(f"{kg}: POST skipped — no peer token ({a.token_file} absent and NE_PEER_TOKEN unset)")
         meta["post"] = dict(status="skipped", reason="no token")
     else:
-        st, body = post_report(a.umfeld, kg, report_s.encode(), token, a.contrib_prefix)
+        # Change protocol step 0 (umfeld 2026-10-08): a header-only report (no chunks{}/chunks_ap{}) is
+        # deduped on token + source class + algo + digest + epoch, bbox-independent. `unchanged:true` =
+        # our last report of this KG had the same digest → the chunk list (≈ 40–400 KB) is not sent at
+        # all. Any other answer (changed, first report, old server → 4xx) falls through to the full POST.
+        head = {k: v for k, v in report.items() if k not in ("chunks", "chunks_ap")}
+        st, body = post_report(a.umfeld, kg, json.dumps(head, separators=(",", ":")).encode(), token, a.contrib_prefix)
         try:
             ans = json.loads(body)
         except Exception:
             ans = dict(raw=body[:500].decode("utf-8", "replace"))
-        meta["post"] = dict(status=st, answer=ans, token_source=token_src)
+        meta["post_head"] = dict(status=st, answer=ans)
+        if st == 200 and ans.get("unchanged") is True:
+            log(f"{kg}: header-only report: unchanged since {ans.get('unchanged_since')} — chunk list not sent")
+            meta["post"] = dict(status=st, answer=ans, token_source=token_src, header_only=True)
+        else:
+            log(f"{kg}: header-only report HTTP {st}: unchanged={ans.get('unchanged')} — sending the full report")
+            st, body = post_report(a.umfeld, kg, report_s.encode(), token, a.contrib_prefix)
+            try:
+                ans = json.loads(body)
+            except Exception:
+                ans = dict(raw=body[:500].decode("utf-8", "replace"))
+            meta["post"] = dict(status=st, answer=ans, token_source=token_src)
         if st == 200:
             meta["change"] = classify_change(kg, ans)
             want = ans.get("want_chunks") or []
