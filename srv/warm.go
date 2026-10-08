@@ -274,6 +274,7 @@ func (s *Server) warmPlanner() {
 	// registry is loaded before the first plan of the day is made.
 	s.enhancedKGsRaw()
 	go s.warmSpreadLoop() // far destinations ≥ 30 km apart (warmspread.go)
+	go s.warmContribLoop() // tonight's NE-report KGs, every day at 14:00 (contrib.go)
 	// Keep-warm (active tier only): the v2.4 KGs of Gemeinden played in the
 	// last week, capped (warmactivity.go). Never the whole v2.4 universe —
 	// that is 1 300+ KGs and would re-download gigabytes a day with no player.
@@ -1199,6 +1200,7 @@ func (s *Server) handleWarmRunPlan(w http.ResponseWriter, r *http.Request) {
 		s.savePlan(plan)
 	}
 	kgs += s.warmBoostFocusRun()
+	kgs += s.warmContribRun()
 	slog.Info("warm: plan pulled forward", "patches", pulled, "kgs", kgs, "remote", r.RemoteAddr)
 	jsonResp(w, map[string]any{"patches_queued": pulled, "kgs_queued": kgs, "plan_patches": len(plan.Patches), "queue_len": len(s.warm.queue)})
 }

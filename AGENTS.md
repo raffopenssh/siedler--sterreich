@@ -177,10 +177,16 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
 - **Contrib rotation** (`srv/contrib.go`, separate from warming): `GET /api/contrib/plan` = today's
   v2.4 KGs for the nightly NE epoch report (`tools/ne-report/run.sh` → umfeld `/contrib`). Each KG gets
   a day of the quarter by `hash(quarter, kg)` → the whole universe (1 400 now, ~4 000 soon) is reported at
-  least once a quarter; nights are filled to ≥ `contribNightMin` 40 KGs with not-yet-reported KGs due later
-  (ahead of schedule, `fill[]`/`ahead_days`); **KGs the prewarmer built < 24 h ago go first** (`cheap[]`, BEV
+  least once a quarter — the quarter is the **change resolution** of the chunk protocol (first report baselines
+  a KG's chunks, later ones upload only changed ones; an unreported KG has no baseline), so full coverage per
+  quarter is mandatory as the universe grows to 7 850. Nights are filled to ≥ `night_min` =
+  `max(40, 1.5 × universe/92)` (`contribNightMinFor`: 1 900 → 40, 3 900 → 64, 7 850 → 128 ≈ 35 min) with
+  not-yet-reported KGs — **overdue first** (promoted mid-quarter after their hash day, `overdue`), then due
+  later (`fill[]`/`ahead_days`); `warmContribRun` (14:00 local daily + on `run-plan`, **independent of the
+  activity tier**, cap `contribWarmCap` 100, reason `contrib`, prio 2) prewarms tonight's non-cheap KGs so the
+  03:30 run is CPU-only (`contrib.warm_last/warm_last_queued`); **KGs the prewarmer built < 24 h ago go first** (`cheap[]`, BEV
   tiles still on bevdirect's disk → CPU only, **uncapped** — everything warm & unreported is reported that night);
-  unreported KGs of the last 2 nights are caught up; cap 120 applies only to KGs needing fresh tiles. Unit timeout 8 h.
+  unreported KGs of the last 2 nights are caught up; cap `night_max` 200 applies only to KGs needing fresh tiles. Unit timeout 8 h.
   Reports are built from **aligned cells only** with `--input-bbox` = the union of those cells (stable bbox per cell block → the operator's coverage rule `coverage{bbox, cells_n, best_cells_n, status}` can compare them; `change_suspect:"coverage_lossy"` = lossy build, its diffs are never surfaced — `meta.change.surfaced`), KGs whose umfeld domain contains no whole aligned cell are skipped (`--min-full-cells 1`, ~55 % of KGs; `0` = report every KG). Verified 2026-10-06 (first real run — until then a silenced SyntaxError in run.sh made every night fall back to the
   3-KG sample): 242 KGs in 88 min, 241 ok / 1 skipped, 241× POST 200, ~13 s build + ~4 s fetch per KG. Recipe for a big
   night: `POST /api/warm/run-plan` in the afternoon → everything lands in `cheap[]`. The plan answers `source:"none"` for

@@ -3,10 +3,18 @@ package srv
 // Contrib rotation — which v2.4 KGs the nightly NE epoch report
 // (tools/ne-report, → umfeld /contrib/api/v1/ne/{kg}/report) should build today.
 //
-// Goal: cover the whole v2.4 universe (1 400 today, ~4 000 soon) at least once
-// per quarter, so umfeld sees a fresh bevdirect digest for every KG about
-// four times a year — and faster when the universe is small: every night
-// runs at least contribNightMin KGs, pulling not-yet-reported KGs forward. Every KG is assigned a day of the quarter by
+// Goal: cover the whole v2.4 universe (1 900 today, ~4 000 soon, 7 850 at the
+// end) at least once per quarter, so umfeld sees a fresh bevdirect digest for
+// every KG about four times a year. That cadence is what makes the change
+// protocol (vtcseamless-py 0.2.0, tools/ne-report) effective: the first report
+// of a KG baselines all its chunks, every later one uploads only the changed
+// chunks — a KG that is never reported has no baseline and its changes are
+// invisible, and the quarter is the change resolution for every KG. Hence
+// night_min scales with the universe (contribNightMinFor: 1.5 × universe/days,
+// 7 850 → 128/night ≈ 35 min, ~300 MB tiles), overdue KGs (promoted mid-quarter
+// after their hash day) are pulled in, and warmContribRun prewarms tonight's
+// list at 14:00 regardless of the player activity tier.
+// Every night runs at least night_min KGs, pulling not-yet-reported KGs forward. Every KG is assigned a day of the quarter by
 // hash(quarter, kg) — stable for the quarter, random across Austria, and new
 // KGs appearing mid-quarter simply fall onto some day without shifting the
 // others. Today's list is the KGs of the last `contribCatchUpDays` days (a
@@ -24,17 +32,22 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const (
 	contribCatchUpDays = 3              // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 40             // run ahead of schedule: fill up to this many KGs a night (~90 MB tiles, ~30 min)
-	contribNightMax    = 120            // cap on KGs needing fresh BEV tiles (≈ 0.25 GB); warm (cheap) KGs are never capped
+	contribNightMin    = 40             // floor: fill up to at least this many KGs a night (~90 MB tiles, ~30 min)
+	contribNightMargin = 1.5            // night_min = max(floor, margin × universe/days) — 1 933 KGs → 40, 3 900 → 64, 7 850 → 128
+	contribNightMax    = 200            // cap on KGs needing fresh BEV tiles (≈ 0.45 GB, ~1 h); warm (cheap) KGs are never capped
+	contribWarmCap     = 100            // KGs of tonight's plan the prewarmer builds in the afternoon (warmContribRun)
+	contribWarmHour    = 14             // local hour the contrib prewarm fires (tiles stay in bevdirect's 24 h RAM LRU until 03:30)
 	contribWarmWindow  = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
 	contribReportDir   = "data/ne-reports"
 )
@@ -47,6 +60,13 @@ func quarterOf(now time.Time) (label string, start time.Time, days int) {
 	days = int(end.Sub(start).Hours()/24 + 0.5)
 	label = start.Format("2006") + "-Q" + string(rune('1'+q))
 	return
+}
+
+// contribNightMinFor scales the nightly minimum with the universe so the
+// whole v2.4 set is swept once a quarter with a 50 % margin for skipped nights.
+func contribNightMinFor(universe, days int) int {
+	n := int(float64(universe)/float64(max(days, 1))*contribNightMargin + 0.999)
+	return max(contribNightMin, n)
 }
 
 // contribDayOf: the day of the quarter (0-based) a KG is reported on.
@@ -64,6 +84,7 @@ type contribPlan struct {
 	Fill        []string `json:"fill"`       // not-yet-reported KGs pulled forward to reach night_min
 	Cheap       []string `json:"cheap"`      // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
 	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
+	Overdue     int      `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
 	NightMin    int      `json:"night_min"`
 	NightMax    int      `json:"night_max"`
 	LeftQ       int      `json:"left_quarter"`     // v2.4 KGs without a report this quarter
@@ -93,7 +114,7 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	}
 	sort.Strings(uni)
 	p := contribPlan{Quarter: label, Day: day, Days: days, Universe: len(uni), CatchUpDays: contribCatchUpDays,
-		NightMin: contribNightMin, NightMax: contribNightMax, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Source: "registry"}
+		NightMin: contribNightMinFor(len(uni), days), NightMax: contribNightMax, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Source: "registry"}
 	if len(uni) == 0 {
 		p.Source = "none"
 		return p
@@ -115,10 +136,12 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		return contribDayOf(label, p.KGs[i], days) > contribDayOf(label, p.KGs[j], days)
 	})
 	// Ahead of schedule: when the hash schedule gives fewer than night_min
-	// KGs, pull forward the KGs due later that have no report this quarter
-	// yet (in due order). A small universe is then swept in weeks instead of
-	// a quarter; once everything is reported the nights are quiet until the
-	// next quarter. The cap protects the night when the universe jumps.
+	// KGs, pull forward the unreported KGs in due order — overdue ones first
+	// (a KG promoted to v2.4 mid-quarter whose hash day already passed would
+	// otherwise never be reported this quarter), then the ones due later. A
+	// small universe is then swept in weeks instead of a quarter; once
+	// everything is reported the nights are quiet until the next quarter.
+	// The cap protects the night when the universe jumps.
 	// Tier 1 — KGs the prewarmer built in the last 24 h: their BEV tiles are
 	// still on bevdirect's disk, so the report costs CPU only (~30 s/KG) —
 	// all of them, no cap. Tier 2 — the rest in due order, up to night_min.
@@ -138,8 +161,8 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		}
 		if _, ok := warmed[kg]; ok {
 			cheap = append(cheap, kg)
-		} else if contribDayOf(label, kg, days) > day {
-			later = append(later, kg)
+		} else {
+			later = append(later, kg) // overdue (< day-catchup) or due later
 		}
 	}
 	sort.SliceStable(cheap, func(i, j int) bool { return warmed[cheap[i]].After(warmed[cheap[j]]) }) // freshest tiles first
@@ -150,12 +173,16 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		p.KGs = p.KGs[:contribNightMax] // only the scheduled/catch-up part needs fresh tiles
 	}
 	for _, kg := range later {
-		if len(p.KGs) >= contribNightMin {
+		if len(p.KGs) >= p.NightMin {
 			break
 		}
 		p.KGs = append(p.KGs, kg)
 		p.Fill = append(p.Fill, kg)
-		p.AheadDays = contribDayOf(label, kg, days) - day
+		if d := contribDayOf(label, kg, days) - day; d > 0 {
+			p.AheadDays = d
+		} else {
+			p.Overdue++
+		}
 	}
 	// Cheap ones last in the list but uncapped: everything warm and unreported
 	// is reported tonight while the tiles are still there.
@@ -223,6 +250,68 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
-		"ahead_days": p.AheadDays, "tonight": len(p.KGs), "night_min": p.NightMin, "universe": p.Universe,
-		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ}
+		"ahead_days": p.AheadDays, "overdue": p.Overdue, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
+		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
+		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load()}
+}
+
+var (
+	contribWarmLast   atomic.Value // RFC3339 of the last warmContribRun
+	contribWarmQueued atomic.Int64
+)
+
+// nextContribNight: the next 03:30 local (ne-report.timer) after now.
+func nextContribNight(now time.Time) time.Time {
+	t := time.Date(now.Year(), now.Month(), now.Day(), 3, 30, 0, 0, now.Location())
+	if !t.After(now) {
+		t = t.AddDate(0, 0, 1)
+	}
+	return t
+}
+
+// warmContribRun queues the KGs the nightly NE report will need fresh BEV
+// tiles for (tonight's plan minus the already-warm `cheap[]`), capped at
+// contribWarmCap, so the 03:30 run finds them in bevdirect's RAM LRU and
+// costs CPU only. Independent of the activity tier: the tiles are fetched
+// once either way (by us now or by ne-report at night) — this only moves the
+// download to the afternoon and makes the KGs playable (lucky) for a day.
+// Returns the number queued.
+func (s *Server) warmContribRun() int {
+	if !kgUniverseOK() {
+		return 0
+	}
+	p := s.contribPlanNow(nextContribNight(time.Now()))
+	cheap := map[string]bool{}
+	for _, kg := range p.Cheap {
+		cheap[kg] = true
+	}
+	n := 0
+	for _, kg := range p.KGs {
+		if n >= contribWarmCap {
+			break
+		}
+		if cheap[kg] {
+			continue
+		}
+		if s.enqueueWarm(kg, "contrib", 2) {
+			n++
+		}
+	}
+	contribWarmLast.Store(time.Now().UTC().Format(time.RFC3339))
+	contribWarmQueued.Store(int64(n))
+	slog.Info("warm: contrib plan queued", "kgs", n, "tonight", len(p.KGs), "cheap", len(p.Cheap), "night_min", p.NightMin, "overdue", p.Overdue)
+	return n
+}
+
+// warmContribLoop fires warmContribRun every day at contribWarmHour local.
+func (s *Server) warmContribLoop() {
+	for {
+		now := time.Now()
+		t := time.Date(now.Year(), now.Month(), now.Day(), contribWarmHour, 0, 0, 0, now.Location())
+		if !t.After(now) {
+			t = t.AddDate(0, 0, 1)
+		}
+		time.Sleep(time.Until(t))
+		s.warmContribRun()
+	}
 }
