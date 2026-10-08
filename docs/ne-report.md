@@ -2,7 +2,7 @@
 
 umfeld-at.exe.xyz publishes "NE cells" (declared land-use statistics per H3 res-12 cell,
 derived from the BEV cadastre; contract: umfeld's `docs/ne-cells.md`). We run our own
-bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.1**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
+bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.3**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
 **observer**: rebuild the same cells from our bevdirect output with the frozen python reference
 package `ne_cells` (algo `ne-cells-2`, shapely 2.1.2 + h3 4.5.0) and POST an **epoch report**
 (digests only — whole build + one per res-10 chunk, no geometry) to
@@ -12,9 +12,11 @@ per chunk.
 ## Files
 
 ```
-tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs ./ne_cells with pins;
+tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.1.1,
+                                bevdirect client `cells_for`/`BevDirect.cell`) + ./ne_cells with pins;
                                 INSTALL_UNITS=1 also installs+enables the systemd units (sudo)
-tools/ne-report/ne_cells/       vendored frozen reference package (umfeld commit 3f26b3b, 2026-10-04) + pyproject.toml
+tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless-py 0.1.1's copy; algo/pack byte-identical
+                                to umfeld commit 3f26b3b, 2026-10-04) + pyproject.toml
 tools/ne-report/ne_report.py    the pipeline for one or more KGs (see --help)
 tools/ne-report/run.sh          driver: KG list = today's rotation from GET /api/contrib/plan (srv/contrib.go),
                                 else a 3-KG fallback sample — never the whole v2.4 universe
@@ -37,12 +39,29 @@ tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py --help
 sudo systemctl start ne-report.service; journalctl -u ne-report -f
 ```
 
-Per KG the pipeline: `GET umfeld /api/v1/ne/{kg}/head` → `lu.header.input_bbox` (404 = not built
-yet → skip) → fetch every 0.02° bevdirect cell intersecting it (`i=floor(lon/0.02)`,
-`j=floor(lat/0.02)`, ≤ 2 in flight, `pending` → wait `retry_after_s` and re-GET, never builds on
+Per KG the pipeline: `GET umfeld /api/v1/ne/{kg}/head` → `lu.header.input_bbox` = the KG's viewport
+(404 = not built yet → skip) → the **aligned** 0.02° cells covering it (`vtcseamless.bevdirect.cells_for`,
+`ix=floor(lon/0.02)`), one `GET /viewport?west=ix*0.02&south=iy*0.02&east=+0.02&north=+0.02` per cell
+(`BevDirect.cell`, ≤ 2 in flight, `pending` → wait `retry_after_s` and re-GET, never builds on
 `ready:false`/`truncated`) → `python -m ne_cells build --kg KG --epoch YYYY-MM --bevdirect cell_*.json
---input-bbox W,S,E,N` (source derived from the documents' `bevdirect_version`; `--source` is never
-passed) → `python -m ne_cells report --observer siedler-oesterreich` → file → POST.
+--input-bbox <union of the aligned cells>` (source derived from the documents' `bevdirect_version`;
+`--source` is never passed) → `python -m ne_cells report --observer siedler-oesterreich` → file → POST.
+
+**Why aligned cells and the cell union (2026-10-08).** Every "changed" chunk we had produced before
+(678 `since_last` diffs, e.g. 67407, 65509, 51222, 51240) was an artefact: a later, wider viewport
+contained the whole of a parcel an earlier, smaller one held truncated (`complete:false` at the fetched
+tile edge), so the chunk digest differed. And bevdirect-serve's multi-cell `/viewport` keeps one
+truncated copy of parcels wider than cell + pad (0.028°), so a stitched viewport never equals the
+operator's aligned-cell build. With `--input-bbox` = union of the aligned cells the report has a
+stable bbox per cell block and the operator's coverage rule can compare it: identical bbox → most
+`cells_n` wins (`coverage{bbox, cells_n, best_cells_n, status:"best"|…}`); a lossy build is flagged
+`change_suspect:"coverage_lossy"` and its diffs are ignored. `ne_report.py` logs `coverage` /
+`change_suspect` and surfaces change (`meta.change.surfaced:true`) only when the answer has no
+`change_suspect` and is not `unchanged:true`. A KG whose viewport contains no whole aligned cell is
+skipped (`viewport_too_small`, `--min-full-cells 1`; ~55 % of the KGs reported so far — pass `0` to
+report every KG): one single-cell report is worth more to the change signal than many partial ones.
+Historic reports are not touched — the operator re-classifies them on read. Meta files now carry
+`viewport_bbox` (umfeld's), `input_bbox` (the union), `full_cells`, `fetched[].incomplete`, `change{}`.
 
 **Token:** `ne-peer.key` in the repo root, else `$NE_PEER_TOKEN` (the service also reads
 `tools/ne-report/ne-report.env`, gitignored). Without one the POST is a no-op with the log line
@@ -92,12 +111,9 @@ python (11–44 s). bevdirect's cell cache went 2 → 37 cells over the three KG
 
 ## Contract surprises
 
-1. **`"footprints": null`** — bevdirect-serve v0.2.1 emits `null` instead of `[]` for a layer with
-   no objects in the cell (05007 cell 840_2402). The frozen `ne_cells.canon._one_bevdirect` does
-   `doc.get("footprints", [])` and raises `TypeError` on `None`. `ne_report.py` normalises null
-   layers to `[]` before saving the cell (recorded as `null_layers_normalised`); only the
-   informative `inputs[].file_sha256` sees that, the record digest is unaffected (63330 proves it).
-   Worth telling umfeld (`or []`) or bevdirect (emit `[]`).
+1. ~~**`"footprints": null`**~~ — bevdirect-serve ≤ v0.3.2 emitted `null` instead of `[]` for a layer with
+   no objects in the cell (05007 cell 840_2402); the frozen `ne_cells.canon` crashed on `None`.
+   Fixed in bevdirect-serve **v0.3.3** (`[]`); vtcseamless-py's client also normalises older servers.
 2. ~~`/api/warm/status` has no `v24_kgs` yet~~ — it has all 1 386 since 2026-10-06; `run.sh` now uses
    `/api/contrib/plan` (quarterly rotation) instead, never the whole list.
 3. `ne_cells build` only checks `ready`, not `truncated`, on bevdirect documents — we check both.

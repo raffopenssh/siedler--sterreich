@@ -150,3 +150,14 @@ no baseline reset, report source becomes `bevdirect@v0.3.2`. `tools/ne-report` h
 built from aligned cells (`ne_report.py` GRID 0.02, floor-aligned), so no report carries the
 duplicates and nothing needs re-reporting. Unit re-tuned after install.sh (`User=exedev`,
 `-cells 120 -prefetch 0`), `bevdirect-serve.prev` = v0.3.1.
+
+## 2026-10-08 — bevdirect-serve v0.3.3 (empty layers `[]`), ne-report on aligned cells + cell-union bbox
+
+Release binary v0.3.3 (same comparable tag class, no geometry change): empty/unrequested layers are
+`[]` instead of `null` (the frozen `ne_cells/canon.py` crashed on null). Unit restored after
+install.sh (`User=exedev`, `-cells 120 -prefetch 0`), `bevdirect-serve.prev` = v0.3.2,
+`bevdirectVersion` + impressum/imprint bumped. `tools/ne-report` now uses vtcseamless-py v0.1.1
+(`cells_for`, `BevDirect.cell`, no disk cache), builds from aligned 0.02° cells only and passes the
+union of those cells as `--input-bbox` (stable bbox per cell block for the operator's coverage rule;
+`coverage{}` / `change_suspect` read from the `/contrib` answer, suspect diffs never surfaced), skips
+KGs whose viewport holds no whole aligned cell. Historic reports untouched (re-classified on read).

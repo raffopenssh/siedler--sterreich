@@ -1,5 +1,6 @@
-"""Canonical input: adapters from the index export (/k/api/v1/spatial/*) and from a
-bevdirect fetch to one record schema. Everything downstream only sees these."""
+"""Canonical input: adapters from a per-layer row export (`*_from_index`) and from
+bevdirect-serve `/viewport` documents (`from_bevdirect`) to one record schema. Everything
+downstream only sees these."""
 import shapely
 from shapely.geometry import shape
 from shapely.ops import unary_union
