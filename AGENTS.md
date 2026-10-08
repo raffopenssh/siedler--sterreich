@@ -295,7 +295,12 @@ never read `api_cache.data` with raw SQL expecting JSON. 200 bodies from
 `cachedFetch` get `Cache-Control: private, max-age=3600` (`browserCache`,
 skipped for `ready:false`) so reloads don't re-download cells/layers.
 Disk hygiene: bevdirect keeps tiles in RAM only (no prune timer needed), journald
-capped at 100 M (`/etc/systemd/journald.conf.d/size.conf`).
+capped at 100 M (`/etc/systemd/journald.conf.d/size.conf`). `db.sqlite3` has
+`auto_vacuum=INCREMENTAL` (set by hand 2026-10-08) and the janitor runs
+`PRAGMA incremental_vacuum` after each prune, so the file tracks the live
+api_cache (~1.2 GB = one day of warmed cells + NE docs) instead of growing. Big
+regenerable disk users: `~/.cache/go-build` (`go clean -cache`), `~/.cache/ms-playwright`
+(xbrowser), `/tmp` debris, `tools/xbrowser/out`.
 
 Migration: `db/migrations/NNN-name.sql` ending with `INSERT OR IGNORE INTO
 migrations (migration_number, migration_name) VALUES (NNN, 'NNN-name');`.
