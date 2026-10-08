@@ -2546,6 +2546,11 @@ function neDeadShare(pid) {
 function parcelVeg(f) {
   const lp = G.terrainParcels[f.properties.parcel_id];
   if (!lp) return null;
+  if (f._vegGen === G.lidarGen && f._vegLp === lp) return f._veg;   // pure function of static rows — memoised per feature
+  f._vegGen = G.lidarGen; f._vegLp = lp; f._veg = parcelVegRaw(f, lp);
+  return f._veg;
+}
+function parcelVegRaw(f, lp) {
   const cf = correctedFracs(lp.fracs, f.properties);
   if (cf) {
     const tree = Math.min(1, cf.tree || 0);
@@ -2724,7 +2729,10 @@ function resolveClaims() {
 function parcelHashOf(pid) { const f = G.parcelPolys.find(x => x.properties.parcel_id === pid); return f && f.properties.ph || null; }
 
 /** Build EZ index from loaded parcel polygons — groups parcels by kg_code + ez */
+let _ezIdxN = -1, _ezIdxM = -1;
 function buildEZIndex() {
+  if (_ezIdxN === G.parcelPolys.length && _ezIdxM === G.parcels.length && G.ezIndex) return;   // nothing new since the last build
+  _ezIdxN = G.parcelPolys.length; _ezIdxM = G.parcels.length;
   G.ezIndex = {};
   for (const f of G.parcelPolys) {
     const p = f.properties;
@@ -2837,6 +2845,15 @@ window.addEventListener('resize', updateQuestScrollHint);
 /** Owned, still-unconverted parcels of the player, nearest to camera first. */
 /** O(1) parcel polygon lookup; index rebuilt lazily when G.parcelPolys grows. */
 let _polyIdx = null, _polyIdxN = -1;
+/** Loaded polygons that carry game state (claims, harvest clocks) — the only
+ *  ones the living overlays need to visit. Walking all 18 000 Vienna polygons
+ *  per frame for the handful of reserves cost more than drawing them. */
+function statefulPolys(claimMap) {
+  const out = [], seen = new Set();
+  for (const pid in claimMap) { const f = polyById(pid); if (f) { out.push(f); seen.add(pid); } }
+  for (const h of G.harvestStates) { if (seen.has(h.parcel_id)) continue; const f = polyById(h.parcel_id); if (f) { out.push(f); seen.add(h.parcel_id); } }
+  return out;
+}
 function polyById(id) {
   if (!_polyIdx || _polyIdxN !== G.parcelPolys.length) {
     _polyIdx = {}; for (const f of G.parcelPolys) _polyIdx[f.properties.parcel_id] = f;
@@ -3204,6 +3221,14 @@ function toGeo(x, y) {
 // emit many small pixel deltas, mice a few big line deltas – both are normalised
 // to zoom levels and clamped per event so one notch never jumps half a map.
 const ZOOM = { min:13, max:20, target:null, anchor:null, ax:0, ay:0, raf:null, last:0 };
+let _zoomGestureAt = 0;   // last direct zoom change (pinch) — drawCachedBase skips rebuilds while a gesture is live
+/** Mouse wheels on Windows deliver a few big notches, trackpads a stream of
+ *  tiny deltas; both are clamped per event *and* the target may never run
+ *  more than ZOOM_LEAD levels ahead of the camera. Without the lead cap a
+ *  slow frame (Vienna, 2 fps while the base rebuilds) let a dozen queued
+ *  notches pile up and the map shot three levels past where the user stopped
+ *  — the "hectic" wheel. */
+const ZOOM_LEAD = 1.25;
 function clampZoom(z) { return Math.max(ZOOM.min, Math.min(ZOOM.max, z)); }
 function wheelZoomDelta(e) {
   let d = e.deltaY;
@@ -3221,11 +3246,18 @@ function anchorGeoAt(geo, x, y) {
 function smoothZoomBy(dz, x, y, fromButton) {
   if (!dz) return;
   // cancel fly/animateCamera but keep our own ease (stopCameraAnims would reset it)
-  const base = ZOOM.target == null ? G.cam.zoom : ZOOM.target;
+  // A wheel reversal must answer at once: drop whatever lead is still queued in
+  // the old direction instead of slowly eating into it (that read as "the zoom
+  // goes the wrong way" on laggy machines — the map kept zooming out for a
+  // second after the user had already started wheeling back in).
+  let base = ZOOM.target == null ? G.cam.zoom : ZOOM.target;
+  if (!fromButton && ZOOM.target != null && (ZOOM.target - G.cam.zoom) * dz < 0) base = G.cam.zoom;
   stopCameraAnims();
   G.geo.follow = false;
   if (G.flow) G.flow.follow = false;
-  ZOOM.target = clampZoom(fromButton ? Math.round(base + dz) : base + dz);
+  let tgt = fromButton ? Math.round(base + dz) : base + dz;
+  if (!fromButton) tgt = Math.max(G.cam.zoom - ZOOM_LEAD, Math.min(G.cam.zoom + ZOOM_LEAD, tgt));
+  ZOOM.target = clampZoom(tgt);
   // a new anchor only when the pointer moved noticeably – keeps the fixed point
   // stable during a continuous scroll so the map doesn't drift
   if (!ZOOM.anchor || Math.abs(x - ZOOM.ax) > 2 || Math.abs(y - ZOOM.ay) > 2) {
@@ -3236,9 +3268,13 @@ function smoothZoomBy(dz, x, y, fromButton) {
 function zoomStep(now) {
   ZOOM.raf = null;
   if (ZOOM.target == null) return;
-  const dt = Math.min(64, now - ZOOM.last); ZOOM.last = now;
-  // exponential ease: ~120 ms time constant, frame-rate independent
-  const k = 1 - Math.exp(-dt / 120);
+  // dt is the *real* frame gap (capped at 400 ms): on a machine that manages
+  // 3 fps the camera must still arrive within a few frames, not crawl for
+  // seconds — a capped 64 ms made the ease frame-rate *dependent* on slow boxes.
+  const dt = Math.min(400, now - ZOOM.last); ZOOM.last = now;
+  // exponential ease: ~120 ms time constant, frame-rate independent; slow
+  // machines get a snappier 70 ms so the wheel never feels laggy
+  const k = 1 - Math.exp(-dt / (perfSlow() ? 70 : 120));
   let z = G.cam.zoom + (ZOOM.target - G.cam.zoom) * k;
   const done = Math.abs(ZOOM.target - z) < 0.002;
   if (done) z = ZOOM.target;
@@ -3287,7 +3323,49 @@ function hillshade(lp) {
 const BASE_PAD = 1.5, BASE_SLICE_MS = 6;
 let _base = null, _baseA = null, _baseAt = 0, _baseSig = '';   // displayed canvas + its anchor + data signature
 let _bb = null, _spare = null, _bbReal = null;                 // build in progress, recycled canvas, real camera while pumping
-let _camMovedAt = 0, _camLast = '';
+let _camMovedAt = 0, _camLast = '', _idleRefreshed = false, _pumpMsFrame = 0, _flushCtx = null;
+
+// ---- Performance tier (PERF) ----
+// Slow machines (office laptops with integrated graphics, old Windows boxes,
+// 4K screens) take seconds for a Vienna base build (15 000 footprints,
+// 18 000 parcels) and the live overlays eat the rest of the frame. We measure
+// instead of guessing: the CPU time of every completed base build (sum of the
+// pump slices) and the live frame time of renderNow. Past the thresholds the
+// game drops to the *low* tier: nature/forest overlays go static, the
+// treasure loop ticks at 10 fps, buildings are flat boxes below street level,
+// crop/tree filler is thinned, the NE apex budget is halved and the wheel
+// zoom snaps faster. Hardware hints (≤ 2 cores / ≤ 2 GB, reduced motion)
+// start in low; DEV.perf('low'|'high'|null) forces a tier.
+const PERF = { forced: null, slow: false, buildMs: 0, frameMs: 0, fastBuilds: 0, builds: 0, slowSince: 0, why: '' };
+function perfSlow() { return PERF.forced != null ? PERF.forced === 'low' : PERF.slow; }
+function perfInit() {
+  try {
+    const hw = navigator.hardwareConcurrency || 4, mem = navigator.deviceMemory || 4;
+    if (hw <= 2 || mem <= 2) { PERF.slow = true; PERF.why = 'hardware'; }
+    if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) { PERF.slow = true; PERF.why = 'reduced-motion'; }
+    const q = new URLSearchParams(location.search).get('perf');
+    if (q === 'low' || q === 'high') PERF.forced = q;
+  } catch (e) {}
+}
+perfInit();
+/** A base build finished: `ms` = CPU time it took across all slices. */
+function perfNoteBuild(ms) {
+  PERF.builds++;
+  PERF.buildMs = PERF.buildMs ? PERF.buildMs * 0.6 + ms * 0.4 : ms;
+  if (!PERF.slow && PERF.builds >= 2 && PERF.buildMs > 450) {
+    PERF.slow = true; PERF.slowSince = performance.now(); PERF.why = 'build ' + Math.round(PERF.buildMs) + ' ms'; PERF.fastBuilds = 0;
+    invalidateBase();
+  } else if (PERF.slow && PERF.why !== 'reduced-motion') {
+    // recover only after a run of genuinely cheap builds (low tier is cheaper, so demand a wide margin)
+    PERF.fastBuilds = ms < 90 ? PERF.fastBuilds + 1 : 0;
+    if (PERF.fastBuilds >= 10 && performance.now() - PERF.slowSince > 60000) { PERF.slow = false; PERF.why = 'recovered'; invalidateBase(); }
+  }
+}
+/** A live frame (renderNow without build pumping) took `ms`. */
+function perfNoteFrame(ms) {
+  PERF.frameMs = PERF.frameMs ? PERF.frameMs * 0.8 + ms * 0.2 : ms;
+  if (!PERF.slow && PERF.frameMs > 34 && ms > 34) { PERF.slow = true; PERF.slowSince = performance.now(); PERF.why = 'frame ' + Math.round(PERF.frameMs) + ' ms'; PERF.fastBuilds = 0; }
+}
 // Labels requested while the cached base layer is built. The base canvas is
 // blitted *under* buildings, treasures and every live overlay, so text drawn
 // into it ended up as a blurred, half-covered watermark ("Conservation area"
@@ -3357,7 +3435,7 @@ function* baseLayerSteps(ctx, W, H, claimMap) {
 
   yield;
   // ---- Draw real landuse polygons (forests, water, roads, etc.) ----
-  if (G.landusePolys.length > 0) drawLandusePolygons(ctx);
+  if (G.landusePolys.length > 0) yield* drawLandusePolygons(ctx);
   yield;
 
   // ---- Natura 2000 protected-area overlay (enhanced mode) ----
@@ -3403,11 +3481,11 @@ function* baseLayerSteps(ctx, W, H, claimMap) {
   yield;
 
   // ---- Landuse sprites (crops, flowers, reeds, vines) ----
-  drawLanduseSprites(ctx, claimMap);
+  yield* drawLanduseSprites(ctx, claimMap);
   yield;
 
   // ---- Trees on forest parcels ----
-  drawForestSprites(ctx, claimMap);
+  yield* drawForestSprites(ctx, claimMap);
   yield;
 
   // ---- Brunnen on owned fields (GW-1) ----
@@ -3416,7 +3494,7 @@ function* baseLayerSteps(ctx, W, H, claimMap) {
   drawUnmappedFlags(ctx, claimMap);
 
   // ---- Draw real building footprints ----
-  if (G.buildingFootprints.length > 0) drawBuildingFootprints(ctx);
+  if (G.buildingFootprints.length > 0) yield* drawBuildingFootprints(ctx);
   yield;
 
   // ---- Hofstellen: tractor + bales beside the real farmstead (FARM-4) ----
@@ -3455,6 +3533,7 @@ function renderNow() {
   syncViewHash();
   const ctx = gctx;
   const W = gc.width, H = gc.height;
+  const _ft0 = performance.now(); _pumpMsFrame = 0;
   smashFrameBegin();
 
   // Build claim lookup
@@ -3510,6 +3589,7 @@ function renderNow() {
   // Scale bar
   drawQuestPing(ctx);
   drawScaleBar(ctx, W, H);
+  perfNoteFrame(performance.now() - _ft0 - _pumpMsFrame);
 }
 /** Force the cached base layer to redraw (background rebuild; swapped in when complete). */
 function invalidateBase() { G.baseGen = (G.baseGen || 0) + 1; }
@@ -3539,18 +3619,33 @@ function pumpBaseBuild(budgetMs) {
   G.cam.lon = a.lon; G.cam.lat = a.lat; G.cam.zoom = a.zoom;
   _bbLabels = _bb.labels;
   const t0 = performance.now(); let done = false;
-  try { do { if (_bb.gen.next().done) { done = true; break; } } while (performance.now() - t0 < budgetMs); }
+  // Canvas 2D is *deferred* in Chromium: the commands recorded here are only
+  // rasterised when the canvas is consumed — i.e. all at once at the first
+  // drawImage of the finished base (a 200 ms hitch on slow machines that no
+  // JS timer attributes). Leave ~40 % of the slice for a forced flush
+  // (1 px drawImage into a scratch canvas) so the raster work is paid inside
+  // the budget as well.
+  try { do { if (_bb.gen.next().done) { done = true; break; } } while (performance.now() - t0 < budgetMs * 0.6); }
   catch (e) { console.error('base build failed', e); done = true; }
   finally { gc = realGc; G.cam.lon = cam.lon; G.cam.lat = cam.lat; G.cam.zoom = cam.zoom; _bbReal = null; _bbLabels = null; }
-  if (done) { _spare = _base; _base = _bb.canvas; _baseA = _bb.anchor; _baseSig = _bb.sig; _baseAt = performance.now(); _baseLabels = _bb.labels; _bb = null; }
+  try { if (!_flushCtx) { const fc = document.createElement('canvas'); fc.width = fc.height = 1; _flushCtx = fc.getContext('2d'); } _flushCtx.drawImage(_bb.canvas, 0, 0, 1, 1); } catch (e) {}
+  const spent = performance.now() - t0; _bb.ms = (_bb.ms || 0) + spent; _pumpMsFrame += spent;
+  if (done) { perfNoteBuild(_bb.ms); _spare = _base; _base = _bb.canvas; _baseA = _bb.anchor; _baseSig = _bb.sig; _baseAt = performance.now(); _baseLabels = _bb.labels; _bb = null; _idleRefreshed = true; }
   return done;
 }
 function drawCachedBase(ctx, W, H, claimMap) {
   const now = performance.now();
   const sig = baseSignature(W, H);
   const camKey = G.cam.lon.toFixed(7) + '|' + G.cam.lat.toFixed(7) + '|' + G.cam.zoom.toFixed(4);
-  if (camKey !== _camLast) { _camLast = camKey; _camMovedAt = now; }
+  if (camKey !== _camLast) { _camLast = camKey; _camMovedAt = now; _idleRefreshed = false; }
   const moving = now - _camMovedAt < 160;
+  // A zoom gesture in flight (wheel ease, pinch): the zoom changes every frame,
+  // so a build anchored at this frame's zoom is worthless next frame. Before,
+  // every frame restarted the build and pumped 40 ms of it — that was the
+  // stutter while wheeling over Vienna. Now we only scale the last finished
+  // base (blurry for a few hundred ms, like every slippy map) and build once
+  // the gesture settles.
+  const zooming = ZOOM.target != null || now - _zoomGestureAt < 120;
 
   // First frame / resize: synchronous build, nothing else to show.
   if (!_base || _baseA.W !== W || _baseA.H !== H) {
@@ -3564,10 +3659,17 @@ function drawCachedBase(ctx, W, H, claimMap) {
   const mx = (_baseA.bw - W) / 2, my = (_baseA.bh - H) / 2;
   const drift = Math.max(Math.abs(r.x + mx) / Math.max(1, mx), Math.abs(r.y + my) / Math.max(1, my));
   const outside = drift > 1;
-  const idleRefresh = !moving && now - _baseAt > 1000;      // relief tiles / sprite caches landing
+  // One refresh after the camera comes to rest (relief tiles / sprite caches
+  // landing) — not one per second forever: that kept laptops rebuilding Vienna
+  // in the background while nobody touched the map.
+  const idleRefresh = !moving && !_idleRefreshed && now - _baseAt > 1000;
   // Start a rebuild early (≥ 35 % into the margin) so it is ready before we run out of canvas;
   // anchor it *ahead* of the motion when we know the velocity (flow: the droplet).
-  const wantBuild = dataDirty || zoomOff || drift > 0.35 || idleRefresh;
+  let wantBuild = dataDirty || zoomOff || drift > 0.35 || idleRefresh;
+  if (zooming && _base) {
+    if (_bb && Math.abs(_bb.anchor.zoom - G.cam.zoom) > 1e-6) _bb = null;   // stale mid-gesture build: drop it
+    wantBuild = false;
+  }
   const buildMatches = _bb && Math.abs(_bb.anchor.zoom - G.cam.zoom) < 1e-6 && _bb.sig === sig &&
     Math.abs(_bb.anchor.lon - G.cam.lon) * mapScale() < mx * 0.9 && Math.abs(_bb.anchor.lat - G.cam.lat) * mapScale() * 1.35 < my * 0.9;
   if (wantBuild && !buildMatches) {
@@ -3580,7 +3682,7 @@ function drawCachedBase(ctx, W, H, claimMap) {
   }
   // Pump: a small slice while things look fine, a big one when the view is already
   // uncovered or at the wrong zoom (a visible hitch beats a blank/blurred map).
-  if (_bb) pumpBaseBuild(outside || zoomOff ? 40 : (moving ? BASE_SLICE_MS : 12));
+  if (_bb) pumpBaseBuild(outside || zoomOff ? (perfSlow() ? 24 : 32) : (moving ? BASE_SLICE_MS : 12));
 
   const rr = baseBlitRect(_baseA, W, H);
   if (rr.x > 0 || rr.y > 0 || rr.x + rr.w < W || rr.y + rr.h < H) {
@@ -3665,9 +3767,11 @@ const LANDUSE_POLY_DEFAULT = {fill:'#5a8a40', stroke:'#4a7a30'};
 // Compact Verkehrsfläche (farmyard/courtyard, not a road): light gravel
 const LANDUSE_YARD = {fill:'#b0a488', stroke:'#94886c', a:0.7};
 
-function drawLandusePolygons(ctx) {
+function* drawLandusePolygons(ctx) {
   const W = gc.width, H = gc.height;
+  let _n = 0;
   for (const f of G.landusePolys) {
+    if ((++_n & 511) === 0) yield;
     const geom = f.geometry;
     if (!geom) continue;
     const code = f.properties.landuse_code || '';
@@ -5006,13 +5110,18 @@ const ROOF_COLORS = [
   {roof:'#706868', wall:'#585050', border:'#484040'},  // Slate gray
 ];
 
-function drawBuildingFootprints(ctx) {
+function* drawBuildingFootprints(ctx) {
   const W = gc.width, H = gc.height;
   const zoom = G.cam.zoom;
   if (zoom < 15) return;
   const enhanced = camOverEnhancedKG(); // hoisted: per-frame, not per-building
+  // Low tier below street level: flat boxes (one fill + one stroke per house)
+  // instead of shadow + walls + roof gradient — Vienna has 15 000 of them in view.
+  const simple = perfSlow() && zoom < 17;
+  let _n = 0;
 
   for (const f of G.buildingFootprints) {
+    if ((++_n & 127) === 0) yield;
     const geom = f.geometry;
     if (!geom || geom.type !== 'Polygon') continue;
 
@@ -5060,6 +5169,15 @@ function drawBuildingFootprints(ctx) {
       roofOff = Math.max(2, Math.min(16, defStories * 3 * zs));
     }
 
+    if (simple) {
+      ctx.fillStyle = rc.roof;
+      ctx.beginPath();
+      for (let i=0; i<pts.length; i++) i===0 ? ctx.moveTo(pts[i][0], pts[i][1]-roofOff*0.5) : ctx.lineTo(pts[i][0], pts[i][1]-roofOff*0.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = rc.wall; ctx.lineWidth = 1; ctx.stroke();
+      continue;
+    }
     // Shadow
     ctx.fillStyle = 'rgba(0,0,0,0.15)';
     ctx.beginPath();
@@ -5209,7 +5327,16 @@ function drawParcelPoly(ctx, f, claimMap) {
 
   const parcelId = p.parcel_id;
   const claim = claimMap[parcelId];
-  const terrain = getParcelTerrain(p, claim);
+  // Cull on the cached geo bbox *before* any projection or terrain work —
+  // a Vienna build visits 18 000 polygons for a few thousand on screen.
+  const gb = f._bb || (f._bb = geoBounds(geom));
+  { const [bx1, by1] = toScreen(gb.w, gb.n), [bx2, by2] = toScreen(gb.e, gb.s);
+    if (bx2 < -50 || bx1 > gc.width+50 || by2 < -50 || by1 > gc.height+50) return; }
+  // Terrain is a function of the row + claim/harvest state: memoised per feature
+  const tk = G.lidarGen + '|' + (claim ? claim.player_id + ':' + (claim.converted_to || '') + ':' + (claim.harvested_at || '') + ':' + (claim.harvests || 0) : '') + '|' + (G.neCells > 0 ? 1 : 0) + '|' + G.harvestStates.length;
+  const lpRow = G.terrainParcels[parcelId];
+  if (f._terK !== tk || f._terLp !== lpRow) { f._terK = tk; f._terLp = lpRow; f._ter = getParcelTerrain(p, claim); }
+  const terrain = f._ter;
 
   // Project every ring (a MultiPolygon parcel has several detached parts —
   // common for alpine Gemeindegut split by a ridge; drawing only ring 0 left
@@ -5567,10 +5694,12 @@ function drawFlag(ctx, x, y, color, isBio) {
 }
 
 // ================= LANDUSE SPRITES (crops, flowers, reeds, vines, etc.) =================
-function drawLanduseSprites(ctx, claimMap) {
-  if (G.cam.zoom < 16) return; // Only show at close zoom
+function* drawLanduseSprites(ctx, claimMap) {
+  if (G.cam.zoom < (perfSlow() ? 17 : 16)) return; // Only show at close zoom (low tier: street level only)
   ctx.save();
+  let _n = 0;
   for (const f of G.parcelPolys) {
+    if ((++_n & 127) === 0) yield;
     const p = f.properties;
     const geom = f.geometry;
     if (!isAreaGeom(geom)) continue;
@@ -6400,7 +6529,7 @@ function drawWildButterfly(ctx, cx, cy, u, seed) {
 // self-tuning quality knob if a frame gets expensive.
 const NATURE = { scenes: new Map(), onScreen: 0, quality: 1, _cost: 0, level: null /* DEV override 0|1|2 */ };
 
-function natureAnimLevel() { if (NATURE.level != null) return NATURE.level; const b = giantAnimBudget(); return b === 1 ? 0 : b <= 6 ? 1 : 2; }
+function natureAnimLevel() { if (NATURE.level != null) return NATURE.level; if (perfSlow()) return 0; const b = giantAnimBudget(); return b === 1 ? 0 : b <= 6 ? 1 : 2; }
 /** Wind field: two travelling gust waves + flutter; -1..1. (x,y screen px, t seconds) */
 function windAt(x, y, t) {
   return 0.55 * Math.sin(t * 1.1 + x * 0.010 - y * 0.005) + 0.30 * Math.sin(t * 2.3 + x * 0.028 + y * 0.017) + 0.15 * Math.sin(t * 4.3 + x * 0.06);
@@ -6706,7 +6835,7 @@ function drawNatureReserves(ctx, claimMap) {
   const u = zoom > 19 ? 3 : zoom > 17.5 ? 2 : 1, lvl = natureAnimLevel(), t = lvl ? Date.now() / 1000 : 0;
   const W = gc.width, H = gc.height, cell = 7.5 * u;
   ctx.save();
-  for (const f of G.parcelPolys) {
+  for (const f of statefulPolys(claimMap)) {
     const claim = claimMap[f.properties.parcel_id];
     if (claim?.converted_to !== 'biodiversity' || !isAreaGeom(f.geometry)) continue;
     const b = geoBounds(f.geometry);
@@ -7106,7 +7235,7 @@ function drawForestOverlay(ctx, claimMap) {
   const u = zoom > 19 ? 3 : zoom > 17.5 ? 2 : 1, lvl = natureAnimLevel(), t = lvl ? Date.now() / 1000 : 0;
   const W = gc.width, H = gc.height, cell = 9 * u, now = Date.now();
   ctx.save();
-  for (const f of G.parcelPolys) {
+  for (const f of statefulPolys(claimMap)) {
     const claim = claimMap[f.properties.parcel_id];
     const hv = harvestOf(f.properties.parcel_id, claim);
     if ((!claim && !hv) || !isAreaGeom(f.geometry)) continue;
@@ -7165,7 +7294,7 @@ window.doHarvestForest = async function() {
   await loadClaimed(); render(); showParcelPopup(G.sel, G.selFp); loadChallenges();
 };
 
-function drawForestSprites(ctx, claimMap) {
+function* drawForestSprites(ctx, claimMap) {
   // Draw tree sprites on forest, reforested, orchard and scrub parcels
   // Determine tree style per parcel: 'forest' | 'reforested' | 'orchard' | 'krummholz'
   // Minimum lidar-measured wooded fraction to scatter sprites on a parcel whose
@@ -7224,7 +7353,9 @@ function drawForestSprites(ctx, claimMap) {
   const NE_REAL = { forest: 1, plantation: 1, krummholz: 1, dead: 1 };
 
   ctx.save();
+  let _n = 0;
   for (const { f, style } of treePolys) {
+    if ((++_n & 63) === 0) yield;
     const coords = geomOuterRings(f.geometry);
     if (!coords.length) continue;
     const b = geoBounds(f.geometry);
@@ -7282,7 +7413,7 @@ function drawForestSprites(ctx, claimMap) {
     // cap with the on-screen area (one tree per ~1400 px² at most, ≤ 260/parcel).
     if (G.cam.zoom >= 15.5 && style !== 'orchard') {
       const pxArea = Math.max(0, Math.min(sx2, gc.width) - Math.max(sx1, 0)) * Math.max(0, Math.min(sy2, gc.height) - Math.max(sy1, 0));
-      const want = Math.min(260, Math.floor(pxArea / 1400));
+      const want = Math.min(perfSlow() ? 100 : 260, Math.floor(pxArea / (perfSlow() ? 2800 : 1400)));
       if (want > treeCount) treeCount = want;
     }
     // Below z15 the sprites keep their pixel size while the parcel shrinks:
@@ -7381,6 +7512,7 @@ function neApexBudget() {
   let b = _coarsePointer ? 1800 : 6000;
   if (hw <= 4 || (navigator.deviceMemory || 8) <= 4) b = Math.round(b * 0.6);
   if (NE_APEX.slow) b = Math.round(b * 0.5);   // last build overran — halve until it recovers
+  if (perfSlow()) b = Math.round(b * 0.5);     // low tier: half the stand, tallest first
   return b;
 }
 const NE_APEX = { slow: false, wantSlow: false, lastMs: 0, drawn: 0, visible: 0, sprites: new Map() };
@@ -9320,7 +9452,14 @@ function drawForeignShading(ctx, W, H) {
 }
 
 /** Rough test: does any border vertex fall in (a padded) current view? */
+let _bnvK = '', _bnv = false;
 function borderNearView(v) {
+  // ~9 000 border vertices scanned per frame otherwise; the answer only changes with the view (quantised)
+  const key = (v.w * 200 | 0) + '|' + (v.e * 200 | 0) + '|' + (v.s * 200 | 0) + '|' + (v.n * 200 | 0);
+  if (key === _bnvK) return _bnv;
+  _bnvK = key; _bnv = borderNearViewRaw(v); return _bnv;
+}
+function borderNearViewRaw(v) {
   const px = (v.e - v.w) * 0.5, py = (v.n - v.s) * 0.5;
   const w = v.w - px, e = v.e + px, s = v.s - py, n = v.n + py;
   for (const ring of G.atBorder) {
@@ -9374,17 +9513,23 @@ function drawScaleBar(ctx, W, H) {
   // Quiet ruler, exactly as wide as the © pill it sits on top of (same right
   // edge, 8 px above). The bar keeps the pill's width; the label states what
   // that width measures, rounded to 2 significant digits ("≈" when rounded).
-  const mr = gc.getBoundingClientRect();
-  const at = document.getElementById('map-attrib');
-  const tg = at && at.querySelector('.map-attrib-toggle');
-  let y = H - 26, right = W - 12, barPx = 120;
-  if (tg && at.offsetParent !== null) {
-    const r = tg.getBoundingClientRect();
-    right = r.right - mr.left; barPx = r.width;
-    const body = at.classList.contains('open') && at.querySelector('.map-attrib-body');
-    const top = body ? body.getBoundingClientRect().top : r.top;
-    y = top - mr.top - 8;
+  // Layout reads (getBoundingClientRect ×3) force style/layout every frame — cache them for 400 ms.
+  const nowL = performance.now();
+  if (!drawScaleBar._geo || nowL - drawScaleBar._geoAt > 400 || drawScaleBar._geo.W !== W || drawScaleBar._geo.H !== H) {
+    const mr = gc.getBoundingClientRect();
+    const at = document.getElementById('map-attrib');
+    const tg = at && at.querySelector('.map-attrib-toggle');
+    let y = H - 26, right = W - 12, barPx = 120;
+    if (tg && at.offsetParent !== null) {
+      const r = tg.getBoundingClientRect();
+      right = r.right - mr.left; barPx = r.width;
+      const body = at.classList.contains('open') && at.querySelector('.map-attrib-body');
+      const top = body ? body.getBoundingClientRect().top : r.top;
+      y = top - mr.top - 8;
+    }
+    drawScaleBar._geo = { y, right, barPx, W, H }; drawScaleBar._geoAt = nowL;
   }
+  let { y, right, barPx } = drawScaleBar._geo;
   const mPerPx = 111320 * Math.cos(G.cam.lat * Math.PI / 180) / mapScale();
   const m = barPx * mPerPx;
   const mag = Math.pow(10, Math.floor(Math.log10(m)) - 1);
@@ -9455,8 +9600,11 @@ function renderMiniBase(mctx, w, dpr) {
     const mx = pad + (lon-minLon)*sc;
     const my = pad + (maxLat-lat)*sc;
     const cl = cm[p.parcel_id];
-    const t = getParcelTerrain(p, cl);
-    mctx.fillStyle = cl ? (G.pcolors[cl.player_id]||t[0]) : t[0];
+    // terrain colour memoised per feature (getParcelTerrain walks harvest/NE/lidar state — ×18 000 parcels)
+    const tk = G.lidarGen + '|' + (cl ? cl.player_id + ':' + (cl.converted_to || '') + ':' + (cl.harvested_at || '') : '') + '|' + (G.neCells > 0 ? 1 : 0);
+    const lpRow = G.terrainParcels[p.parcel_id];
+    if (f._miniK !== tk || f._miniLp !== lpRow) { f._miniK = tk; f._miniLp = lpRow; f._miniC = getParcelTerrain(p, cl)[0]; }
+    mctx.fillStyle = cl ? (G.pcolors[cl.player_id]||f._miniC) : f._miniC;
     // Real outline for anything bigger than a few pixels (rivers, forests, Almen
     // read as shapes, not specks); tiny parcels stay 3×3 dots.
     const g = f.geometry;
@@ -9535,15 +9683,37 @@ function renderMini() {
   // Static part (parcels + border) is cached per camera/data state: render()
   // calls renderMini() on every animation frame, the polygons only change on
   // pan/zoom or when new cells/claims arrive.
-  const baseKey = [G.cam.lon.toFixed(6), G.cam.lat.toFixed(6), G.cam.zoom.toFixed(3), G.parcelPolys.length, G.parcels.length, G.claimed.length, G.lidarGen, G.atBorder ? 1 : 0, dpr].join('|');
-  if (MINI.baseKey !== baseKey || !MINI.base) {
+  // The camera is *not* part of the key: while the map pans/zooms (wheel ease,
+  // drag, flow) the stale base is blitted through the affine map between its
+  // window and the current one, and a fresh base is rendered only once the
+  // camera has settled (or the stale one drifted > ½ window / 1 zoom level).
+  // Rendering 18 000 parcels through getParcelTerrain() on every ease frame
+  // used to cost more than the main map itself.
+  const dataKey = [G.parcelPolys.length, G.parcels.length, G.claimed.length, G.lidarGen, G.atBorder ? 1 : 0, dpr, G.neCells > 0 ? 1 : 0].join('|');
+  const now = performance.now();
+  const camMoving = ZOOM.target != null || now - _camMovedAt < 160 || now - _zoomGestureAt < 160 || (G.drag && G.drag.active);
+  let bw = MINI.baseW;
+  let drift = 0;
+  if (bw) drift = Math.max(Math.abs(bw.minLon - w.minLon) / w.lr, Math.abs(bw.minLat - w.minLat) / w.ar, Math.abs(Math.log2(bw.sc / w.sc)));
+  const stale = !MINI.base || MINI.baseKey !== dataKey || !bw || drift > 0.0005;
+  if (stale && (!camMoving || !MINI.base || drift > 0.6 || MINI.baseKey !== dataKey)) {
     if (!MINI.base) MINI.base = document.createElement('canvas');
     const bc = MINI.base;
     if (bc.width !== MINI.W * dpr) { bc.width = MINI.W * dpr; bc.height = MINI.H * dpr; }
     renderMiniBase(bc.getContext('2d'), w, dpr);
-    MINI.baseKey = baseKey;
+    MINI.baseKey = dataKey; MINI.baseW = w; bw = w;
+    if (MINI._settle) { clearTimeout(MINI._settle); MINI._settle = 0; }
+  } else if (stale && !MINI._settle) {
+    MINI._settle = setTimeout(() => { MINI._settle = 0; renderMini(); }, 220);   // redraw crisp once the camera rests
   }
-  mctx.drawImage(MINI.base, 0, 0, MINI.W, MINI.H);
+  if (bw === w || !bw) mctx.drawImage(MINI.base, 0, 0, MINI.W, MINI.H);
+  else {
+    // old px → new px: x' = pad + ((x - pad)/bw.sc + bw.minLon - w.minLon)·w.sc
+    const k = w.sc / bw.sc;
+    const ox = pad + (bw.minLon - w.minLon) * sc - pad * k, oy = pad + (w.maxLat - bw.maxLat) * sc - pad * k;
+    mctx.fillStyle = '#1a2a10'; mctx.fillRect(0, 0, MINI.W, MINI.H);
+    mctx.drawImage(MINI.base, ox, oy, MINI.W * k, MINI.H * k);
+  }
 
   // Points of interest: unclaimed treasures (rarity colour), session centre, GPS.
   for (const t of G.treasures || []) {
@@ -9767,6 +9937,7 @@ function initGameInput() {
       // true pinch: zoom = log2 of the finger-distance ratio, the geo point under the
       // initial midpoint stays glued to the (moving) midpoint → zoom + pan in one gesture
       G.cam.zoom = clampZoom(pinch.zoom0 + Math.log2(Math.max(0.05, d/pinch.dist0)));
+      _zoomGestureAt = performance.now();
       anchorGeoAt(pinch.geo, mx, my);
       touchDist=d; render(); renderMini();
     }
@@ -12174,7 +12345,7 @@ function resetPopupPosition(id) {
   const natureLive = NATURE.onScreen > 0 && natureAnimLevel() > 0;
   if (!(_treasuresOnScreen > 0 || _ripeOnScreen > 0 || G.fx.length || SMASH.fx.length || natureLive || (treasureHintSince > 0 && unfoundTreasures().length))) return;
   const now = performance.now();
-  const step = SMASH.fx.length ? 16 : natureAnimLevel() === 1 ? 66 : isCoarsePointer() ? 50 : 40;   // debris runs at full frame rate
+  const step = SMASH.fx.length ? 16 : perfSlow() ? 100 : natureAnimLevel() === 1 ? 66 : isCoarsePointer() ? 50 : 40;   // debris runs at full frame rate
   if (now - (treasureAnimLoop._last || 0) < step) return;
   if (giantAnimBudget() === 1 && !G.fx.length && !SMASH.fx.length) return; // reduced motion → static (800ms tick below)
   treasureAnimLoop._last = now;
@@ -12953,10 +13124,21 @@ function _topoText(t, kind) {
   return t.name;
 }
 
+let _topoCache = null;
 function drawToponyms(ctx) {
   if (!G.topoVisible || !G.toponyms.length) return;
   const zoom = G.cam.zoom, W = gc.width, H = gc.height;
   const now = performance.now();
+  // While the camera moves (wheel ease, drag) the placement from ≤ 150 ms ago is
+  // reused and only slid with the map — the O(n²) collision pass + sort ran on
+  // every ease frame before. A fresh placement follows once the camera rests.
+  if (_topoCache && now - _camMovedAt < 160 && now - _topoCache.at < 150 && Math.abs(_topoCache.zoom - zoom) < 0.3 && _topoCache.n === G.toponyms.length) {
+    const shown = [];
+    for (const s0 of _topoCache.shown) { const [px, py] = toScreen(s0.t.lon, s0.t.lat); shown.push(Object.assign({}, s0, { x: px + s0.dx, y: py + s0.dy })); }
+    ctx.save(); ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    drawToponymLabels(ctx, shown);
+    return;
+  }
   const cands = [];
   for (const t of G.toponyms) {
     const c = t._cls; if (!c || zoom < c.z) { t._t0 = 0; continue; }
@@ -13010,8 +13192,9 @@ function drawToponyms(ctx) {
     const spaced = kind === 'town' || kind === 'area' || kind === 'range' || kind === 'ried';
     if ('letterSpacing' in ctx) ctx.letterSpacing = spaced ? (kind === 'town' ? '1px' : '2px') : '0px';
     const text = _topoText(t, kind);
-    const m = ctx.measureText(text);
-    const w = m.width + 8, h = (kind === 'town' ? size * 1.6 : 16) + 4;
+    // measureText is a layout call — cache the width per label (font + text never change)
+    if (t._mwK !== ctx.font + '|' + text) { t._mwK = ctx.font + '|' + text; t._mw = ctx.measureText(text).width; }
+    const w = t._mw + 8, h = (kind === 'town' ? size * 1.6 : 16) + 4;
     // Candidate anchors, in preference order. Area-like names (Ried, Gebiet,
     // Tal, Gewässer) want to sit ON their point; point features (towns,
     // peaks, Höfe, POIs) sit above it and fall back to the right / below /
@@ -13034,6 +13217,14 @@ function drawToponyms(ctx) {
     if (k < 1) fading = true;
     shown.push({ t, kind, text, x: cx, y: cy, w, h, alpha: k, dx: cx - cd.x, dy: cy - cd.y });
   }
+  _topoCache = { at: now, zoom, n: G.toponyms.length, shown };
+  drawToponymLabels(ctx, shown);
+  if (fading && !_topoFadeRAF) {
+    _topoFadeRAF = requestAnimationFrame(() => { _topoFadeRAF = null; render(); });
+  }
+}
+/** Paint placed toponym labels (expects ctx.save() done by the caller; restores it). */
+function drawToponymLabels(ctx, shown) {
   // Draw in two passes so outlines never cut through neighbouring glyphs.
   for (const s of shown) {
     const font = _topoFont(s.kind, s.t._cls.size || 0);
@@ -13070,9 +13261,6 @@ function drawToponyms(ctx) {
   if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
   ctx.globalAlpha = 1;
   G.topoShown = shown;
-  if (fading && !_topoFadeRAF) {
-    _topoFadeRAF = requestAnimationFrame(() => { _topoFadeRAF = null; render(); });
-  }
 }
 
 /** Toponym search results for the in-game search (near the camera first). */
@@ -14652,6 +14840,7 @@ Object.assign(window.DEV, {
   /** What "Auf Glück" would pick right now. */
   async lucky() { return GET('/api/lucky'); },
   /** Loading-step timings of this session + per-endpoint latency histogram collected in api(). */
+  perf(tier) { if (tier !== undefined) { PERF.forced = tier; invalidateBase(); render(); } return { tier: perfSlow() ? 'low' : 'high', forced: PERF.forced, measured: PERF.slow, why: PERF.why, buildMs: +PERF.buildMs.toFixed(0), frameMs: +PERF.frameMs.toFixed(1), builds: PERF.builds, natureLevel: natureAnimLevel(), apexBudget: neApexBudget() }; },
   timing() {
     const eps = Object.entries(G.apiStats).map(([route, s]) => ({ route, n: s.n, p50: apiPct(s.ms, 0.5), p95: apiPct(s.ms, 0.95), max: Math.max(0, ...s.ms), err: s.err, hit: s.hit }))
       .sort((a, b) => b.n - a.n);
