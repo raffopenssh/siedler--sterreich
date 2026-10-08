@@ -10884,7 +10884,7 @@ function showParcelPopup(f, tappedFp) {
   const kgEl = document.getElementById('pp-kg');
   if (p.kg_code) {
     const kn = kgName(p.kg_code);   // glitch #10: viewport rows carry no kg_name
-    kgEl.innerHTML = `<span class="pp-ez-link" onclick="openKGSummary('${p.kg_code}')">${esc(kn || p.kg_code)}${kn && kn !== p.kg_code ? ' <span style="color:var(--text-dim)">' + esc(p.kg_code) + '</span>' : ''} ▸</span>`;
+    kgEl.innerHTML = `<span class="pp-ez-link" onclick="openKGSummary('${p.kg_code}')">${esc(kn || p.kg_code)} ▸</span>`;
   } else {
     kgEl.textContent = p.kg_name || '-';
   }
@@ -10892,7 +10892,13 @@ function showParcelPopup(f, tappedFp) {
   document.getElementById('pp-ez').textContent = ez ? 'EZ ' + ez : '-';
   renderFlurRow(f);
   document.getElementById('pp-area').textContent = area>10000?(area/10000).toFixed(2)+' ha':Math.round(area)+' m²';
-  document.getElementById('pp-use').textContent = getLanduseName(p);
+  {
+    // essentials row: the dominant use (+ one runner-up); every share lives in Details
+    const full = getLanduseName(p);
+    const parts = full.split(', ');
+    document.getElementById('pp-use').textContent = parts.length > 2 ? parts.slice(0, 2).join(', ') + ' …' : full;
+    document.getElementById('pp-use-full').textContent = full;
+  }
   // Density label based on built-up ratio
   let densityLabel = 'Keine';
   if (area > 0 && (bldgCount > 0 || bldgArea > 0)) {
@@ -10904,6 +10910,14 @@ function showParcelPopup(f, tappedFp) {
     else densityLabel = '🌾 Minimal';
   }
   document.getElementById('pp-density').textContent = densityLabel;
+  {
+    // folded "Details" header carries its own one-liner
+    const fl = parcelFlur(f);
+    const bits = [];
+    if (bldgCount > 0) bits.push(densityLabel.replace(/^\S+\s/, ''));
+    if (fl) bits.push(fl.label);
+    ppSecSummary('det', bits.join(' · ') || pid);
+  }
   document.getElementById('pp-owner').textContent = owner ? owner.name : 'Frei';
   const fieldEl = document.getElementById('pp-field'), fieldL = document.getElementById('pp-field-l');
   if (isCropField(p)) {
@@ -10945,86 +10959,83 @@ function showParcelPopup(f, tappedFp) {
     setTimeout(() => { if (G.sel === f) findSimilarParcels({ keepCamera: true, silent: true }); }, 0);
   }
 
+  // ---- Action bar (pinned below the scrolling body) ----
+  // main = the one thing to do here (buy / harvest / protect), row = the rest.
   const act = document.getElementById('pp-actions');
-  act.innerHTML = '';
+  let main = '', row = '', extra = '';
+  const stageNote = (t) => `<div class="pp-act-stage">${t}</div>`;
   if (!claim) {
-    act.innerHTML = `<button class="btn btn-primary btn-small" onclick="doClaim()">🏴 Kaufen (${price}🪙)</button>`;
+    main = `<button class="btn btn-primary btn-small" onclick="doClaim()">🏴 ${tr('Kaufen')} (${price}🪙)</button>`;
   } else if (claim.player_id === G.player.id && !claim.converted_to) {
-    // My parcel — show harvest/convert/sell + any incoming offers
-    let html = '';
+    // My parcel — harvest/convert/sell + any incoming offers
     if (isCropField(p)) {
       const fs = fieldStage(p, claim), eco = fieldEconomy(pid);
-      if (fs.stage === 'ripe') html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🌾 ${tr('Ernten')} (+${eco ? eco.total : harvestYield(area)}🪙)</button>`;
+      if (fs.stage === 'ripe') main += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🌾 ${tr('Ernten')} (+${eco ? eco.total : harvestYield(area)}🪙)</button>`;
       else if (fs.stage === 'meadow') {
         // FARM-1: meadows collect the Förderung once per cycle (gated by harvested_at)
         const since = claim.harvested_at ? (Date.now() - Date.parse(claim.harvested_at)) / 1000 : Infinity;
         const wait = FIELD_CYCLE_S - since;
         const amt = eco ? eco.subsidy : null;
-        if (wait > 0) html += `<button class="btn btn-secondary btn-small" disabled title="${tr('Nächste Auszahlung in')} ${fmtMin(wait)}">🏛 ${tr('Förderung')} ${tr('in')} ${fmtMin(wait)}</button>`;
-        else if (amt == null || amt > 0) html += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🏛 ${tr('Förderung abholen')} (${amt != null ? '+' + amt + '🪙' : '…'})</button>`;
+        if (wait > 0) main += `<button class="btn btn-secondary btn-small" disabled title="${tr('Nächste Auszahlung in')} ${fmtMin(wait)}">🏛 ${tr('Förderung')} ${tr('in')} ${fmtMin(wait)}</button>`;
+        else if (amt == null || amt > 0) main += `<button class="btn btn-gold btn-small" onclick="doHarvest()">🏛 ${tr('Förderung abholen')} (${amt != null ? '+' + amt + '🪙' : '…'})</button>`;
       }
-      html += wellButtonHTML(G.sel, claim);
+      row += wellButtonHTML(G.sel, claim);   // secondary: a well is an upgrade, not the headline
     }
     if (isForestParcel(G.sel, claim)) {
       // Forest stand: harvest the timber (coins now, stand regrows) or set it
       // aside as Naturwald (XP, permanent). Values come from /api/forest-value.
       const fs = forestStage(harvestOf(pid, claim)), fv = G.forestValues[pid], e = fv?.estimate;
       const coinsNow = e ? Math.max(5, Math.round(e.coins * fs.factor)) : null;
-      if (fs.stage === 'baumholz') html += `<button class="btn btn-gold btn-small" onclick="doHarvestForest()">🪓 ${tr('Holzernte')} (${coinsNow != null ? '+' + coinsNow + '🪙' : '…'})</button>`;
-      else html += `<span style="font:16px VT323;color:var(--text-dim);width:100%">${forestStageLabel(fs)}</span>`;
-      html += `<button class="btn btn-primary btn-small" onclick="doConvert('wildforest')" ${fs.stage !== 'baumholz' ? 'disabled title="' + tr('Der Wald muss erst nachwachsen') + '"' : ''}>🌳 ${tr('Naturwald')} (+${e ? e.wild_xp : '…'}⚡)</button>`;
+      if (fs.stage === 'baumholz') main += `<button class="btn btn-gold btn-small" onclick="doHarvestForest()">🪓 ${tr('Holzernte')} (${coinsNow != null ? '+' + coinsNow + '🪙' : '…'})</button>`;
+      else extra += stageNote(forestStageLabel(fs));
+      row += `<button class="btn btn-primary btn-small" onclick="doConvert('wildforest')" ${fs.stage !== 'baumholz' ? 'disabled title="' + tr('Der Wald muss erst nachwachsen') + '"' : ''}>🌳 ${tr('Naturwald')} (+${e ? e.wild_xp : '…'}⚡)</button>`;
       if (!(pid in G.forestValues)) fetchForestValue(G.sel).then(() => { if (G.sel && G.sel.properties.parcel_id === pid) showParcelPopup(G.sel, G.selFp); });
     } else {
       const wpHere = !!waterProtectionAt(...featureLonLat(G.sel));
-      html += `
-      <button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')" ${wpHere ? 'title="' + tr('Wasserschutzgebiet: Trinkwasser-Bonus ×1,5') + '"' : ''}>🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')} (+${wpHere ? '150⚡ 💧' : '100⚡'})</button>
-      <button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 Aufforsten</button>`;
+      const bio = `<button class="btn btn-primary btn-small" onclick="doConvert('biodiversity')" ${wpHere ? 'title="' + tr('Wasserschutzgebiet: Trinkwasser-Bonus ×1,5') + '"' : ''}>🌿 ${isCropField(p) ? tr('Brache') : tr('Naturschutz')} (+${wpHere ? '150⚡ 💧' : '100⚡'})</button>`;
+      if (main) row += bio; else main += bio;   // Naturschutz is the headline unless a harvest is due
+      row += `<button class="btn btn-secondary btn-small" onclick="doConvert('forest')">🌳 ${tr('Aufforsten')}</button>`;
     }
-    html += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})" title="${rg.factor < 1 ? tr('Wert erholt sich') + ' · ' + Math.round(rg.factor * 100) + ' %' : '60 % ' + tr('des Kaufpreises')}">💰 ${tr('Verkaufen')} (+${sellQuote(claim, rg)}🪙)</button>`;
-    // Show incoming offers for this parcel
+    row += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})" title="${rg.factor < 1 ? tr('Wert erholt sich') + ' · ' + Math.round(rg.factor * 100) + ' %' : '60 % ' + tr('des Kaufpreises')}">💰 ${tr('Verkaufen')} (+${sellQuote(claim, rg)}🪙)</button>`;
+    // Incoming offers for this parcel
     const incomingOffers = (G.offers||[]).filter(o => o.parcel_id === pid && o.seller_id === G.player.id && o.status === 'pending');
     if (incomingOffers.length > 0) {
-      html += `<div style="width:100%;margin-top:8px;border-top:1px solid var(--panel-border);padding-top:8px">`;
-      html += `<span style="font:8px var(--font-pixel);color:var(--gold)">📨 Kaufangebote:</span>`;
+      extra += `<div class="pp-offers"><span class="pp-offers-t">📨 ${tr('Kaufangebote')}:</span>`;
       for (const o of incomingOffers) {
-        html += `<div style="display:flex;align-items:center;gap:6px;margin-top:4px;font:18px VT323;color:var(--text)">`;
-        html += `<span>${esc(o.buyer_name)}: ${o.offer_price}🪙</span>`;
-        html += `<button class="btn btn-primary btn-small" style="padding:3px 8px;font-size:7px" onclick="doRespondOffer(${o.id},true)">✓</button>`;
-        html += `<button class="btn btn-danger btn-small" style="padding:3px 8px;font-size:7px" onclick="doRespondOffer(${o.id},false)">✗</button>`;
-        html += `</div>`;
+        extra += `<div class="pp-offer"><span>${esc(o.buyer_name)}: ${o.offer_price}🪙</span>
+          <button class="btn btn-primary btn-small" onclick="doRespondOffer(${o.id},true)">✓</button>
+          <button class="btn btn-danger btn-small" onclick="doRespondOffer(${o.id},false)">✗</button></div>`;
       }
-      html += `</div>`;
+      extra += `</div>`;
     }
-    act.innerHTML = html;
   } else if (claim.player_id === G.player.id) {
     const convLabel = claim.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') : claim.converted_to === 'biodiversity' ? (isCropField(p) ? tr('Naturschutz') + ' · ' + tr('Brache') : tr('Naturschutz')) : claim.converted_to === 'forest' ? tr('Aufforstung') : claim.converted_to;
-    act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">✅ ${convLabel}</span>`;
+    extra = `<span class="pp-act-note" style="color:var(--green-light);font-size:18px">✅ ${convLabel}</span>`;
   } else {
     // Someone else's parcel — offer to buy (reserves are permanent: no offers)
     const myOffer = (G.offers||[]).find(o => o.parcel_id === pid && o.buyer_id === G.player.id && o.status === 'pending');
     if (claim.converted_to) {
-      act.innerHTML = `<span style="font:18px VT323;color:var(--green-light)">🛡️ ${tr('Geschützt')} · ${esc(owner.name)}</span>`;
+      extra = `<span class="pp-act-note" style="color:var(--green-light);font-size:18px">🛡️ ${tr('Geschützt')} · ${esc(owner.name)}</span>`;
     } else if (myOffer) {
-      act.innerHTML = `<span style="font:18px VT323;color:var(--gold)">📨 Angebot: ${myOffer.offer_price}🪙 (wartet)</span>`;
+      extra = `<span class="pp-act-note" style="color:var(--gold);font-size:18px">📨 ${tr('Angebot')}: ${myOffer.offer_price}🪙 (${tr('wartet')})</span>`;
     } else {
       const suggestedPrice = Math.round(price * 1.5);
-      act.innerHTML = `
-        <div style="width:100%">
-          <span style="font:8px var(--font-pixel);color:var(--text-dim);display:block;margin-bottom:4px">Kaufangebot an ${esc(owner.name)}:</span>
-          <div style="display:flex;gap:6px;align-items:stretch">
-            <input type="number" id="offer-price-input" value="${suggestedPrice}" min="10" max="99999" 
-              style="flex:1;padding:6px 8px;font:20px VT323;background:var(--bg);color:var(--text-bright);border:2px solid var(--panel-border);width:80px">
-            <button class="btn btn-gold btn-small" onclick="doMakeOffer()">📨 Anbieten</button>
-          </div>
-        </div>`;
+      extra = `<div class="pp-offer-form">
+          <span class="pp-offer-l">${tr('Kaufangebot an')} ${esc(owner.name)}:</span>
+          <div class="pp-offer-in">
+            <input type="number" id="offer-price-input" value="${suggestedPrice}" min="10" max="99999">
+            <button class="btn btn-gold btn-small" onclick="doMakeOffer()">📨 ${tr('Anbieten')}</button>
+          </div></div>`;
     }
   }
-
-  // Similar parcels search (cadastre R-tree + srtm terrain matching)
-  act.innerHTML += `<div class="similar-row">
-    <button class="btn btn-secondary btn-small" id="pp-similar-btn" onclick="findSimilarParcels()">🔍 Ähnliche Parzellen</button>
-    <span class="similar-radius" id="pp-similar-radius" title="${tr('Vergleich mit den bereits geladenen Parzellen in der Nähe')}"><i>${similarRadiusLabel()}</i></span>
-  </div>`;
+  // Similar parcels: compact icon button next to the main action, count badge lands lazily
+  const simBtn = `<button class="btn btn-secondary btn-small pp-act-ico" id="pp-similar-btn" onclick="findSimilarParcels()" title="${tr('Ähnliche Parzellen in der Nähe')} · ${similarRadiusLabel()}">🔍</button>`;
+  let html = '';
+  if (main) html += `<div class="pp-act-main">${main}${simBtn}</div>`;
+  if (row) html += `<div class="pp-act-row">${row}</div>`;
+  html += extra;
+  if (!main) html += `<div class="pp-act-main"><button class="btn btn-secondary btn-small" id="pp-similar-btn" onclick="findSimilarParcels()">${similarBtnLabel(pid)}</button></div>`;
+  act.innerHTML = html;
   // Lazy count: prefetch the current radius in background, show "(N)" when it lands
   prefetchSimilarCount(pid);
 
@@ -11034,7 +11045,7 @@ function showParcelPopup(f, tappedFp) {
     const ezKey = p.kg_code + '-EZ' + ez;
     const ezParcels = G.ezIndex[ezKey] || [];
     if (ezParcels.length > 1) {
-      ezEl.innerHTML = `<span class="pp-ez-link" onclick="openEZPopup('${p.kg_code}','${ez}')">EZ ${ez} ▸ (${ezParcels.length} Parzellen)</span>`;
+      ezEl.innerHTML = `<span class="pp-ez-link" onclick="openEZPopup('${p.kg_code}','${ez}')">EZ ${ez} · ${ezParcels.length} ${tr('Parzellen')} ▸</span>`;
       G.ezHighlight = {kg: p.kg_code, ez: ez};
     } else {
       ezEl.textContent = ez ? 'EZ ' + ez : '-';
@@ -11080,19 +11091,34 @@ async function fetchBuildingInfo(fpId, lon, lat) {
 const NS_NAMES = {'41':'Gebäude','42':'Parkplatz','83':'Gebäudenebenfläche'};
 
 // ---- Collapsible popup sections (pixel-art headers) ----
-G.ppSec = { bldg: true, env: window.innerWidth >= 768 }; // remembered per session
+// Everything beyond the essentials (Fläche, Nutzung, Besitzer, Preis + game
+// state) is folded by default; a tapped building opens its section on desktop.
+// Whoever unfolds a section keeps it that way (localStorage siedler_ppsec).
+G.ppSecUser = (() => { try { return JSON.parse(localStorage.getItem('siedler_ppsec') || '{}') || {}; } catch (e) { return {}; } })();
+G.ppSec = Object.assign({ det: false, bldg: window.innerWidth >= 768, env: false }, G.ppSecUser);
 function ppSecSync(name) {
   const sec = document.getElementById('pp-sec-' + name);
   if (!sec) return;
   sec.classList.toggle('open', !!G.ppSec[name]);
+}
+/** One-line summary shown in the folded header ("216 m · 13° · Natura 2000"). */
+function ppSecSummary(name, text) {
+  const el = document.getElementById('pp-sum-' + name);
+  if (el) el.textContent = text || '';
 }
 document.querySelectorAll('.pp-sec-h').forEach(btn => {
   btn.onclick = () => {
     const n = btn.dataset.sec;
     G.ppSec[n] = !G.ppSec[n];
     ppSecSync(n);
+    G.ppSecUser[n] = G.ppSec[n];   // only explicit choices are remembered
+    try { localStorage.setItem('siedler_ppsec', JSON.stringify(G.ppSecUser)); } catch (e) {}
+    invalidateHudInsets();
   };
 });
+ppSecSync('det');
+// body scrolled → deeper shadow under the pinned action bar
+(() => { const b = document.querySelector('#parcel-popup .pp-body'); if (b) b.addEventListener('scroll', () => b.classList.toggle('scrolled', b.scrollTop > 4), { passive: true }); })();
 
 /** Render the tapped building's section in the parcel popup.
  *  Instant rows come from data already on the client (footprint metrics from
@@ -11136,6 +11162,13 @@ function renderBuildingRows(fp) {
     '</div><div class="pp-bldg-lazy" id="pp-bldg-lazy"></div>';
   sec.style.display = '';
   ppSecSync('bldg');
+  {
+    const sum = [];
+    if (p.area_sqm) sum.push(Math.round(p.area_sqm) + ' m²');
+    const hr = rows.find(r => r[0].startsWith('📐')); if (hr) sum.push(hr[1].replace(/<[^>]+>/g, '').split(' · ')[0].trim());
+    const rr = rows.find(r => r[0].startsWith('🏠')); if (rr) sum.push(rr[1]);
+    ppSecSummary('bldg', sum.join(' · '));
+  }
 
   // Lazy: addresses + multi-parcel span from the server aggregate
   if (!fpId) return;
@@ -11409,7 +11442,16 @@ function renderEnhancedPopupRows(pid, gamePrice) {
     }
     box.innerHTML = html;
     sec.style.display = html ? '' : 'none';
-    if (html) ppSecSync('env');
+    if (html) {
+      ppSecSync('env');
+      const sum = [];
+      if (lp && lp.elev != null) sum.push(Math.round(lp.elev) + ' m');
+      if (lp && lp.slope != null) sum.push(Math.round(lp.slope) + '°');
+      if (list.some(r => /Natura 2000/.test(r[0]))) sum.push('Natura 2000');
+      if (mv) { const t = mv.buy_total_blended_eur != null ? mv.buy_total_blended_eur : mv.buy_total_eur; sum.push(t >= 1e6 ? (t/1e6).toFixed(1) + ' Mio €' : Math.round(t/1000) + ' k€'); }
+      if (!sum.length) sum.push(list.length + ' ' + tr('Angaben'));
+      ppSecSummary('env', sum.join(' · '));
+    }
   };
 
   renderRows();
@@ -11506,7 +11548,7 @@ async function refreshSimilarForView() {
     sim.radius = radius; sim.cellGen = G.vpTiles.size;
     updateSimilarRadiusLabel();
     const b = document.getElementById('pp-similar-btn');
-    if (b && !b.disabled && G.sel) b.textContent = similarBtnLabel(G.sel.properties.parcel_id);
+    if (b && !b.disabled && G.sel) setSimilarBtn(b, G.sel.properties.parcel_id);
     if (added) { render(); if (G.sel) renderSimilarPopupRows(G.sel.properties.parcel_id); }
   } catch (e) { /* optional layer */ }
   finally { _simRefreshing = false; }
@@ -11518,19 +11560,27 @@ function similarBtnLabel(pid) {
   else { const cached = G.similarCache[pid + ':' + similarRadiusNow() + ':' + G.vpTiles.size]; if (cached) n = ' (' + cached.results.length + ')'; }
   return tr('🔍 Ähnliche in der Nähe') + n;
 }
+/** The popup's 🔍 button is icon-only: the count goes into a badge, the words into the title. */
+function setSimilarBtn(btn, pid, busy) {
+  if (!btn) return;
+  const ico = btn.classList.contains('pp-act-ico');
+  if (busy) { btn.innerHTML = ico ? '⏳' : '⏳ ' + tr('Suche ähnliche Parzellen…'); btn.title = tr('Suche ähnliche Parzellen in der Nähe…'); return; }
+  if (!ico) { btn.textContent = similarBtnLabel(pid); btn.title = similarRadiusLabel(); return; }
+  const m = similarBtnLabel(pid).match(/\((\d+)\)/);
+  btn.innerHTML = '🔍' + (m ? '<i class="pp-cnt">' + m[1] + '</i>' : '');
+  btn.title = tr('Ähnliche Parzellen in der Nähe') + (m ? ' (' + m[1] + ')' : '') + ' · ' + similarRadiusLabel();
+}
 
 /** Background-prefetch the similar count for the popup button label. Only for
  *  fast radii (≤10km) — 20/50km can take many seconds cold, don't waste that. */
 function prefetchSimilarCount(pid) {
-  const btn = document.getElementById('pp-similar-btn');
-  if (btn) btn.textContent = similarBtnLabel(pid);
+  setSimilarBtn(document.getElementById('pp-similar-btn'), pid);
   updateSimilarRadiusLabel();
   const key = pid + ':' + similarRadiusNow() + ':' + G.vpTiles.size;
   if (G.similarCache[key] || !G.sel || G.sel.properties.parcel_id !== pid) return;
   fetchSimilar(G.sel, similarRadiusNow()).then(() => {
     if (G.sel && G.sel.properties.parcel_id === pid) {
-      const b = document.getElementById('pp-similar-btn');
-      if (b && !b.disabled) b.textContent = similarBtnLabel(pid);
+      setSimilarBtn(document.getElementById('pp-similar-btn'), pid);
     }
   }).catch(()=>{});
 }
@@ -11552,7 +11602,7 @@ window.findSimilarParcels = async function findSimilarParcels(opts) {
   const radius = Math.max(G.similarRadius, similarAutoRadius());
   const km = radius / 1000 + ' km';
   const btn = document.getElementById('pp-similar-btn');
-  if (btn) { btn.disabled = true; btn.textContent = tr('⏳ Suche ähnliche Parzellen in der Nähe…'); }
+  if (btn) { btn.disabled = true; setSimilarBtn(btn, pid, true); }
   G.similar = null; render();
   try {
     const d = await fetchSimilar(f, radius);
@@ -11583,7 +11633,7 @@ window.findSimilarParcels = async function findSimilarParcels(opts) {
   } catch(e) {
     toast('🔍 Ähnlichkeitssuche fehlgeschlagen', 'err');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = similarBtnLabel(pid); }
+    if (btn) { btn.disabled = false; setSimilarBtn(btn, pid); }
   }
 };
 

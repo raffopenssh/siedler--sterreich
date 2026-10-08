@@ -77,7 +77,7 @@
 <link rel="preload" href="/static/game-bg.jpg?v=2" as="image" type="image/jpeg">
 <link rel="preload" href="/static/fonts/press-start-2p-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/vt323-latin.woff2?v=1" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/style.css?v=20261027a">
+<link rel="stylesheet" href="/static/style.css?v=20261028d">
 </head>
 <body>
 <script>
@@ -349,15 +349,14 @@
       <div id="parcel-popup" class="popup draggable-popup">
         <div class="popup-drag-handle" data-drag-target="parcel-popup">☰</div>
         <button class="popup-close" id="popup-close">✕</button>
-        <h3 id="pp-title">-</h3>
-        <div class="pp-grid">
-          <span>Parzelle</span><b id="pp-id">-</b>
-          <span>KG</span><b id="pp-kg">-</b>
-          <span>EZ</span><b id="pp-ez">-</b>
-          <span id="pp-flur-l" style="display:none">Flur</span><b id="pp-flur" style="display:none">-</b>
+        <div class="pp-head">
+          <h3 id="pp-title">-</h3>
+          <div class="pp-sub" id="pp-sub"><span id="pp-kg">-</span><span class="pp-sub-sep">·</span><span id="pp-ez">-</span></div>
+        </div>
+        <div class="pp-body">
+        <div class="pp-grid pp-essentials">
           <span>Fläche</span><b id="pp-area">-</b>
           <span>Nutzung</span><b id="pp-use">-</b>
-          <span>Bebauung</span><b id="pp-density">-</b>
           <span id="pp-field-l" style="display:none">Feld</span><b id="pp-field" style="display:none">-</b>
           <span id="pp-crop-l" style="display:none">Anbau</span><b id="pp-crop" style="display:none">-</b>
           <span id="pp-eco-l" style="display:none">Ernte</span><b id="pp-eco" style="display:none">-</b>
@@ -366,15 +365,25 @@
           <span id="pp-regen-l" style="display:none">Wert</span><b id="pp-regen" style="display:none">-</b>
           <span>Preis</span><b id="pp-price">-</b>
         </div>
+        <div class="pp-sec" id="pp-sec-det">
+          <button class="pp-sec-h" data-sec="det"><span class="pp-sec-t">📋 Details</span><em class="pp-sec-sum" id="pp-sum-det"></em><i>▸</i></button>
+          <div class="pp-sec-b"><div class="pp-grid">
+            <span>Parzelle</span><b id="pp-id">-</b>
+            <span id="pp-flur-l" style="display:none">Flur</span><b id="pp-flur" style="display:none">-</b>
+            <span>Nutzung</span><b id="pp-use-full">-</b>
+            <span>Bebauung</span><b id="pp-density">-</b>
+          </div></div>
+        </div>
         <div class="pp-sec" id="pp-sec-bldg" style="display:none">
-          <button class="pp-sec-h" data-sec="bldg">🏚️ Gebäude <i>▸</i></button>
+          <button class="pp-sec-h" data-sec="bldg"><span class="pp-sec-t">🏚️ Gebäude</span><em class="pp-sec-sum" id="pp-sum-bldg"></em><i>▸</i></button>
           <div class="pp-sec-b" id="pp-bldg"></div>
         </div>
         <div class="pp-sec" id="pp-sec-env" style="display:none">
-          <button class="pp-sec-h" data-sec="env">⛰️ Gelände &amp; Umgebung <i>▸</i></button>
+          <button class="pp-sec-h" data-sec="env"><span class="pp-sec-t">⛰️ Gelände &amp; Umgebung</span><em class="pp-sec-sum" id="pp-sum-env"></em><i>▸</i></button>
           <div class="pp-sec-b"><div class="pp-grid pp-enhanced" id="pp-enhanced"></div></div>
         </div>
         <div class="pp-grid pp-sim" id="pp-sim" style="display:none"></div>
+        </div>
         <div id="pp-actions" class="pp-actions"></div>
       </div>
       <div id="tree-popup" class="popup draggable-popup tree-popup">
@@ -483,6 +492,6 @@
 </div>
 
 <script src="/static/i18n.js?v=20261023a"></script>
-<script src="/static/game.js?v=20261028g"></script>
+<script src="/static/game.js?v=20261028k"></script>
 </body>
 </html>

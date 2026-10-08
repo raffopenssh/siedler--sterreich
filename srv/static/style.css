@@ -493,6 +493,48 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-grid b { color:var(--text); font-weight:normal; }
 .pp-actions { margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; }
 #parcel-popup { bottom:16px; left:16px; }
+
+/* Parcel popup = header / scrolling body / pinned action bar. The actions never
+   scroll away: on a phone the sheet is ~45 vh high and the buy button used to
+   sit 300 px below the fold. */
+#parcel-popup.open { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+#parcel-popup .pp-head { flex:none; padding:14px 20px 8px; }
+#parcel-popup .pp-head h3 { margin:0; padding-right:28px; }
+#parcel-popup .pp-body { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:0 20px 10px; scrollbar-gutter:stable; }
+.pp-sub { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 6px; margin-top:4px; font:17px var(--font-game); color:var(--text-dim); line-height:1.1; }
+.pp-sub .pp-sub-sep { opacity:.5; }
+.pp-sub .pp-ez-link { color:var(--text-dim); }
+.pp-sub .pp-ez-link:hover { color:var(--text-bright); }
+.pp-essentials b { overflow-wrap:anywhere; }
+#parcel-popup .pp-actions {
+  flex:none; margin:0; padding:10px 20px 14px; gap:6px;
+  border-top:2px solid var(--panel-border);
+  background:linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.05)), var(--panel);
+  box-shadow:0 -6px 10px -6px rgba(0,0,0,.6);
+}
+/* body scrolled → stronger shadow on the bar */
+#parcel-popup .pp-body.scrolled + .pp-actions { box-shadow:0 -10px 14px -6px rgba(0,0,0,.85); }
+#parcel-popup .pp-actions:empty { display:none; }
+#parcel-popup .pp-actions .btn { margin:0; }
+/* primary row: the one thing to do, full width; secondary actions share a row */
+.pp-act-main { width:100%; display:flex; gap:6px; }
+.pp-act-main .btn { flex:1 1 auto; font-size:9px; padding:10px 12px; white-space:normal; line-height:1.5; }
+.pp-act-row { width:100%; display:flex; gap:6px; }
+.pp-act-row { flex-wrap:wrap; }
+.pp-act-row .btn { flex:1 1 auto; min-width:0; white-space:nowrap; }
+.pp-act-ico { flex:0 0 auto !important; width:38px; padding:6px 0 !important; position:relative; }
+.pp-act-ico .pp-cnt { position:absolute; top:-5px; right:-5px; font:14px var(--font-game); line-height:1; padding:1px 4px; background:var(--gold); color:#000; border:1px solid #000; font-style:normal; }
+.pp-act-note { width:100%; font:16px var(--font-game); color:var(--text-dim); line-height:1.1; }
+.pp-act-stage { width:100%; font:16px var(--font-game); color:var(--text-dim); line-height:1.1; margin-bottom:-2px; }
+.pp-offers { width:100%; border-top:1px solid var(--panel-border); padding-top:6px; margin-top:2px; }
+.pp-offers .pp-offers-t { font:8px var(--font-pixel); color:var(--gold); }
+.pp-offer { display:flex; align-items:center; gap:6px; margin-top:4px; font:18px var(--font-game); color:var(--text); }
+.pp-offer span { flex:1; }
+.pp-offer .btn { padding:3px 8px; font-size:7px; }
+.pp-offer-form { width:100%; }
+.pp-offer-form .pp-offer-l { font:8px var(--font-pixel); color:var(--text-dim); display:block; margin-bottom:4px; }
+.pp-offer-form .pp-offer-in { display:flex; gap:6px; align-items:stretch; }
+.pp-offer-form input { flex:1; min-width:0; width:80px; padding:6px 8px; font:20px var(--font-game); background:var(--bg); color:var(--text-bright); border:2px solid var(--panel-border); }
 #ez-popup { bottom:16px; right:60px; }
 #kg-popup { top:56px; right:60px; bottom:auto; max-height:calc(100vh - 120px); overflow-y:auto; }
 .kg-popup h3 { color:var(--gold); }
@@ -525,12 +567,18 @@ input[type=text]:focus { border-color:var(--gold); }
 /* Collapsible sections in the parcel popup */
 .pp-sec { margin-top:8px; border-top:1px solid var(--panel-border); }
 .pp-sec-h {
-  display:flex; align-items:center; justify-content:space-between; gap:8px;
-  width:100%; padding:6px 0 4px; background:none; border:none; cursor:pointer;
+  display:flex; align-items:center; gap:8px;
+  width:100%; padding:7px 0 5px; background:none; border:none; cursor:pointer;
   font:8px var(--font-pixel); color:var(--gold); text-align:left; overflow:hidden; /* rotated chevron must not widen the row */
+  min-height:30px;
 }
 .pp-sec-h:hover { color:#fff; }
-.pp-sec-h i { font-style:normal; transition:transform .15s; color:var(--text-dim); }
+.pp-sec-h .pp-sec-t { flex:none; white-space:nowrap; }
+/* one-line summary of the folded section ("216 m · 13° · Natura 2000") */
+.pp-sec-h .pp-sec-sum { flex:1 1 auto; min-width:0; font:16px var(--font-game); color:var(--text-dim); font-style:normal; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1; text-align:right; }
+.pp-sec-h .pp-sec-sum:empty { display:none; }
+.pp-sec.open .pp-sec-h .pp-sec-sum { visibility:hidden; }
+.pp-sec-h i { flex:none; font-style:normal; transition:transform .15s; color:var(--text-dim); margin-left:auto; }
 .pp-sec.open .pp-sec-h i { transform:rotate(90deg); }
 .pp-sec-b { display:none; }
 .pp-sec.open .pp-sec-b { display:block; }
@@ -748,12 +796,22 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .popup.flip { left:8px; right:8px; }
   #screen-game .popup.peek { max-height:46px; overflow:hidden; padding-top:10px; padding-bottom:6px; }
   .popup.peek::before { margin:-2px auto 6px; }
-  .popup.peek > *:not(h3):not(.popup-close):not(.popup-drag-handle) { visibility:hidden; }
+  .popup.peek > *:not(h3):not(.popup-close):not(.popup-drag-handle):not(.pp-head) { visibility:hidden; }
   .popup.peek h3 { margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:28px; }
   #parcel-popup {
     left:8px; right:8px; bottom:60px;
-    max-height:calc(55vh - 60px); /* fit above 52px bottom bar with room */
+    max-height:calc(58vh - 60px); /* fit above 52px bottom bar with room */
   }
+  #parcel-popup.open { padding:0; }
+  #parcel-popup .pp-head { padding:10px 14px 6px; }
+  #parcel-popup .pp-body { padding:0 14px 8px; }
+  #parcel-popup .pp-actions { padding:8px 14px 10px; }
+  #parcel-popup.open::before { margin:8px auto 0; flex:none; }
+  #parcel-popup.peek::before { margin:4px auto 0; }
+  #parcel-popup.peek .pp-head { padding-top:4px; }
+  #parcel-popup.peek .pp-sub { display:none; }
+  .pp-act-main .btn { padding:11px 10px; }
+  .pp-act-row .btn { padding:9px 6px; }
   #ez-popup {
     left:8px; right:8px; top:60px; bottom:auto;
     max-height:35vh;

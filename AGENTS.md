@@ -246,6 +246,18 @@ is a deprecated alias). Hit-test **all rings even-odd** (ring[0] of a part is th
 exterior, following rings holes; part order is not a contract). Footprints are
 single Polygons. Go side: `geomRings`, `pipRingsGo`, `bboxOfRaw` (viewport.go).
 
+**Parcel popup layout** (`#parcel-popup`, `showParcelPopup`): flex column `.pp-head` (title + `.pp-sub` with the
+KG ▸ / EZ ▸ links) → `.pp-body` (the only scroller) → `#pp-actions` **pinned** action bar — the buy/harvest/sell
+buttons are always on screen, desktop and phone. Essentials grid = Fläche, Nutzung (top-2 shares, full list in
+Details), game state rows (Feld/Wald/Anbau/Ernte/Brunnen/Wert), Besitzer, Preis. Everything else is folded in
+`.pp-sec` sections (`det` 📋 Details: Parzelle id, Ried, full Nutzung, Bebauung · `bldg` · `env`), each header
+carrying a one-line `.pp-sec-sum` (`ppSecSummary(name, text)`) so the folded state still informs. Defaults
+`G.ppSec` (only `bldg` open on desktop); explicit toggles persist in `localStorage siedler_ppsec` (`G.ppSecUser`).
+Action bar: `.pp-act-main` = the one headline action (Kaufen / Ernten / Förderung / Holzernte, else Naturschutz)
++ the icon-only 🔍 similar button (`.pp-act-ico`, count badge via `setSimilarBtn`), `.pp-act-row` = secondary
+(Naturwald/Aufforsten/Brunnen/Verkaufen), then offers / notes. Peek keeps `.pp-head`. xbrowser scenes
+`popup-actions` (asserts the first button is inside the popup and viewport), `popup-details`.
+
 **Hints vs. popups.** Canvas beacons (`edgePoint` → `avoidObstacles`) are clamped
 to `hudSafeInsets()` and steered around open popups (`_hudObstacles`; full-width
 phone sheets become insets); a covered target gets a chevron aimed at it. Desktop
