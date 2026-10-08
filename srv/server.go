@@ -181,7 +181,10 @@ func (s *Server) cacheJanitor() {
 			slog.Warn("cache janitor", "err", err)
 		} else if n > 0 {
 			slog.Info("cache janitor: pruned expired entries", "rows", n)
-			// Return freed pages to the OS-visible free list promptly.
+			// Hand the freed pages back to the OS: the file has auto_vacuum=INCREMENTAL
+			// (set once by hand, see docs/ops.md), so this actually shrinks db.sqlite3
+			// instead of leaving hundreds of MB on the freelist; a no-op otherwise.
+			s.DB.Exec("PRAGMA incremental_vacuum;")
 			s.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
 		}
 		time.Sleep(1 * time.Hour)
