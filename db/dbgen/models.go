@@ -89,6 +89,7 @@ type ParcelClaim struct {
 	WellAt        *time.Time `json:"well_at"`
 	WellDepthM    float64    `json:"well_depth_m"`
 	NeVerdict     string     `json:"ne_verdict"`
+	ConvertXp     int64      `json:"convert_xp"`
 }
 
 type ParcelHarvestState struct {

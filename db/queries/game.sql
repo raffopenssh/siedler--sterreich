@@ -62,7 +62,7 @@ SELECT * FROM parcel_claims WHERE session_id = ? AND player_id = ?;
 SELECT * FROM parcel_claims WHERE session_id = ?;
 
 -- name: ConvertParcel :exec
-UPDATE parcel_claims SET converted_to = ? WHERE id = ?;
+UPDATE parcel_claims SET converted_to = ?, convert_xp = ? WHERE id = ?;
 
 -- name: CreateChallenge :exec
 INSERT INTO challenges (session_id, player_id, challenge_type, title, description, target_parcel_hash, reward_coins, reward_xp)

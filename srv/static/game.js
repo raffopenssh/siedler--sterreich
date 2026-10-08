@@ -11011,6 +11011,9 @@ function showParcelPopup(f, tappedFp) {
   } else if (claim.player_id === G.player.id) {
     const convLabel = claim.converted_to === 'wildforest' ? '🌳 ' + tr('Naturwald') : claim.converted_to === 'biodiversity' ? (isCropField(p) ? tr('Naturschutz') + ' · ' + tr('Brache') : tr('Naturschutz')) : claim.converted_to === 'forest' ? tr('Aufforstung') : claim.converted_to;
     extra = `<span class="pp-act-note" style="color:var(--green-light);font-size:18px">✅ ${convLabel}</span>`;
+    // Selling a protected parcel gives the protection up and takes its XP back (server mirror convertXPOf)
+    const xpBack = convertXPOf(claim);
+    row += `<button class="btn btn-danger btn-small" onclick="doSell(${claim.id})" title="${tr('Schutz aufgeben')} · −${xpBack}⚡">💰 ${tr('Verkaufen')} (+${sellQuote(claim, rg)}🪙 · −${xpBack}⚡)</button>`;
   } else {
     // Someone else's parcel — offer to buy (reserves are permanent: no offers)
     const myOffer = (G.offers||[]).find(o => o.parcel_id === pid && o.buyer_id === G.player.id && o.status === 'pending');
@@ -12127,12 +12130,20 @@ window.doConvert = async function(to) {
   await loadClaimed(); await loadBio(); render(); showParcelPopup(G.sel); loadChallenges();
 };
 
+// XP a sale of a converted parcel takes back (mirrors server convertXPOf)
+function convertXPOf(claim) {
+  if (!claim?.converted_to) return 0;
+  if (claim.convert_xp > 0) return claim.convert_xp;
+  return claim.converted_to === 'biodiversity' ? 100 : claim.converted_to === 'wildforest' ? 150 : 50;
+}
 window.doSell = async function(claimId) {
   const sel = G.sel;
+  const cl = (G.claimed || []).find(c => c.id === claimId);
+  if (cl?.converted_to && !confirm(tr('Schutz aufgeben') + '? −' + convertXPOf(cl) + '⚡')) return;
   const res = await POST('/api/sell-parcel', {session_id:G.session.id, player_id:G.player.id, claim_id:claimId, parcel_id: sel && sel.properties.parcel_id, crop_group: sel ? parcelCrop(sel.properties) : ''});
   if (res.error) { toast(res.error,'err'); return; }
   if (sel) dealFX('sell', sel, res.sell_price);
-  toast('💰 Verkauft für '+res.sell_price+'🪙' + (res.regen < 1 ? ' · ' + Math.round(res.regen * 100) + ' % ' + tr('Wert') : ''),'ok');
+  toast('💰 Verkauft für '+res.sell_price+'🪙' + (res.regen < 1 ? ' · ' + Math.round(res.regen * 100) + ' % ' + tr('Wert') : '') + (res.xp_lost > 0 ? ' · −' + res.xp_lost + '⚡' : ''),'ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render();
   document.getElementById('parcel-popup').classList.remove('open');

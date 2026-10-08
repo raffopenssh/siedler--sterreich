@@ -402,6 +402,7 @@ const I18N_EXACT = {
   'Nutzungsart': 'land use',
   'Holz geerntet': 'Timber harvested',
   'Verkaufen': 'Sell',
+  'Schutz aufgeben': 'Give up protection',
   'VERKAUFT': 'SOLD',
   'statt': 'instead of',
   'voll in': 'full in',

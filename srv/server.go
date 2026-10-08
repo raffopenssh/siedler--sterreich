@@ -1346,6 +1346,7 @@ func (s *Server) handleConvertParcel(w http.ResponseWriter, r *http.Request) {
 	convertTo := req.ConvertTo
 	s.Q.ConvertParcel(r.Context(), dbgen.ConvertParcelParams{
 		ConvertedTo: &convertTo,
+		ConvertXp:   xpReward,
 		ID:          claim.ID,
 	})
 	s.Q.UpdatePlayerXP(r.Context(), dbgen.UpdatePlayerXPParams{
@@ -1512,6 +1513,13 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 		Coins: payout,
 		ID:    req.PlayerID,
 	})
+	// A protected parcel (Naturschutz / Aufforstung / Naturwald) can be sold
+	// too, but the protection is given up and the XP it earned goes back —
+	// otherwise convert → sell → rebuy → convert would farm XP.
+	xpLost := convertXPOf(claim)
+	if xpLost > 0 {
+		s.DB.ExecContext(r.Context(), "UPDATE players SET xp = MAX(0, xp - ?) WHERE id = ?", xpLost, req.PlayerID)
+	}
 
 	// The regrowth clock survives the sale (parcel_harvest_state, hash only).
 	if claim.HarvestedAt != nil && req.ParcelID != "" {
@@ -1533,7 +1541,25 @@ func (s *Server) handleSellParcel(w http.ResponseWriter, r *http.Request) {
 		"player":      player.Name,
 	})
 
-	jsonResp(w, map[string]any{"success": true, "sell_price": payout, "regen": regen, "regen_progress": regenProgress, "player": player})
+	jsonResp(w, map[string]any{"success": true, "sell_price": payout, "regen": regen, "regen_progress": regenProgress, "xp_lost": xpLost, "player": player})
+}
+
+// convertXPOf is the XP a sale of a converted parcel takes back: the stored
+// reward, or (claims converted before migration 018) the base reward of the kind.
+func convertXPOf(c *dbgen.ParcelClaim) int64 {
+	if c.ConvertedTo == nil || *c.ConvertedTo == "" {
+		return 0
+	}
+	if c.ConvertXp > 0 {
+		return c.ConvertXp
+	}
+	switch *c.ConvertedTo {
+	case "biodiversity":
+		return 100
+	case "wildforest":
+		return 150
+	}
+	return 50
 }
 
 // ---- Parcel Offer System ----

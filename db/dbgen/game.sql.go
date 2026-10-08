@@ -127,16 +127,17 @@ func (q *Queries) CompleteChallenge(ctx context.Context, id int64) error {
 }
 
 const convertParcel = `-- name: ConvertParcel :exec
-UPDATE parcel_claims SET converted_to = ? WHERE id = ?
+UPDATE parcel_claims SET converted_to = ?, convert_xp = ? WHERE id = ?
 `
 
 type ConvertParcelParams struct {
 	ConvertedTo *string `json:"converted_to"`
+	ConvertXp   int64   `json:"convert_xp"`
 	ID          int64   `json:"id"`
 }
 
 func (q *Queries) ConvertParcel(ctx context.Context, arg ConvertParcelParams) error {
-	_, err := q.db.ExecContext(ctx, convertParcel, arg.ConvertedTo, arg.ID)
+	_, err := q.db.ExecContext(ctx, convertParcel, arg.ConvertedTo, arg.ConvertXp, arg.ID)
 	return err
 }
 
@@ -509,7 +510,7 @@ func (q *Queries) GetOfferByID(ctx context.Context, id int64) (ParcelOffer, erro
 }
 
 const getParcelClaim = `-- name: GetParcelClaim :one
-SELECT id, session_id, player_id, parcel_hash, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez_hash, tall_trees, harvested_at, harvests, well_at, well_depth_m, ne_verdict FROM parcel_claims WHERE session_id = ? AND parcel_hash = ?
+SELECT id, session_id, player_id, parcel_hash, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez_hash, tall_trees, harvested_at, harvests, well_at, well_depth_m, ne_verdict, convert_xp FROM parcel_claims WHERE session_id = ? AND parcel_hash = ?
 `
 
 type GetParcelClaimParams struct {
@@ -539,6 +540,7 @@ func (q *Queries) GetParcelClaim(ctx context.Context, arg GetParcelClaimParams) 
 		&i.WellAt,
 		&i.WellDepthM,
 		&i.NeVerdict,
+		&i.ConvertXp,
 	)
 	return i, err
 }
@@ -868,7 +870,7 @@ func (q *Queries) GetPlayerChallenges(ctx context.Context, arg GetPlayerChalleng
 }
 
 const getPlayerParcels = `-- name: GetPlayerParcels :many
-SELECT id, session_id, player_id, parcel_hash, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez_hash, tall_trees, harvested_at, harvests, well_at, well_depth_m, ne_verdict FROM parcel_claims WHERE session_id = ? AND player_id = ?
+SELECT id, session_id, player_id, parcel_hash, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez_hash, tall_trees, harvested_at, harvests, well_at, well_depth_m, ne_verdict, convert_xp FROM parcel_claims WHERE session_id = ? AND player_id = ?
 `
 
 type GetPlayerParcelsParams struct {
@@ -904,6 +906,7 @@ func (q *Queries) GetPlayerParcels(ctx context.Context, arg GetPlayerParcelsPara
 			&i.WellAt,
 			&i.WellDepthM,
 			&i.NeVerdict,
+			&i.ConvertXp,
 		); err != nil {
 			return nil, err
 		}
@@ -1140,7 +1143,7 @@ func (q *Queries) GetSessionOffers(ctx context.Context, sessionID string) ([]Get
 }
 
 const getSessionParcels = `-- name: GetSessionParcels :many
-SELECT id, session_id, player_id, parcel_hash, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez_hash, tall_trees, harvested_at, harvests, well_at, well_depth_m, ne_verdict FROM parcel_claims WHERE session_id = ?
+SELECT id, session_id, player_id, parcel_hash, kg_code, gnr, area_sqm, landuse, converted_to, purchase_price, claimed_at, ez_hash, tall_trees, harvested_at, harvests, well_at, well_depth_m, ne_verdict, convert_xp FROM parcel_claims WHERE session_id = ?
 `
 
 func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]ParcelClaim, error) {
@@ -1171,6 +1174,7 @@ func (q *Queries) GetSessionParcels(ctx context.Context, sessionID string) ([]Pa
 			&i.WellAt,
 			&i.WellDepthM,
 			&i.NeVerdict,
+			&i.ConvertXp,
 		); err != nil {
 			return nil, err
 		}
