@@ -522,8 +522,8 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-act-row { width:100%; display:flex; gap:6px; }
 .pp-act-row { flex-wrap:wrap; }
 .pp-act-row .btn { flex:1 1 auto; min-width:0; white-space:nowrap; }
-.pp-act-ico { flex:0 0 auto !important; width:38px; padding:6px 0 !important; position:relative; }
-.pp-act-ico .pp-cnt { position:absolute; top:-5px; right:-5px; font:14px var(--font-game); line-height:1; padding:1px 4px; background:var(--gold); color:#000; border:1px solid #000; font-style:normal; }
+.pp-act-ico { flex:0 0 auto !important; width:44px; padding:6px 0 !important; position:relative; text-align:left; text-indent:6px; }
+.pp-act-ico .pp-cnt { position:absolute; top:1px; right:1px; font:12px var(--font-game); line-height:1; padding:1px 3px; background:var(--gold); color:#000; border:1px solid #000; font-style:normal; text-indent:0; }
 .pp-act-note { width:100%; font:16px var(--font-game); color:var(--text-dim); line-height:1.1; }
 .pp-act-stage { width:100%; font:16px var(--font-game); color:var(--text-dim); line-height:1.1; margin-bottom:-2px; }
 .pp-offers { width:100%; border-top:1px solid var(--panel-border); padding-top:6px; margin-top:2px; }
