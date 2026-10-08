@@ -80,6 +80,19 @@
 <link rel="stylesheet" href="/static/style.css?v=20261027a">
 </head>
 <body>
+<script>
+// ES5-only guard: Internet Explorer / very old browsers cannot parse game.js (optional chaining,
+// generators, classes) and would sit on a blank screen. Tell them, in ES5.
+(function () {
+  try { new Function('var a = {}; return a?.b ?? 1; function* g(){}'); }
+  catch (e) {
+    var d = document.createElement('div');
+    d.setAttribute('style', 'position:fixed;left:0;top:0;right:0;z-index:99999;background:#2a1a08;color:#f4e6c1;font:16px/1.5 Georgia,serif;padding:14px 18px;border-bottom:4px solid #d8b040;text-align:center');
+    d.innerHTML = '<b>Dieser Browser wird nicht unterst\u00fctzt.</b> Siedler \u00d6sterreich braucht einen aktuellen Browser \u2014 bitte Microsoft Edge, Chrome, Firefox oder Safari verwenden. / <i>This browser is not supported; please use Edge, Chrome, Firefox or Safari.</i>';
+    document.body.insertBefore(d, document.body.firstChild);
+  }
+})();
+</script>
 <div id="app">
   
   <!-- Chat rules (first use) -->
