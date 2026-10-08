@@ -255,6 +255,26 @@ column). Phones: every popup is a sheet (grabber, swipe header down → `.peek`,
 again → close, tap → expand; `initPopupSheets`). Call `invalidateHudInsets()`
 after moving a popup programmatically (class changes are observed automatically).
 
+**Performance tier (`PERF`, game.js).** Measured, not guessed: `perfNoteBuild(ms)` (CPU time of every completed
+base build, EMA) and `perfNoteFrame(ms)` (live frame minus pump time). Build EMA > 450 ms or sustained frames > 34 ms
+→ **low tier** (`perfSlow()`): nature/forest overlays static, treasure loop 10 fps, building footprints flat boxes
+below z17, crop sprites only ≥ z17, forest filler thinned, NE apex budget halved, wheel ease 70 ms. ≤ 2 cores / ≤ 2 GB
+/ reduced-motion start low; recovery after 10 cheap builds. `DEV.perf()` / `DEV.perf('low'|'high'|null)`, `?perf=low`.
+Rules that keep it smooth, learned the hard way (2026-10-08, "ruckelig in Wien"): **never rebuild the base while a zoom
+gesture is live** (`zooming` in `drawCachedBase` — the ease changes zoom every frame, so each frame restarted and
+pumped a build that was discarded next frame); the minimap base is keyed on *data*, not camera, and slid affinely
+during motion (`MINI.baseW`); living overlays visit `statefulPolys(claimMap)` (claims + harvest rows), never all
+18 000 polygons; per-feature memos for terrain (`f._ter`), veg (`f._veg`), toponym text width (`t._mw`); layout reads
+(`getBoundingClientRect`) are cached 400 ms; toponym placement is reused ≤ 150 ms while the camera moves; heavy base
+steps (landuse polys, footprints, forest/crop sprites) are generators that yield every 64–512 features; each pump
+slice ends with a 1 px `drawImage` into a scratch canvas (`_flushCtx`) so Chromium's deferred canvas raster is paid
+inside the slice instead of as one 200 ms hitch at the first blit. Wheel: `ZOOM_LEAD` 1.25 caps how far the target may
+run ahead, a direction reversal drops the queued lead (`smoothZoomBy`), `zoomStep` dt cap 400 ms (frame-rate independent
+on 3 fps machines). Drills: `python3 tools/perf_wheel.py <cdp-port> <cpu-throttle> [lon lat zoom] [auto|low|high]`
+(real CDP wheel notches: frame gaps, long tasks, overshoot, reversal latency) and `tools/cpuprof.py <port> "<js>" [rate]`
+(V8 sampling profile → top self/total functions); port via `ss -ltnp | grep headless-shell`. `DEV.goto` hangs under
+`Profiler.start` ("Promise was collected") — set `G.cam` + `loadMoreParcels()` directly in drills.
+
 **Camera in the URL.** `syncViewHash()` (from `renderNow`, 600 ms debounce) keeps `#v=lon,lat,zoom` current while playing; `startGameWithLoading` applies it, so reload / "Weiter ▸" / rejoin links reopen the exact viewport — no cookies, no storage. **Enhanced badge** (`#enhanced-badge`): shown only while ≥ 60 % of the visible parcel area (`enhancedViewShare()`, bbox pass ≤ 1 per 400 ms, hysteresis: hides < 50 %) carries terrain/NE enrichment; hide = CSS `.fade-out` (`badgeVisible`), `display:none` after 650 ms.
 
 **Austrian border.** `srv/static/austria.json` → `G.atBorder`; `drawForeignShading()`,
