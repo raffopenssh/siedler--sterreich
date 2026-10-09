@@ -701,10 +701,10 @@ input[type=text]:focus { border-color:var(--gold); }
 /* Secondary tools (Earth, share, layers, GPS) fold under one "more" button so
    the column is three buttons at rest — tap/hover opens the tray. A gold dot
    on the button says "a layer is on" while folded. */
-.zc-tools { display:flex; flex-direction:column; gap:inherit; max-height:0; overflow:hidden; opacity:0; transform:translateY(-6px);
-  transition:max-height .25s ease, opacity .2s ease, transform .2s ease; pointer-events:none; }
-.zoom-controls.open .zc-tools { max-height:360px; opacity:1; transform:none; pointer-events:auto; }
-@media (hover:hover) and (pointer:fine) { .zoom-controls:hover .zc-tools { max-height:360px; opacity:1; transform:none; pointer-events:auto; } }
+.zc-tools { display:flex; flex-direction:column; gap:inherit; max-height:0; overflow:hidden; opacity:0; transform:translateY(-6px); visibility:hidden;
+  transition:max-height .25s ease, opacity .2s ease, transform .2s ease, visibility 0s linear .25s; pointer-events:none; }  /* visibility: folded buttons leave the tab order + a11y tree */
+.zoom-controls.open .zc-tools { max-height:360px; opacity:1; transform:none; pointer-events:auto; visibility:visible; transition-delay:0s; }
+@media (hover:hover) and (pointer:fine) { .zoom-controls:hover .zc-tools { max-height:360px; opacity:1; transform:none; pointer-events:auto; visibility:visible; transition-delay:0s; } }
 .zc-more { position:relative; color:var(--gold); }
 .zoom-controls.open .zc-more, .zoom-controls:hover .zc-more { background:var(--panel-light); }
 .zc-more .zc-dot { position:absolute; top:4px; right:4px; width:6px; height:6px; background:var(--green-light); box-shadow:0 0 0 1px #000; display:none; }

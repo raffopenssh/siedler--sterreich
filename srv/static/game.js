@@ -687,6 +687,7 @@ function luckyAvoidQS() {
         const p = await GET('/api/player/'+savedPid);
         if (p.error) return;
         G.player = p;
+        if (!(p.xp > 0) && !(p.treasures_found > 0)) G.freshPlayer = true;   // nothing done yet → Herald intro
         const sess = await GET('/api/session/'+autoSid);
         if (sess.error) return;
         G.session = sess;
@@ -785,6 +786,9 @@ window.quickLogin = async function() {
     const p = await GET('/api/player/'+id);
     if (p.error) { setUrlParams({pid:null,pname:null,rejoin:null}); return; }
     G.player = p;
+    // A player who has not done anything yet (registered via curl/agent, or
+    // bounced before the first claim) still gets the Herald intro on rejoin.
+    if (!(p.xp > 0) && !(p.treasures_found > 0)) G.freshPlayer = true;
     // keep the token in memory too, so links built from G.playerToken
     // (rejoin/invite copy, DEV) work after a URL-based rejoin
     const rt = getUrlParam('rejoin'); if (rt && rt !== 'null') G.playerToken = rt;
@@ -3158,12 +3162,12 @@ function handleEvent(d) {
     case 'chat_refresh': loadChat(); break;
     case 'chat_mode': applyChatMode(d.mode); { const sel=document.getElementById('chat-mode'); if (sel) sel.value=d.mode; } toast(tr('Chat-Modus geändert'),''); break;
     case 'player_joined': toast('⚔️ '+d.player.name+' beigetreten!','ok'); loadPlayers(); break;
-    case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,'', { quiet: true }); loadClaimed().then(()=>render()); break;
-    case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'', { quiet: true }); loadClaimed().then(()=>{render();loadBio();}); break;
-    case 'parcel_sold': toast('💰 '+d.player+' verkauft','', { quiet: true }); loadClaimed().then(()=>render()); break;
+    case 'parcel_claimed': if (d.player !== G.player?.name) toast('🏴 '+d.player+' → '+d.parcel_id,'', { quiet: true }); loadClaimed().then(()=>render()); break;
+    case 'parcel_converted': if (d.player !== G.player?.name) toast('🌿 '+d.player+' → '+d.convert_to,'', { quiet: true }); loadClaimed().then(()=>{render();loadBio();}); break;
+    case 'parcel_sold': if (d.player !== G.player?.name) toast('💰 '+d.player+' verkauft','', { quiet: true }); loadClaimed().then(()=>render()); break;
     case 'parcel_harvested': if (d.player !== G.player?.name) toast((d.forest ? '🪓 ' : d.meadow ? '🏛 ' : '🌾 ')+d.player+(d.meadow ? ' ' + tr('holt Förderung') + ' ' : ' erntet ')+d.coins+'🪙'+(d.drought >= 2 ? ' ☀️' : ''),'', { quiet: true }); loadClaimed().then(()=>render()); break;
     case 'well_dug': if (d.player !== G.player?.name) toast('🕳️ '+d.player+' '+tr('gräbt einen Brunnen')+' ('+String(d.depth_m).replace('.', ',')+' m)','', { quiet: true }); loadClaimed().then(()=>{ invalidateBase(); render(); }); break;
-    case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)','', { quiet: true }); loadClaimed().then(()=>render()); break;
+    case 'ez_claimed': if (d.player !== G.player?.name) toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)','', { quiet: true }); loadClaimed().then(()=>render()); break;
     case 'challenge_completed':
       if (d.player === G.player?.name) { if (Herald.available()) Herald.completed(d.title); else toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); loadChallenges(); updateStatsFromServer(); }
       else toast('🏆 '+d.player+': '+tr(d.title||'Aufgabe'),'', { quiet: true });
@@ -12945,6 +12949,10 @@ const Herald = {
   },
   _next() {
     const now = Date.now();
+    // `ttl` starts counting only once the item *could* play (Herald idle, quiet
+    // gap over) — a hint queued behind the 60 s intro must not die unseen.
+    const free = !this.el.classList.contains('show') && now >= this.quietUntil;
+    for (const q of this.queue) if (q.ttl && !q.expires && free) q.expires = now + q.ttl;
     this.queue = this.queue.filter(q => !q.expires || q.expires > now);
     if (!this.queue.length) return;
     this.queue.sort((a, b) => (b.prio || 0) - (a.prio || 0));
@@ -13023,14 +13031,16 @@ const Herald = {
       this.play(lines, 'intro');
     } else if (q && G.freshPlayer && !this.seen.has('quest0')) {
       this.seen.add('quest0');
-      this.enqueue({ key: 'quest0', lines: [this.questLine(q)], mode: 'quest', autoHide: 14000, compact: true, expires: Date.now() + 120000 });
+      this.enqueue({ key: 'quest0', lines: [this.questLine(q)], mode: 'quest', autoHide: 14000, compact: true, ttl: 120000 });
     }
   },
 
   /** One-shot contextual hints. */
   hint(key) {
     this.init(); if (!this.el || this.seen.has(key)) return;
-    if (this.mode === 'intro' && this.el.classList.contains('show')) return; // don't interrupt the intro
+    // (no "don't interrupt the intro" guard any more: the queue waits for calm,
+    // and a hint fired once during the intro — `enhanced` from the badge — would
+    // otherwise be lost until the next pan.)
     const H = {
       first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Öffne es nochmal und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — XP und 30 %-Ziel.') },
       first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 60 Minuten. Golden + 🌾-Marker = ernten, sonst tun es die Bauern. Oder als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen lassen — zählt zum Naturschutz.') },
@@ -13043,7 +13053,7 @@ const Herald = {
     this.seen.add(key);
     // Hints are whispers: compact box, no typewriter, gone after 9 s, dropped
     // unseen when the player stays busy for 90 s (the moment has passed).
-    this.enqueue({ key, lines: [H[key]], mode: 'hint', autoHide: 9000, compact: true, expires: Date.now() + 90000 });
+    this.enqueue({ key, lines: [H[key]], mode: 'hint', autoHide: 9000, compact: true, ttl: 90000 });
   },
 
   /** Quest completed → celebrate, then reveal the next one. */
@@ -13093,7 +13103,7 @@ const Herald = {
       // Herald already idle on its last line → advance to the new one.
       if (this.el.classList.contains('ready') && this.idx === this.lines.length - 2) {
         clearTimeout(this.hideTimer); clearTimeout(this.timer);
-        this.timer = setTimeout(() => this.advance(), 1500);
+        this.timer = setTimeout(() => this.advance(), this.compact ? 4000 : 1500);   // the ✔ line must stand long enough to be read
       }
     }, 1200);
   },
@@ -13775,7 +13785,7 @@ function renderDossier(d) {
 /** Cached /api/field-economy for an owned field (60 s). Triggers a re-render when it lands. */
 function fieldEconomy(pid) {
   const e = G.fieldEco[pid];
-  if (e && e.d && Date.now() - e.t < 60000) return e.d;
+  if (e && !e.loading && Date.now() - e.t < 60000) return e.d;   // also a negative answer (404 for a parcel the server does not know) — no refetch on every popup render
   if (e && e.loading) return e.d || null;
   const f = G.sel && G.sel.properties.parcel_id === pid ? G.sel : polyById(pid);
   if (!f) return null;
