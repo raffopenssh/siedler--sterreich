@@ -758,7 +758,7 @@ function luckyAvoidQS() {
     if (invitePreview?.session) {
       if (e.key==='Enter') document.getElementById('btn-join-invite').click();
     } else {
-      if (e.key==='Enter') document.getElementById('btn-register').click();
+      if (e.key==='Enter') document.getElementById('btn-lucky').click();
     }
   });
 })();
