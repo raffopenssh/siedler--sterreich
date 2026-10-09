@@ -2373,7 +2373,10 @@ let _giantScoutKey = '', _giantScoutAt = 0;
 function loadNearbyGiants(force) {
   if (!G.tallUnlocked || !G.cam) return;
   const own = Object.keys(G.topTrees).some(k => k !== 'near' && (G.topTrees[k] || []).length);
-  if (own) { if (G.topTrees.near) { delete G.topTrees.near; G.lidarGen++; } return; }
+  // Scouted giants are real trees; they stay once KG giants exist (tallIndex
+  // dedups the overlap). Dropping the list used to make the tree the mist had
+  // just led to vanish when its KG's top-120 list did not contain it.
+  if (own) return;
   const key = Math.round(G.cam.lon / 0.02) + ':' + Math.round(G.cam.lat / 0.02);
   const now = Date.now();
   if (!force && key === _giantScoutKey && now - _giantScoutAt < 10 * 60 * 1000) return;
@@ -4131,9 +4134,17 @@ function tallIndex() {
   for (const t of all) {
     const gx = Math.floor(t.lon / CELL), gy = Math.floor(t.lat / CELL);
     let dup = false;
-    for (let dx = -1; dx <= 1 && !dup; dx++) for (let dy = -1; dy <= 1; dy++) if (near.has((gx + dx) + ':' + (gy + dy))) { dup = true; break; }
-    if (dup) continue;
-    near.set(gx + ':' + gy, 1); kept.push(t);
+    for (let dx = -1; dx <= 1 && !dup; dx++) for (let dy = -1; dy <= 1; dy++) { const k = near.get((gx + dx) + ':' + (gy + dy)); if (k) { dup = k; break; } }
+    if (dup) {
+      // The same crown from another source replaces an object the player may
+      // already have discovered (or just tapped) — carry the Chronik entry and
+      // the pin over, or the tree vanishes from the zoomed-out view.
+      if (G.tallSeen && G.tallSeen.has(t._k) && !G.tallSeen.has(dup._k)) { G.tallSeen.add(dup._k); saveTallSeen(); }
+      if (t._pinned && !(dup._pinned > t._pinned)) dup._pinned = t._pinned;
+      if (!dup.kg_name && t.kg_name) { dup.kg_name = t.kg_name; dup.gemeinde_name = t.gemeinde_name; }
+      continue;
+    }
+    near.set(gx + ':' + gy, t); kept.push(t);
   }
   all.length = 0; all.push(...kept);
   const cells = new Map();
@@ -4677,6 +4688,21 @@ let fogHintPos = null; // {x, y, lon, lat} for tap handling
 // hide a roaming cache near the camera (POST …/treasures/roam) — "treasures
 // should be somewhere" — and the compass then points at that.
 let treasureHintSince = 0, treasureHintPos = null, _roamAskedAt = 0, _roamKey = '';
+// Tap memory for both beacons: what was actually *painted* (and where) in the
+// last frames. The live `fogHintPos`/`treasureHintPos` are nulled the moment
+// the arbiter or a 1 px camera drift fades a beacon, so a tap that lands on a
+// beacon still visible on screen used to fall through to the parcel below —
+// "I have to tap the wizard twice". Hit-testing reads this record instead.
+const BEACON_TAP = { tree: null, treasure: null, ttl: 1500 };
+function beaconNoteDrawn(kind, rec, fade) { if (fade > 0.04) BEACON_TAP[kind] = Object.assign({ at: performance.now() }, rec); }
+function hitBeacon(kind, x, y) {
+  const r = BEACON_TAP[kind];
+  if (!r || performance.now() - r.at > BEACON_TAP.ttl) return null;
+  // whole painted footprint: mist blobs + rune rings (r≈40), chevron (≤45 px
+  // along the bearing), glyph, title and distance lines below (≤ +48 px)
+  if (Math.abs(r.x - x) > 62 || y - r.y > 66 || r.y - y > 56) return null;
+  return r;
+}
 // ---- Beacon arbiter: the giant-tree mist and the treasure compass never
 // share the screen. Each candidate asks `beaconTurn(id)` per frame; the
 // arbiter grants one at a time (BEACON.show ms), then a quiet gap, then the
@@ -4841,6 +4867,7 @@ function drawTreasureHint(ctx) {
     ep.y = Math.min(gc.height - ins.bottom - 50, Math.max(ins.top + 40, ep.y));
   }
   treasureHintPos = { x: ep.x, y: ep.y, lon: best.lon, lat: best.lat, t: best };
+  beaconNoteDrawn('treasure', treasureHintPos, fade);
   const rar = treasureRarity(best);
   const isCreature = isSpeciesTreasure(best);
   const glyph = isCreature ? (best.treasure_type === 'roaming' ? '🐾' : '🦎') : '💎';
@@ -4882,7 +4909,8 @@ function drawTallTreeFogHint(ctx) {
     fade *= turn;
   }
   const ex = onSpot ? best.x : ep.x, ey = onSpot ? best.y : ep.y;
-  fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat };
+  fogHintPos = { x: ex, y: ey, lon: best.t.lon, lat: best.t.lat, t: best.t };
+  beaconNoteDrawn('tree', fogHintPos, fade);
   const mLon = 111320 * Math.cos(G.cam.lat * Math.PI/180);
   const dm = Math.hypot((best.t.lon - G.cam.lon) * mLon, (best.t.lat - G.cam.lat) * 110540);
   const far = best.t._kg === 'near';   // giant outside the loaded KGs (nearby-giants scout)
@@ -4909,6 +4937,7 @@ function drawTopLandmarks(ctx) {
     } else {
       const inView = tallTreesInView();
       const drawCap = giantDrawBudget();
+      const now0 = Date.now();
       let pool;
       if (zoom >= 15.5) {
         // Up close: every giant in view (tallest first, within budget) is
@@ -4922,6 +4951,10 @@ function drawTopLandmarks(ctx) {
         pool = [];
         for (const t of inView) { if (G.tallSeen.has(t._k)) { pool.push(t); if (pool.length >= cap) break; } }
       }
+      // A giant the player just tapped / was led to by the mist is drawn no
+      // matter what the caps say for the next 90 s — never let the target of a
+      // flight disappear on arrival.
+      for (const t of inView) if (t._pinned && now0 - t._pinned < 90000 && !pool.includes(t)) { pool.unshift(t); if (!G.tallSeen.has(t._k)) discoverTrees([t]); }
       const budget = giantAnimBudget();
       const now = Date.now();
       // Label pre-pass in rank order (tallest first) so the champion keeps
@@ -9964,6 +9997,7 @@ function initMiniInput() {
 
 // ---- Game Input ----
 let loadTimer;
+const DRAG_SLOP_MOUSE = 4, DRAG_SLOP_TOUCH = 9;   // CSS px before a press becomes a pan
 function initGameInput() {
   gc.addEventListener('mousedown', e => {
     stopCameraAnims();
@@ -9975,7 +10009,8 @@ function initGameInput() {
   gc.addEventListener('mousemove', e => {
     if (!G.drag.active) return;
     const dx = e.clientX - G.drag.sx, dy = e.clientY - G.drag.sy;
-    if (Math.abs(dx)+Math.abs(dy)>3) G.drag.moved = true;
+    if (!G.drag.moved && Math.hypot(dx, dy) > DRAG_SLOP_MOUSE) G.drag.moved = true;
+    if (!G.drag.moved) return;   // a click never nudges the camera (a 1 px nudge fades every beacon)
     const s = mapScale();
     G.cam.lon = G.drag.slon - dx/s;
     G.cam.lat = G.drag.slat + dy/(s*1.35);
@@ -10027,7 +10062,11 @@ function initGameInput() {
     e.preventDefault();
     if (e.touches.length===1 && G.drag.active) {
       const dx=e.touches[0].clientX-G.drag.sx, dy=e.touches[0].clientY-G.drag.sy;
-      if(Math.abs(dx)+Math.abs(dy)>3) G.drag.moved=true;
+      // Finger slop: a tap drifts a few px; that must stay a tap, and the camera
+      // must not move for it (the old 3 px Manhattan threshold turned every
+      // second phone tap into a 2 px pan that killed the tap).
+      if (!G.drag.moved && Math.hypot(dx, dy) > DRAG_SLOP_TOUCH) G.drag.moved = true;
+      if (!G.drag.moved) return;
       const s=mapScale();
       G.cam.lon=G.drag.slon-dx/s; G.cam.lat=G.drag.slat+dy/(s*1.35);
       render();
@@ -10861,15 +10900,18 @@ function onGameClick(e) {
   }
 
   // Treasure compass card: tap flies to the treasure it points at
-  if (treasureHintPos && Math.abs(treasureHintPos.x - x) < 70 && Math.abs(treasureHintPos.y - y) < 50) {
-    flyTo(treasureHintPos.lon, treasureHintPos.lat, Math.max(G.cam.zoom, 16.5));
-    const t = treasureHintPos.t;
+  const trHit = hitBeacon('treasure', x, y);
+  if (trHit) {
+    flyTo(trHit.lon, trHit.lat, Math.max(G.cam.zoom, 16.5));
+    const t = trHit.t;
     toast((isSpeciesTreasure(t) ? '🐾 ' + tr(t.species_german || '') : '💎 ' + tr(treasureRarity(t).name)) + ' · ' + tr('Der Kompass führt dich hin'), '');
     return;
   }
   // Miracle fog hint: tapping the mist flies to the nearest giant tree
-  if (fogHintPos && Math.abs(fogHintPos.x - x) < 45 && Math.abs(fogHintPos.y - y) < 45) {
-    flyTo(fogHintPos.lon, fogHintPos.lat, Math.max(G.cam.zoom, 15.5));
+  const fogHit = hitBeacon('tree', x, y);
+  if (fogHit) {
+    if (fogHit.t) fogHit.t._pinned = Date.now();   // the target must survive re-indexing until we get there
+    flyTo(fogHit.lon, fogHit.lat, Math.max(G.cam.zoom, 15.5));
     toast('✨ Der Nebel führt dich zu einem Riesenbaum...', 'ok');
     return;
   }
@@ -10890,6 +10932,7 @@ function onGameClick(e) {
       G.tallRevealAt = Date.now();
       const inView = tallTreesInView().slice(0, giantDrawBudget());
       if (!inView.includes(hit.t)) inView.unshift(hit.t);
+      hit.t._pinned = Date.now();
       discoverTrees(inView, true);
       // One message for the reveal — the "+N Riesen entdeckt" toast would only repeat it.
       clearTimeout(_discToastT); _discPending = 0;
@@ -10898,7 +10941,7 @@ function onGameClick(e) {
       render();
       return;
     }
-    if (hit && G.tallRevealed) { showTreePopup(hit.t); return; }
+    if (hit && G.tallRevealed) { hit.t._pinned = Date.now(); showTreePopup(hit.t); return; }
   }
 
   // Dev-mode tree (5-tap badge easter egg) is drawn even before reveal
