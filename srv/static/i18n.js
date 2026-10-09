@@ -700,6 +700,191 @@ const I18N_RX = [
 ];
 
 
+
+// ---------- 2026-10 bilingual pass: welcome/footer, loading, attribution, search, NE, server messages ----------
+Object.assign(I18N_EXACT, {
+  // index.html welcome / footer / legal
+  'Beta · keine Cookies, kein Tracking ·': 'Beta · no cookies, no tracking ·',
+  'Kataster & ALS (': 'cadastre & ALS (',
+  ', bearbeitet) ·': ', modified) ·',
+  'Lizenzen': 'Licences',
+  '🤖 Für Agenten': '🤖 For agents',
+  'Text-Edition für KI-Agenten': 'Text edition for AI agents',
+  'Nachrichten werden automatisch geprüft. Melde alles, was dir unangenehm ist – wir sehen es uns an. Bei Gefahr:': 'Messages are checked automatically. Report anything that makes you uncomfortable – we will look into it. In danger:',
+  '(kostenlos, 24h)': '(free, 24h)',
+  'Gemeinde, KG, Adresse, PLZ, Grundstück…': 'Municipality, KG, address, postal code, parcel…',
+  'Ort, KG, Adresse, Grundstück 68/3 … (/)': 'Place, KG, address, parcel 68/3 … (/)',
+  'Zurück zur Gemeinde-Auswahl': 'Back to municipality picker',
+  'Link zum Wiedereinstieg in die Zwischenablage': 'Copy rejoin link to clipboard',
+  'Einladungs-Link für Mitspieler in die Zwischenablage': 'Copy invite link for other players to clipboard',
+  '🔑 Wiedereinstieg': '🔑 Rejoin', '⚔️ Einladen': '⚔️ Invite',
+  'Münzen': 'Coins', '✅ Kopiert!': '✅ Copied!', 'Grundwasser': 'Groundwater', 'du': 'you',
+  'Flurnamen & Ortsnamen (BEV) ein/aus': 'Field & place names (BEV) on/off',
+  'Datenquellen & Lizenzen': 'Data sources & licences',
+  'Beobachtung (LiDAR & Satellit) vs. Kataster — aus / Abweichungen / Kronendach': 'Observation (LiDAR & satellite) vs. cadastre — off / discrepancies / canopy',
+  '🚧 Außerhalb Österreichs — keine Katasterdaten': '🚧 Outside Austria — no cadastre data',
+  // loading screen
+  'Landschaft: Relief, Bäume, Gebäude, Straßen & Flüsse': 'Landscape: relief, trees, buildings, roads & rivers',
+  'Kataster live aus BEV-Kacheln (Parzellen, Gebäude, Nutzung)': 'Cadastre live from BEV tiles (parcels, buildings, land use)',
+  'Landschaft wird geladen …': 'Loading landscape …',
+  'Bedrohte Arten und Schätze werden platziert …': 'Placing endangered species and treasures …',
+  'seltene Arten versteckt': 'rare species hidden', 'Schätze total': 'treasures in total',
+  '⏳ Kataster wird geladen …': '⏳ Loading cadastre …', 'Kataster wird geladen …': 'Loading cadastre …',
+  '⏳ Kataster wird live aus BEV-Kacheln zusammengesetzt …': '⏳ Assembling cadastre live from BEV tiles …',
+  'Kataster wird live aus BEV-Kacheln zusammengesetzt …': 'Assembling cadastre live from BEV tiles …',
+  'Kataster kommt gleich nach – die Karte öffnet schon': 'Cadastre follows in a moment – the map is opening already',
+  'Zelle': 'cell', 'Zellen': 'cells', 'Parzellen': 'parcels',
+  'aus Zwischenspeicher': 'from cache', 'live aus BEV-Kacheln': 'live from BEV tiles',
+  'vorgewärmt': 'prewarmed', 'Gelände': 'terrain', 'kein Vorschlag': 'no suggestion',
+  'Kataster gerade nicht erreichbar': 'Cadastre currently unreachable',
+  'Enhanced Gelände 🌲': 'Enhanced terrain 🌲',
+  // map attribution rows
+  'Kataster live aus den': 'Cadastre assembled live from',
+  'BEV-Kacheln': 'BEV tiles',
+  'zusammengesetzt (max. 24 h zwischengespeichert) · Höhenmodell, Bäume & Gebäudehöhen: BEV ALS, CC BY 4.0, bearbeitet · Flur- & Ortsnamen: BEV DLM Geographische Namen, Stichtag 2025-03-25, CC BY 4.0, bearbeitet ·': '(cached ≤ 24 h) · Elevation model, trees & building heights: BEV ALS, CC BY 4.0, modified · Field & place names: BEV DLM Geographic Names, as of 2025-03-25, CC BY 4.0, modified ·',
+  'Beobachtete Landschaft (Bewuchs, Baumkronen, Bauwerkshöhen, Veränderung):': 'Observed landscape (vegetation, tree crowns, structure heights, change):',
+  ', NE-Zellen, CC BY 4.0 — Datenquelle BEV ALS/DOP (CC BY 4.0, bearbeitet), Contains modified Copernicus Sentinel data 2022–2025, © ESA WorldCover 2021, Hansen GFC 2000–2024 v1.12 · Abgleich mit deklarierter Nutzung: BEV Kataster, CC BY 4.0, bearbeitet (Statistik je Zelle, keine Objektgeometrie, via': ', NE cells, CC BY 4.0 — data source BEV ALS/DOP (CC BY 4.0, modified), Contains modified Copernicus Sentinel data 2022–2025, © ESA WorldCover 2021, Hansen GFC 2000–2024 v1.12 · Comparison with declared land use: BEV cadastre, CC BY 4.0, modified (statistics per cell, no object geometry, via',
+  'Schutzgebiete: Source: European Environment Agency (EEA), Natura 2000 · UNEP-WCMC & IUCN WDPA · Gemeinden & Bodenpreise: Statistik Austria (CC BY 4.0, modelliert) · Rechtsbezüge: RIS, Bundeskanzleramt · Landbedeckung: Copernicus / ESA WorldCover 2021 (CC BY 4.0) · Umfeld via': 'Protected areas: Source: European Environment Agency (EEA), Natura 2000 · UNEP-WCMC & IUCN WDPA · Municipalities & land prices: Statistik Austria (CC BY 4.0, modelled) · Legal references: RIS, Federal Chancellery · Land cover: Copernicus / ESA WorldCover 2021 (CC BY 4.0) · Surroundings via',
+  ', Landschaft via': ', landscape via',
+  'Felder (Schläge) & Hofstellen:': 'Fields & farmsteads:',
+  'via data.gv.at, CC BY 4.0 (aggregiert, keine Namen) · Förderprofile: AMA Transparenzdatenbank, Gemeinde-Aggregat · Waldverlust & CO₂: Hansen/GFW GFC-2024, Harris et al. (CC BY 4.0) · Holzpreise: LK Holzmarktberichte / Statistik Austria (CC BY 4.0)': 'via data.gv.at, CC BY 4.0 (aggregated, no names) · Subsidy profiles: AMA transparency database, municipality aggregate · Forest loss & CO₂: Hansen/GFW GFC-2024, Harris et al. (CC BY 4.0) · Timber prices: LK timber market reports / Statistik Austria (CC BY 4.0)',
+  'Grundwasser, Pegel & Wasserschutzgebiete:': 'Groundwater, gauges & water protection areas:',
+  ', Wasserschatz 2021, WISE/EEA (CC BY 4.0) · Fließweg: MERIT Hydro / mghydro.com (CC BY-NC-SA 4.0, nur Darstellung) · Dürre: Copernicus EDO': ', Wasserschatz 2021, WISE/EEA (CC BY 4.0) · Flow path: MERIT Hydro / mghydro.com (CC BY-NC-SA 4.0, display only) · Drought: Copernicus EDO',
+  'Relief: BEV ALS-DTM 25 m (CC BY 4.0) · Baumhöhen & Gebäudehöhen: ALS-Ableitung (BEV, CC BY 4.0) · Staatsgrenze: geoBoundaries gbOpen (CC BY-SA 4.0) · Rote Liste: IUCN / EEA': 'Relief: BEV ALS-DTM 25 m (CC BY 4.0) · Tree & building heights: ALS derivative (BEV, CC BY 4.0) · State border: geoBoundaries gbOpen (CC BY-SA 4.0) · Red List: IUCN / EEA',
+  // search
+  'Suche …': 'Searching …', 'Grundstück': 'Parcel', 'Gemeinden': 'Municipalities', 'Katastralgemeinden': 'Cadastral municipalities', 'Orte': 'Places', 'Adressen': 'Addresses', 'Ähnliche Namen': 'Similar names', 'Zuletzt gesucht': 'Recent searches',
+  'Orte & Fluren': 'Places & fields', 'nicht gefunden': 'not found', '– Nummer prüfen': '– check the number',
+  'Du verlässt': 'Leaving', '🗺️ Du verlässt': '🗺️ Leaving', '— Parzellen aus': '— loading parcels from', 'werden geladen': '',
+  // quests / herald
+  'Hier weicht die Beobachtung (LiDAR & Satellit) vom Kataster ab:': 'Here the observation (LiDAR & satellite) differs from the cadastre:',
+  'entfernt. Kauf die Parzelle — Naturschutz auf einer Waldverlust-Fläche zählt doppelt.': 'away. Buy the parcel — a nature reserve on a forest-loss area counts double.',
+  'Schalte die Beobachtungs-Karte 👁 ein: orange = Waldverlust, rot = neu versiegelt oder Bauwerk nicht im Kataster. Kauf so eine Parzelle.': 'Turn on the observation map 👁: orange = forest loss, red = newly sealed or structure missing from the cadastre. Buy such a parcel.',
+  'Beobachtung einblenden': 'Show observation', 'Spurenleser': 'Tracker',
+  'Kaufe eine Parzelle, bei der die Beobachtung vom Kataster abweicht': 'Buy a parcel where the observation differs from the cadastre',
+  'Wiederbewaldung!': 'Reforestation!', 'Beobachteter Waldverlust unter Schutz': 'Observed forest loss now protected',
+  'Der Kompass führt dich hin': 'The compass leads you there',
+  'Spuren in der Gegend — ein Durchzügler ist hier unterwegs': 'Tracks in the area — a wanderer is passing through',
+  'Geheimnis entdeckt: Schilder zerschlagen bringt Münzen — je frischer das Schild, desto mehr!': 'Secret found: smashing signs earns coins — the fresher the sign, the more!',
+  'Schilderstürmer! 25 Schilder zerlegt.': 'Sign smasher! 25 signs wrecked.',
+  // chat / multiplayer
+  '🚫 Nachricht entfernt': '🚫 Message removed',
+  'Noch keine Nachrichten — sag Hallo! Mitspieler sehen den Chat sofort.': 'No messages yet — say hello! Other players see the chat instantly.',
+  'gräbt einen Brunnen': 'digs a well',
+  // treasures / rarity (canvas labels go through tr())
+  'Schatz': 'Treasure', 'Erfahrung': 'Experience', 'Seltener Samen': 'Rare seed', 'Alte Karte': 'Old map', 'Durchzügler': 'Wanderer',
+  'zieht weiter': 'moves on',
+  'Wildtier-Begegnung': 'Wildlife encounter', 'Ein Durchzügler — du hast ihn gesichtet!': 'A wanderer — you spotted it!',
+  // species (German common names from srv/server.go + srv/treasures.go)
+  'Eurasischer Luchs': 'Eurasian lynx', 'Mopsfledermaus': 'Barbastelle bat', 'Feldhamster': 'European hamster', 'Wisent': 'European bison',
+  'Steinadler': 'Golden eagle', 'Uhu': 'Eagle-owl', 'Schwarzstorch': 'Black stork', 'Großtrappe': 'Great bustard', 'Auerhahn': 'Capercaillie',
+  'Wald-Wiesenvögelchen': 'Scarce heath', 'Goldene Acht': 'Lesser clouded yellow', 'Apollofalter': 'Apollo butterfly',
+  'Rotbauchunke': 'Fire-bellied toad', 'Wiesenotter': 'Meadow viper', 'Donau-Kammmolch': 'Danube crested newt',
+  'Vogel-Azurjungfer': 'Ornate bluet', 'Große Quelljungfer': 'Balkan goldenring', 'Huchen': 'Danube salmon', 'Sterlet': 'Sterlet',
+  'Vielfraß': 'Wolverine', 'Elch': 'Moose', 'Goldschakal': 'Golden jackal', 'Wolf': 'Wolf', 'Wildkatze': 'Wildcat',
+  'Fischotter': 'Otter', 'Biber': 'Beaver', 'Kranich': 'Crane', 'Weißstorch': 'White stork', 'Bartgeier': 'Bearded vulture',
+  // giant tree names (adjective + noun, see giantTreeName)
+  'Ehrwürdiger': 'Venerable', 'Flüsternder': 'Whispering', 'Uralter': 'Ancient', 'Schlafender': 'Sleeping', 'Erwachter': 'Awakened',
+  'Singender': 'Singing', 'Träumender': 'Dreaming', 'Wandernder': 'Wandering', 'Leuchtender': 'Shining', 'Verwunschener': 'Enchanted', 'Erhabener': 'Sublime',
+  'Wolkenwächter': 'Cloud Warden', 'Himmelsgreifer': 'Sky Reacher', 'Sturmhüter': 'Storm Keeper', 'Waldkönig': 'Forest King',
+  'Nebelfürst': 'Mist Prince', 'Wurzelweiser': 'Root Sage', 'Sternenlauscher': 'Star Listener', 'Riesenherz': 'Giant Heart', 'Donnerwipfel': 'Thunder Crown',
+  'Morgengrauen': 'Daybreak', 'Ahnenbaum': 'Ancestor Tree', 'Bergflüsterer': 'Mountain Whisperer', 'Lichtfänger': 'Light Catcher', 'Windtänzer': 'Wind Dancer',
+  'Zeitzeuge': 'Witness of Time', 'Kronenträger': 'Crown Bearer',
+  // KG card / popup
+  'Daten momentan nicht erreichbar — bitte nochmal antippen': 'Data currently unavailable — please tap again',
+  'Nutzung (nach Fläche)': 'Land use (by area)',
+  'Als Referenz': 'As reference',
+  '🔍 Ähnliche in der Nähe': '🔍 Similar nearby',
+  'Suche ähnliche Parzellen…': 'Searching for similar parcels…', 'Suche ähnliche Parzellen in der Nähe…': 'Searching for similar parcels nearby…',
+  'Ähnliche Parzellen in der Nähe': 'Similar parcels nearby',
+  '🔍 Keine ähnlichen Parzellen in der Nähe gefunden': '🔍 No similar parcels found nearby',
+  'ähnliche Parzellen in der Nähe': 'similar parcels nearby', 'verglichen': 'compared',
+  'kein Einschlag seit 2001': 'no logging since 2001', 'Bilanz seit 2001': 'balance since 2001',
+  '🧪 Nitrat': '🧪 Nitrate', '🌿 Bio': '🌿 Organic',
+  'Bergbauer': 'Mountain farm', 'Bio-Bergbauer': 'Organic mountain farm', 'Bio': 'Organic', 'Ackerbau': 'Arable', 'Viehhaltung': 'Livestock',
+  'Wein': 'Wine', 'Obst': 'Fruit', 'ohne Fläche': 'landless', 'sonstige': 'other',
+  'kleiner Hof': 'small farm', 'mittlerer Hof': 'medium farm', 'großer Hof': 'large farm',
+  'Getreide': 'Cereals', 'Mais': 'Maize', 'Feldfrucht': 'Field crop',
+  // NE / observed layer
+  '👁 Beobachtet': '👁 Observed', '📡 Veränderung': '📡 Change', '📐 Abweichung': '📐 Discrepancy', '🌲 Bäume': '🌲 Trees',
+  '🏠 Bauwerke': '🏠 Structures', '🛰️ Satellit': '🛰️ Satellite', '📜 Gefüge': '📜 Structure',
+  'Raster auf der Karte': 'grid on the map', 'Kataster hier lückenhaft': 'cadastre incomplete here',
+  'Waldverlust beobachtet': 'forest loss observed', 'Wald nachgewachsen': 'forest regrown', 'neu versiegelt': 'newly sealed',
+  'Bauwerk nicht im Kataster': 'structure not in the cadastre', 'begrünt (nicht im Kataster)': 'greened (not in the cadastre)',
+  'kein Befund': 'no finding', 'neu begrünt': 'newly greened',
+  'In dieser Gegend gibt es noch keine Beobachtungsdaten (srtm v2.4).': 'No observation data in this area yet (srtm v2.4).',
+  'Kronendach (LiDAR) eingeblendet': 'Canopy (LiDAR) shown', 'Beobachtung ausgeblendet': 'Observation hidden',
+  'Beobachtung vs. Kataster als Schleier: orange Waldverlust · rot neu versiegelt · grün nachgewachsen — Details beim Antippen einer Parzelle': 'Observation vs. cadastre as a veil: orange forest loss · red newly sealed · green regrown — details when tapping a parcel',
+  'Tanne': 'Fir', 'Buche': 'Beech', 'Eiche': 'Oak', 'Ahorn': 'Maple', 'Esche': 'Ash', 'Birke': 'Birch', 'Erle': 'Alder', 'Pappel': 'Poplar',
+  'Obstbaum': 'Fruit tree', 'Nadelholz': 'Conifer',
+  'gestresst': 'stressed', 'absterbend': 'declining', 'tot': 'dead',
+  'Dach': 'Roof', 'Glashaus': 'Greenhouse', 'PV-Anlage': 'Solar panel', 'Mast': 'Mast', 'Windrad': 'Wind turbine', 'Umspannwerk': 'Substation', 'Mauer': 'Wall', 'Zaun': 'Fence',
+  'Ackerkultur': 'Crop', 'Saisonbewuchs': 'Seasonal vegetation', 'versiegelt/offen': 'sealed/bare',
+  'Anteil rechtsverbindlich vermessener Grenzen': 'Share of legally binding surveyed boundaries',
+  'Gewässergüte-Messstelle': 'Water quality site',
+  // server messages (srv/server.go, water.go, timber.go, search.go — canonical German)
+  'Dieser Name ist nicht erlaubt': 'This name is not allowed',
+  'Das ist kein Wald': 'That is not a forest', 'Das ist kein Acker': 'That is not a field',
+  'Diese Parzelle wird nicht mehr bewirtschaftet': 'This parcel is no longer farmed',
+  'Das Feld ist noch nicht reif': 'The field is not ripe yet',
+  'Schon geerntet — das Feld muss erst wieder wachsen': 'Already harvested — the field has to grow back first',
+  'Eine Weide erntet man nicht — die Kühe machen das': 'You do not harvest a pasture — the cows do that',
+  'Angebot muss zwischen 10 und 1.000.000 Münzen liegen': 'Offer must be between 10 and 1,000,000 coins',
+  'Parzelle nicht gefunden': 'Parcel not found', 'Du besitzt diese Parzelle bereits': 'You already own this parcel',
+  'Diese Parzelle ist geschützt und nicht verkäuflich': 'This parcel is protected and not for sale',
+  'Angebot konnte nicht erstellt werden': 'Offer could not be created', 'Angebot gesendet!': 'Offer sent!',
+  'Angebot nicht gefunden': 'Offer not found', 'Angebot nicht mehr gültig': 'Offer no longer valid', 'Nicht dein Angebot': 'Not your offer',
+  'Käufer nicht gefunden': 'Buyer not found', 'Aufgabe noch nicht erfüllt': 'Quest not completed yet',
+  'Zu viele Meldungen – bitte später erneut versuchen.': 'Too many reports – please try again later.',
+  'Nicht deine Parzelle': 'Not your parcel', 'Ein Brunnen lohnt sich nur auf Äckern und Wiesen': 'A well only pays off on fields and meadows',
+  'Dieser Wald ist außer Nutzung gestellt': 'This forest has been set aside',
+  'Grundstück in der KG nicht gefunden (Nummer prüfen)': 'Parcel not found in this KG (check the number)',
+});
+I18N_RX.push(
+  [/^(\d+) \((\d+) frei\)$/, '$1 ($2 available)'],
+  [/^🏴 Gekauft für (\d+)🪙! 🌾 Ried (.+)$/, '🏴 Bought for $1🪙! 🌾 Field $2'],
+  [/^🏴 Gekauft für (\d+)🪙! · (.+)$/, '🏴 Bought for $1🪙! · $2'],
+  [/^Name war vergeben — du spielst als (.+)$/, 'Name was taken — you are playing as $1'],
+  [/^© BEV, (\d{4}) – Datenquelle: Bundesamt für Eich- und Vermessungswesen, Kataster \(CC BY 4\.0\), bearbeitet$/, '© BEV, $1 – data source: Federal Office of Metrology and Surveying, cadastre (CC BY 4.0), modified'],
+  [/^Durchsuche (.+) … (\d+)\/(\d+) Zellen$/, 'Searching $1 … $2/$3 cells'],
+  [/^(🟩|🔎) Grundstück (.+)$/, '$1 Parcel $2'],
+  [/^Grundstück (\S+)$/, 'Parcel $1'],
+  [/^KG (.+) · geladen$/, 'KG $1 · loaded'],
+  [/^Ortschaft · (.+)$/, 'Locality · $1'],
+  [/^💧 (.+) \((\d+)% Wasser\)$/, '💧 $1 ($2% water)'],
+  [/^(🪓|🏛|🌾) (.+) erntet (\d+)🪙( ☀️)?$/, '$1 $2 harvests $3🪙$4'],
+  [/^🌳 Naturwald! ~(\d+) t CO₂ bleiben im Wald · \+(\d+)⚡$/, '🌳 Wild forest! ~$1 t CO₂ stay in the forest · +$2⚡'],
+  [/^💰 Verkauft für (\d+)🪙 · (\d+) % Wert( · −\d+⚡)?$/, '💰 Sold for $1🪙 · $2 % value$3'],
+  [/^💰 Verkauft für (\d+)🪙 · −(\d+)⚡$/, '💰 Sold for $1🪙 · −$2⚡'],
+  [/^✨ Enhanced — LiDAR-Geländedaten aktiv · 👁 beobachtet$/, '✨ Enhanced — LiDAR terrain data active · 👁 observed'],
+  [/^🔍 Ähnliche in der Nähe \((\d+)\)$/, '🔍 Similar nearby ($1)'],
+  [/^Ähnliche Parzellen in der Nähe( \(\d+\))? · (.+)$/, 'Similar parcels nearby$1 · $2'],
+  [/^🔍 (\d+) ähnliche Parzellen in der Nähe \((.+) verglichen(, \d+ Zellen)?\)( · mit LiDAR-Geländeabgleich ✨)?$/, function(_,n,c,z,l){return '🔍 '+n+' similar parcels nearby ('+c+' compared'+(z?z.replace('Zellen','cells'):'')+')'+(l?' · with LiDAR terrain matching ✨':'');}],
+  [/^([+-]?[\d.]+) m seit letzter Befliegung$/, '$1 m since the last survey flight'],
+  [/^([+-]?[\d.]+) m Oberfläche$/, '$1 m surface'],
+  [/^(\d+) Zellen · (.+)$/, '$1 cells · $2'],
+  [/^(\d+) Baumkronen?( · max (\d+) m)?( ·)?$/, function(_,n,m,h,t){return n+(n==='1'?' tree crown':' tree crowns')+(m?' · max '+h+' m':'')+(t||'');}],
+  [/^(\d+) absterbend$/, '$1 declining'],
+  [/^(\d+) Bauwerke?( · bis (\d+) m)?( ·)?$/, function(_,n,m,h,t){return n+(n==='1'?' structure':' structures')+(m?' · up to '+h+' m':'')+(t||'');}],
+  [/^Median (.+)$/, 'Median $1'],
+  [/^\((\d+) Gst\.\)$/, '($1 parcels)'],
+  [/^([\d,]+) Gst\. je Einlage$/, '$1 parcels per folio'],
+  [/^Grenzkataster (\d+) %$/, 'Boundary cadastre $1 %'],
+  [/^(\d+)% ([A-Za-zÄÖÜäöüß/ -]+)$/, function(_,p,w){return p+'% '+(I18N_EXACT[w]!==undefined?I18N_EXACT[w]:w);}],
+  [/^Waldverlust ha\/Jahr$/, 'Forest loss ha/year'],
+  [/^Förderung €\/Jahr$/, 'Subsidy €/year'],
+  [/^Förderung schon abgeholt — nächste Auszahlung in (.+)$/, 'Subsidy already collected — next payout in $1'],
+  [/^Nachricht muss 1-(\d+) Zeichen lang sein$/, 'Message must be 1-$1 characters long'],
+  [/^Nicht genug Münzen! Brauchst (\d+), hast (\d+)$/, 'Not enough coins! Need $1, have $2'],
+  [/^Nicht genug Münzen! Brauche (\d+), habe (\d+)$/, 'Not enough coins! Need $1, have $2'],
+  [/^Käufer hat nur (\d+) Münzen, braucht (\d+)\. Käufer muss Parzellen verkaufen!$/, 'Buyer only has $1 coins, needs $2. Buyer must sell parcels!'],
+  [/^(\d+) Min\.?$/, '$1 min'],
+  [/^(\d+) Minuten$/, '$1 minutes'],
+  [/^(\d+) Stunden$/, '$1 hours'],
+  [/^(\d+) Tage$/, '$1 days'],
+  [/^(\d+) ha$/, '$1 ha']
+);
+
+
 // ============================================================
 // Runtime: auto-detect language; translate DOM for non-German
 // users. German markup/code stays canonical.
@@ -741,6 +926,15 @@ const I18N_RX = [
     }
     return false;
   }
+  function translateAttrs(el) {
+    for (var a = 0; a < ATTRS.length; a++) {
+      if (el.hasAttribute && el.hasAttribute(ATTRS[a])) {
+        var av = el.getAttribute(ATTRS[a]);
+        var tv = trx(av);
+        if (tv !== av) el.setAttribute(ATTRS[a], tv);
+      }
+    }
+  }
   function translateNode(root) {
     if (root.nodeType === 3) { // text node
       if (root.parentElement && skip(root.parentElement)) return;
@@ -749,12 +943,10 @@ const I18N_RX = [
       return;
     }
     if (root.nodeType !== 1 || skip(root)) return;
-    for (var a = 0; a < ATTRS.length; a++) {
-      if (root.hasAttribute && root.hasAttribute(ATTRS[a])) {
-        var av = root.getAttribute(ATTRS[a]);
-        var tv = trx(av);
-        if (tv !== av) root.setAttribute(ATTRS[a], tv);
-      }
+    translateAttrs(root);
+    if (root.querySelectorAll) {
+      var els = root.querySelectorAll('[placeholder],[title],[aria-label]');
+      for (var e = 0; e < els.length; e++) if (!skip(els[e])) translateAttrs(els[e]);
     }
     var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     var t;

@@ -2673,7 +2673,7 @@ function updateEnhancedBadge() {
   if (onEnh) Herald.hint('enhanced');
   if (G.enhancedKGs.size && G._questEnh !== enhancedLoaded()) { G._questEnh = enhancedLoaded(); renderQuests(); }
   // Entdeckermodus unlocked: tree icon signals "tap = fly to nearest giant tree"
-  let txt = G.devTree ? 'Enhanced Gelände 🌲' : 'Enhanced Gelände';
+  let txt = G.devTree ? tr('Enhanced Gelände 🌲') : tr('Enhanced Gelände');
   if (G.tallUnlocked && G.tallRevealed) {
     const c = giantChronik();
     if (c.total) txt += ' · 🌲 ' + c.seen + '/' + c.total;
@@ -4214,7 +4214,7 @@ function giantTreeName(t) {
   const adj = TREE_NAME_ADJ[h % TREE_NAME_ADJ.length];
   const noun = TREE_NAME_NOUN[Math.floor(h / 97) % TREE_NAME_NOUN.length];
   // Feminine noun endings get feminine article feel via '-in' occasionally
-  return adj + 'r ' + noun;
+  return tr(adj + 'r') + ' ' + tr(noun);
 }
 
 /** Elevation (m) at a tree's location: point-in-polygon lookup of the parcel
@@ -4821,7 +4821,7 @@ function drawTreasureHint(ctx) {
   const rar = treasureRarity(best);
   const isCreature = isSpeciesTreasure(best);
   const glyph = isCreature ? (best.treasure_type === 'roaming' ? '🐾' : '🦎') : '💎';
-  const title = isCreature ? (best.species_german || rar.name) : rar.name;
+  const title = tr(isCreature ? (best.species_german || rar.name) : rar.name);
   drawBeacon(ctx, { x: ep.x, y: ep.y, ang: ep.ang, onSpot: ep.k >= 1, fade: fade * 0.95, glow: rar.glow, rim: rar.rim, glyph, title, dist: hintDistTxt(bd), bobSeed: 1.3 });
 }
 
@@ -8123,8 +8123,8 @@ function drawTreasure(ctx, t) {
 
   // Name tag at street level (MAP_FONT.label, like giant-tree labels)
   if (G.cam.zoom >= 16.5) {
-    const label = isSpecies ? t.species_german : (rar.name + (t.value ? ' +' + t.value : ''));
-    const sub = isSpecies && t.species_category ? (t.treasure_type === 'roaming' ? '🐾 ' + rar.name + ' · ' + tr('zieht weiter') : t.species_category + ' · ' + rar.name) : '';
+    const label = isSpecies ? tr(t.species_german) : (tr(rar.name) + (t.value ? ' +' + t.value : ''));
+    const sub = isSpecies && t.species_category ? (t.treasure_type === 'roaming' ? '🐾 ' + tr(rar.name) + ' · ' + tr('zieht weiter') : t.species_category + ' · ' + tr(rar.name)) : '';
     ctx.font = MAP_FONT.label;
     const ty = Math.round(y + 8 * s);
     const tw = Math.ceil(ctx.measureText(label).width) + 8, th = sub ? 26 : 15;
@@ -10744,7 +10744,7 @@ function onGameClick(e) {
   if (treasureHintPos && Math.abs(treasureHintPos.x - x) < 70 && Math.abs(treasureHintPos.y - y) < 50) {
     flyTo(treasureHintPos.lon, treasureHintPos.lat, Math.max(G.cam.zoom, 16.5));
     const t = treasureHintPos.t;
-    toast((isSpeciesTreasure(t) ? '🐾 ' + (t.species_german || '') : '💎 ' + treasureRarity(t).name) + ' · ' + tr('Der Kompass führt dich hin'), '');
+    toast((isSpeciesTreasure(t) ? '🐾 ' + tr(t.species_german || '') : '💎 ' + tr(treasureRarity(t).name)) + ' · ' + tr('Der Kompass führt dich hin'), '');
     return;
   }
   // Miracle fog hint: tapping the mist flies to the nearest giant tree
