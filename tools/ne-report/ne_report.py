@@ -22,7 +22,9 @@ Pipeline (contract: docs/ne-report.md, umfeld's docs/ne-cells.md):
      had the same digest, so an unchanged re-pass never sends the chunk list; otherwise the full report follows. When the answer lists want_chunks (chunks whose statistics are new to the server — every
      chunk once for the baseline, then only changed ones) the stripped rows of exactly those chunks are posted from
      RAM as NECH bodies ≤ 1.5 MB to POST …/ne/{kg}/chunks?observer=<label> (register bytes zeroed, no K rows, nothing
-     new on disk); meta.chunks{posted,stored,seen,rejected,deltas}. The answer's coverage{} / change_suspect is logged and stored; chunks_changed from an
+     new on disk); meta.chunks{posted,stored,seen,rejected,deltas}. One POST per build: when our newest accepted
+     POST of the KG (meta files) carried this very digest < 20 h ago (umfeld's same-pass window, in which a repeat
+     by the same observer confirms nothing) nothing is sent at all — not even the header (--repost overrides). The answer's coverage{} / change_suspect is logged and stored; chunks_changed from an
      answer that carries change_suspect is never surfaced as change (`change` in the meta is then null).
 
 Run through the venv: tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py 05007
@@ -321,6 +323,28 @@ def latest_report(outdir, kg):
     return files[-1] if files else None
 
 
+SAME_PASS_H = 20   # umfeld neSamePassWindow: a re-post by the same observer < 20 h later is not a sighting
+
+
+def last_post(outdir, kg):
+    """(digest, posted_at epoch s) of our newest *accepted* POST of this KG from the meta files, else None."""
+    for f in sorted(glob.glob(os.path.join(outdir, f"{kg}.????-??-??.meta.json")), reverse=True):
+        try:
+            with open(f) as fh:
+                m = json.load(fh)
+        except Exception:
+            continue
+        post = m.get("post") or {}
+        if post.get("status") == "skipped" and post.get("reason") == "same_pass":
+            prev = post.get("previous") or {}
+            if prev.get("digest") and prev.get("posted_at"):
+                return prev["digest"], float(prev["posted_at"])
+            continue
+        if post.get("status") == 200 and (m.get("report") or {}).get("digest"):
+            return m["report"]["digest"], float(post.get("posted_at") or os.path.getmtime(f))
+    return None
+
+
 def process_kg(a, kg):
     kg = str(kg).zfill(5)
     today = dt.date.today().isoformat()
@@ -406,9 +430,20 @@ def process_kg(a, kg):
         f"chunks_ap={len(report.get('chunks_ap') or {})}")
 
     token, token_src = load_token(a.token_file)
+    lp = last_post(a.out, kg)
+    same_pass = lp and lp[0] == report["digest"] and (time.time() - lp[1]) < SAME_PASS_H * 3600
     if not token:
         log(f"{kg}: POST skipped — no peer token ({a.token_file} absent and NE_PEER_TOKEN unset)")
         meta["post"] = dict(status="skipped", reason="no token")
+    elif same_pass and not a.repost:
+        # Same build, same observer, same pass: umfeld counts a sighting by the same observer only
+        # ≥ 20 h after the previous one, so re-posting this digest now confirms nothing and would only
+        # resend the chunk list. One POST per build; --repost overrides (protocol QA only).
+        age_h = (time.time() - lp[1]) / 3600
+        log(f"{kg}: POST skipped — same build (digest {report['digest']}) already reported {age_h:.1f} h ago "
+            f"(< {SAME_PASS_H} h same-pass window); --repost to send anyway")
+        meta["post"] = dict(status="skipped", reason="same_pass", previous=dict(digest=lp[0], posted_at=lp[1]),
+                            age_h=round(age_h, 2))
     else:
         # Change protocol step 0 (umfeld 2026-10-08): a header-only report (no chunks{}/chunks_ap{}) is
         # deduped on token + source class + algo + digest + epoch, bbox-independent. `unchanged:true` =
@@ -423,15 +458,20 @@ def process_kg(a, kg):
         meta["post_head"] = dict(status=st, answer=ans)
         if st == 200 and ans.get("unchanged") is True:
             log(f"{kg}: header-only report: unchanged since {ans.get('unchanged_since')} — chunk list not sent")
-            meta["post"] = dict(status=st, answer=ans, token_source=token_src, header_only=True)
+            meta["post"] = dict(status=st, answer=ans, token_source=token_src, header_only=True, posted_at=time.time())
         else:
+            if st == 202 and same_pass:
+                # Should never happen: we reported this digest < 20 h ago and umfeld still wants chunks.
+                log(f"{kg}: WARNING header probe answered 202 need={ans.get('need')} for a build reported "
+                    f"{(time.time() - lp[1]) / 3600:.1f} h ago — step 0 dedupe miss on umfeld's side?")
+                meta["step0_miss"] = True
             log(f"{kg}: header-only report HTTP {st}: unchanged={ans.get('unchanged')} — sending the full report")
             st, body = post_report(a.umfeld, kg, report_s.encode(), token, a.contrib_prefix)
             try:
                 ans = json.loads(body)
             except Exception:
                 ans = dict(raw=body[:500].decode("utf-8", "replace"))
-            meta["post"] = dict(status=st, answer=ans, token_source=token_src)
+            meta["post"] = dict(status=st, answer=ans, token_source=token_src, posted_at=time.time())
         if st == 200:
             meta["change"] = classify_change(kg, ans)
             want = ans.get("want_chunks") or []
@@ -468,7 +508,10 @@ def main(argv=None):
                     help="skip a KG whose viewport (umfeld input_bbox) contains fewer fully covered aligned cells than this; "
                          "0 = any viewport (the build input is always whole aligned cells, see docstring)")
     ap.add_argument("--max-age-days", type=float, default=7, help="skip a KG with a report younger than this")
-    ap.add_argument("--force", action="store_true", help="ignore --max-age-days")
+    ap.add_argument("--force", action="store_true",
+                    help="ignore --max-age-days (rebuild); the POST is still skipped when the same digest was posted < 20 h ago")
+    ap.add_argument("--repost", action="store_true",
+                    help="POST even if we reported this very digest < 20 h ago (umfeld counts it as no sighting; protocol QA only)")
     ap.add_argument("--keep-cells", action="store_true", help="keep the fetched cell_*.json under --work")
     ap.add_argument("--pause", type=float, default=5, help="seconds between KGs")
     a = ap.parse_args(argv)
