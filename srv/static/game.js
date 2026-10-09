@@ -387,19 +387,34 @@ const POST = (url, body) => api('POST', url, body);
 // Toasts: identical messages collapse into one (bumped, with a ×N counter),
 // at most TOAST_MAX stay on screen (oldest leaves first), and every toast
 // fades out instead of popping away. `type`: 'ok' | 'err' | '' ; opts.ms = lifetime.
-const TOAST_MAX = 3, TOAST_GAP = 1500;
+// Attention budget: `opts.quiet` marks chatter (other players' moves, the
+// ticker) — it shows only when nothing else is on screen and is never queued;
+// the queue holds ≤ TOAST_QMAX entries and drops anything older than TOAST_QAGE
+// (a toast that arrives 12 s after its event is noise, not news). Phones show
+// at most two at once.
+const TOAST_MAX = 3, TOAST_GAP = 1500, TOAST_QMAX = 4, TOAST_QAGE = 12000;
 let _toastLastAt = 0, _toastQ = [], _toastQT = 0;
+function toastMax() { return window.innerWidth <= 768 ? 2 : TOAST_MAX; }
 function toast(msg, type, opts) {
   const box = document.getElementById('toast-container');
   if (!box) return;
   // Bursts are paced: informational toasts keep ≥ TOAST_GAP between them so
   // several events landing at once read one after another (errors jump the queue).
   const now = Date.now();
+  const liveN = [...box.children].filter(el => !el._gone).length;
+  if (opts && opts.quiet && !(opts && opts.now)) {
+    const heraldUp = typeof Herald !== 'undefined' && Herald.el && Herald.el.classList.contains('show');
+    if (liveN || _toastQ.length || heraldUp || now - _toastLastAt < TOAST_GAP * 2) return null;
+  }
   const dup = [...box.children].some(el => el._msg === msg && !el._gone) || _toastQ.some(q => q.msg === msg);
   if (type !== 'err' && !dup && !(opts && opts.now) && now - _toastLastAt < TOAST_GAP) {
-    _toastQ.push({ msg, type, opts });
+    if (opts && opts.key) _toastQ = _toastQ.filter(q => !(q.opts && q.opts.key === opts.key));   // newer state replaces the queued one
+    _toastQ.push({ msg, type, opts, at: now });
+    while (_toastQ.length > TOAST_QMAX) _toastQ.shift();
     if (!_toastQT) _toastQT = setTimeout(function pump() {
-      _toastQT = 0; const q = _toastQ.shift(); if (!q) return;
+      _toastQT = 0;
+      let q; while ((q = _toastQ.shift()) && Date.now() - q.at > TOAST_QAGE && q.type !== 'ok') {}
+      if (!q) return;
       toast(q.msg, q.type, Object.assign({}, q.opts, { now: true }));
       if (_toastQ.length) _toastQT = setTimeout(pump, TOAST_GAP);
     }, TOAST_GAP - (now - _toastLastAt));
@@ -433,7 +448,7 @@ function toast(msg, type, opts) {
   el.onclick = () => dismiss(el);
   box.appendChild(el);
   const live = [...box.children].filter(c => !c._gone);
-  while (live.length > TOAST_MAX) dismiss(live.shift());
+  while (live.length > toastMax()) dismiss(live.shift());
   arm(el);
   return el;
 }
@@ -3143,20 +3158,20 @@ function handleEvent(d) {
     case 'chat_refresh': loadChat(); break;
     case 'chat_mode': applyChatMode(d.mode); { const sel=document.getElementById('chat-mode'); if (sel) sel.value=d.mode; } toast(tr('Chat-Modus geändert'),''); break;
     case 'player_joined': toast('⚔️ '+d.player.name+' beigetreten!','ok'); loadPlayers(); break;
-    case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,''); loadClaimed().then(()=>render()); break;
-    case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'ok'); loadClaimed().then(()=>{render();loadBio();}); break;
-    case 'parcel_sold': toast('💰 '+d.player+' verkauft',''); loadClaimed().then(()=>render()); break;
-    case 'parcel_harvested': if (d.player !== G.player?.name) toast((d.forest ? '🪓 ' : d.meadow ? '🏛 ' : '🌾 ')+d.player+(d.meadow ? ' ' + tr('holt Förderung') + ' ' : ' erntet ')+d.coins+'🪙'+(d.drought >= 2 ? ' ☀️' : ''),''); loadClaimed().then(()=>render()); break;
-    case 'well_dug': if (d.player !== G.player?.name) toast('🕳️ '+d.player+' '+tr('gräbt einen Brunnen')+' ('+String(d.depth_m).replace('.', ',')+' m)',''); loadClaimed().then(()=>{ invalidateBase(); render(); }); break;
-    case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)',''); loadClaimed().then(()=>render()); break;
+    case 'parcel_claimed': toast('🏴 '+d.player+' → '+d.parcel_id,'', { quiet: true }); loadClaimed().then(()=>render()); break;
+    case 'parcel_converted': toast('🌿 '+d.player+' → '+d.convert_to,'', { quiet: true }); loadClaimed().then(()=>{render();loadBio();}); break;
+    case 'parcel_sold': toast('💰 '+d.player+' verkauft','', { quiet: true }); loadClaimed().then(()=>render()); break;
+    case 'parcel_harvested': if (d.player !== G.player?.name) toast((d.forest ? '🪓 ' : d.meadow ? '🏛 ' : '🌾 ')+d.player+(d.meadow ? ' ' + tr('holt Förderung') + ' ' : ' erntet ')+d.coins+'🪙'+(d.drought >= 2 ? ' ☀️' : ''),'', { quiet: true }); loadClaimed().then(()=>render()); break;
+    case 'well_dug': if (d.player !== G.player?.name) toast('🕳️ '+d.player+' '+tr('gräbt einen Brunnen')+' ('+String(d.depth_m).replace('.', ',')+' m)','', { quiet: true }); loadClaimed().then(()=>{ invalidateBase(); render(); }); break;
+    case 'ez_claimed': toast('\u{1f4cb} '+d.player+' → EZ '+d.ez+' ('+d.count+' Parzellen)','', { quiet: true }); loadClaimed().then(()=>render()); break;
     case 'challenge_completed':
-      if (d.player === G.player?.name) { toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); Herald.completed(d.title); loadChallenges(); updateStatsFromServer(); }
-      else toast('🏆 '+d.player+': '+tr(d.title||'Aufgabe'),'');
+      if (d.player === G.player?.name) { if (Herald.available()) Herald.completed(d.title); else toast('🏆 '+tr('Aufgabe erledigt')+': '+tr(d.title||'')+'!','ok'); loadChallenges(); updateStatsFromServer(); }
+      else toast('🏆 '+d.player+': '+tr(d.title||'Aufgabe'),'', { quiet: true });
       break;
     case 'treasure_claimed': {
       const i = G.treasures.findIndex(t => t.id === d.id);
       if (i >= 0) { G.treasures.splice(i, 1); render(); }
-      if (d.player_id !== G.player?.id) toast('💎 ' + d.player + ' ' + tr('findet einen Schatz'), '');
+      if (d.player_id !== G.player?.id) toast('💎 ' + d.player + ' ' + tr('findet einen Schatz'), '', { quiet: true });
       break;
     }
     case 'treasures_updated':
@@ -3563,8 +3578,7 @@ function renderNow() {
   if (G.flow) drawFlowPath(ctx);
 
   // ---- Treasures ----
-  _treasuresOnScreen = 0;
-  for (const t of G.treasures) drawTreasure(ctx, t);
+  drawTreasureLayer(ctx);
   drawRipeMarkers(ctx, claimMap);
   drawCollectFX(ctx);
   if (G.n2kVisible) drawN2KOverlay(ctx, true);
@@ -4665,12 +4679,17 @@ let treasureHintSince = 0, treasureHintPos = null, _roamAskedAt = 0, _roamKey = 
 // other — so the hints arrive spaced out instead of all at once. Returns the
 // opacity (0 = not this one's turn) incl. fade-in/out. An "on the spot" tree
 // (ep.k ≥ 1) is a contextual marker, not a hint, and is exempt.
-const BEACON = { cur: null, since: 0, last: null, gapUntil: 0, show: 12000, gap: 5000, asked: new Set(), frame: 0 };
+// Beacons are hints, not HUD: they fade out while the player is moving the
+// camera (he is going somewhere already) and after every hand-over the quiet
+// gap grows (5 s → 25 s), so an idle screen is not nagged forever.
+const BEACON = { cur: null, since: 0, last: null, gapUntil: 0, show: 12000, gap: 5000, asked: new Set(), frame: 0, rounds: 0 };
+function beaconGap() { return Math.min(25000, BEACON.gap + BEACON.rounds * 4000); }
+function beaconSettled() { return Math.max(0, Math.min(1, (performance.now() - _camMovedAt - 700) / 600)); }
 function beaconFrameBegin() {
   const now = Date.now(), asked = BEACON.asked;
   if (BEACON.cur && !asked.has(BEACON.cur)) { BEACON.last = BEACON.cur; BEACON.cur = null; BEACON.gapUntil = now + 1500; }
   if (BEACON.cur && now - BEACON.since > BEACON.show && [...asked].some(a => a !== BEACON.cur)) {
-    BEACON.last = BEACON.cur; BEACON.cur = null; BEACON.gapUntil = now + BEACON.gap;
+    BEACON.last = BEACON.cur; BEACON.cur = null; BEACON.rounds++; BEACON.gapUntil = now + beaconGap();
   }
   if (!BEACON.cur && now >= BEACON.gapUntil && asked.size) {
     const others = [...asked].filter(a => a !== BEACON.last);
@@ -4685,7 +4704,7 @@ function beaconTurn(id) {
   const fin = Math.min(1, age / 1200);
   const alone = (BEACON.n || 0) <= 1;   // nobody waiting (last frame) → no need to leave
   const fout = alone ? 1 : Math.max(0, Math.min(1, (BEACON.show + 400 - age) / 800));
-  return Math.min(fin, fout);
+  return Math.min(fin, fout) * beaconSettled();
 }
 function unfoundTreasures() { return (G.treasures || []).filter(t => !t.found_by); }
 function treasureDistM(t) { const mLon = 111320 * Math.cos(G.cam.lat * Math.PI / 180); return Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540); }
@@ -7951,16 +7970,16 @@ function drawTriangle(ctx, cx, top, w, h) {
 // dashed gold ring. Sizes are in CSS px and get a 15% boost on touch devices;
 // the hit radius is never below 22px (44px target). Collect FX: burst + float.
 const TREASURE_RARITY = {
-  EN: {rim:'#ff5a4a', glow:'255,90,70',  name:'Stark gefährdet'},
-  VU: {rim:'#ffb830', glow:'255,184,48', name:'Gefährdet'},
-  NT: {rim:'#6cc4ff', glow:'108,196,255',name:'Potenziell gefährdet'},
-  LC: {rim:'#7ee07e', glow:'126,224,126',name:'Nicht gefährdet'},
-  coins: {rim:'#ffd24a', glow:'255,210,74', name:'Schatz'},
-  xp:    {rim:'#5ee6ff', glow:'94,230,255', name:'Erfahrung'},
-  rare_seed:   {rim:'#9be86a', glow:'155,232,106', name:'Seltener Samen'},
-  ancient_map: {rim:'#e0c080', glow:'224,192,128', name:'Alte Karte'},
-  WANDER:  {rim:'#ff9ccf', glow:'255,156,207', name:'Durchzügler'},   // roaming wildlife
-  roaming: {rim:'#ff9ccf', glow:'255,156,207', name:'Durchzügler'},
+  EN: {rim:'#ff5a4a', glow:'255,90,70',  name:'Stark gefährdet', rank:5},
+  VU: {rim:'#ffb830', glow:'255,184,48', name:'Gefährdet', rank:4},
+  NT: {rim:'#6cc4ff', glow:'108,196,255',name:'Potenziell gefährdet', rank:3},
+  LC: {rim:'#7ee07e', glow:'126,224,126',name:'Nicht gefährdet', rank:2},
+  coins: {rim:'#ffd24a', glow:'255,210,74', name:'Schatz', rank:1},
+  xp:    {rim:'#5ee6ff', glow:'94,230,255', name:'Erfahrung', rank:1},
+  rare_seed:   {rim:'#9be86a', glow:'155,232,106', name:'Seltener Samen', rank:2},
+  ancient_map: {rim:'#e0c080', glow:'224,192,128', name:'Alte Karte', rank:2},
+  WANDER:  {rim:'#ff9ccf', glow:'255,156,207', name:'Durchzügler', rank:4},   // roaming wildlife
+  roaming: {rim:'#ff9ccf', glow:'255,156,207', name:'Durchzügler', rank:4},
 };
 const ROAMING_TYPES = new Set(['species', 'n2k_species', 'roaming']);
 function isSpeciesTreasure(t) { return ROAMING_TYPES.has(t.treasure_type) && !!t.species_name; }
@@ -8032,7 +8051,87 @@ function drawRipeMarkers(ctx, claimMap) {
 }
 function treasurePhase(t) { return ((t.id || 0) * 0.73) % (Math.PI * 2); }
 
-function drawTreasure(ctx, t) {
+// Zoomed out, a Gemeinde's 10–40 caches pile up into one heap of arrows and
+// sparkles. Below TREASURE_CLUSTER_Z the layer is drawn *calm* (ring + sprite,
+// no arrow, no sparkles) and treasures closer than ~36 px merge into one
+// cluster marker with a ×N badge; tapping a cluster zooms in until they part.
+const TREASURE_CLUSTER_Z = 15.5, TREASURE_CLUSTER_PX = 36;
+let _treasureClusters = [], _treasureClustered = new Set();
+function drawTreasureLayer(ctx) {
+  _treasuresOnScreen = 0; _treasureClusters = []; _treasureClustered = new Set();
+  const list = G.treasures || [];
+  if (G.cam.zoom >= TREASURE_CLUSTER_Z || list.length < 2) { for (const t of list) drawTreasure(ctx, t); return; }
+  const W = gc.width, H = gc.height, m = 60;
+  const pts = [];
+  for (const t of list) {
+    const [x, y] = toScreen(t.lon, t.lat);
+    if (x < -m || x > W + m || y < -m || y > H + m) continue;
+    pts.push({ t, x, y, r: treasureRarity(t).rank || 0 });
+  }
+  pts.sort((a, b) => b.r - a.r);                          // rarest anchors a cluster
+  const cl = [];
+  for (const p of pts) {
+    let c = null;
+    for (const q of cl) if (Math.hypot(q.x - p.x, q.y - p.y) < TREASURE_CLUSTER_PX) { c = q; break; }
+    if (c) c.items.push(p.t); else cl.push({ x: p.x, y: p.y, t: p.t, items: [p.t] });
+  }
+  cl.sort((a, b) => a.y - b.y);                           // painter's order
+  for (const c of cl) {
+    if (c.items.length === 1) { drawTreasure(ctx, c.t, true); continue; }
+    for (const t of c.items) _treasureClustered.add(t.id);
+    _treasuresOnScreen += c.items.length;
+    _treasureClusters.push(c);
+    drawTreasureCluster(ctx, c);
+  }
+}
+function drawTreasureCluster(ctx, c) {
+  const s = Math.min(1.3, treasureScale()), u = Math.max(1, Math.round(s));
+  const xi = Math.round(c.x), yi = Math.round(c.y), rar = treasureRarity(c.t);
+  const time = Date.now(), bob = Math.sin(time / 900 + treasurePhase(c.t)) * 1.5;
+  ctx.save();
+  // one dithered ring (slightly wider than a single's) + a second faint rim
+  const rx = Math.round(19 * s), ry = Math.round(rx * 0.45);
+  ctx.fillStyle = rar.rim;
+  for (let py = -ry; py <= ry; py += u) for (let px = -rx; px <= rx; px += u) {
+    const d = Math.hypot(px / rx, py / ry);
+    if (d > 1 || d < 1 - 3 * u / rx) continue;
+    if (((px / u + py / u) & 1) === 0 || d > 1 - u / rx) ctx.fillRect(xi + px, yi + 3 * u + py, u, u);
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(xi - 7 * u, yi + u, 14 * u, u);
+  // the rarest sprite, slightly offset twin behind it to read as "several"
+  const sp = (ox, oy, a) => {
+    ctx.save(); ctx.globalAlpha = a;
+    if (isSpeciesTreasure(c.t)) drawSpeciesTreasure(ctx, c.x + ox, c.y + oy + bob, c.t, s * 0.95);
+    else drawLootSprite(ctx, xi + ox, Math.round(c.y - 5 * s + oy + bob), s * 0.95, c.t.treasure_type, time, 0);
+    ctx.restore();
+  };
+  sp(-4 * u, -3 * u, 0.55); sp(0, 0, 1);
+  // ×N badge, pixel box with the rarity rim
+  const label = '×' + c.items.length;
+  ctx.font = MAP_FONT.pixel; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tw = Math.ceil(ctx.measureText(label).width) + 6 * u, th = 11 * u;
+  const bx = xi + 9 * u, by = yi - 16 * u;
+  ctx.fillStyle = '#1a140c'; ctx.fillRect(bx - u, by - u, tw + 2 * u, th + 2 * u);
+  ctx.fillStyle = rar.rim; ctx.fillRect(bx, by, tw, th);
+  ctx.fillStyle = '#1a140c'; ctx.fillText(label, bx + tw / 2, by + th / 2 + 1);
+  ctx.restore();
+}
+/** Tap on a cluster: zoom in just far enough for its treasures to separate. */
+function treasureClusterAt(x, y) {
+  const hr = treasureHitRadius() + 4;
+  for (const c of _treasureClusters) if (Math.hypot(c.x - x, c.y - y) < hr) return c;
+  return null;
+}
+function openTreasureCluster(c) {
+  let lon = 0, lat = 0, span = 0;
+  for (const t of c.items) { lon += t.lon; lat += t.lat; }
+  lon /= c.items.length; lat /= c.items.length;
+  for (const t of c.items) { const [x, y] = toScreen(t.lon, t.lat); span = Math.max(span, Math.hypot(x - c.x, y - c.y)); }
+  const z = Math.min(17, Math.max(G.cam.zoom + 1, G.cam.zoom + Math.log2(70 / Math.max(span, 2))));
+  flyTo(lon, lat, z);
+}
+
+function drawTreasure(ctx, t, calm) {
   const [x, y] = toScreen(t.lon, t.lat);
   const s = treasureScale();
   const m = 40 * s;
@@ -8073,7 +8172,7 @@ function drawTreasure(ctx, t) {
   }
   // Soft fill inside the ring (sparse dither, breathes with pulse)
   ctx.fillStyle = 'rgba(' + rar.glow + ',' + (0.25 + pulse * 0.2).toFixed(2) + ')';
-  for (let py = -ry; py <= ry; py += 2 * u) {
+  if (!calm) for (let py = -ry; py <= ry; py += 2 * u) {
     for (let pxx = -rx; pxx <= rx; pxx += 2 * u) {
       const d = Math.hypot(pxx / rx, py / ry);
       if (d < 1 - band / rx && (((pxx / u + py / u) >> 1) & 1) === spin) ctx.fillRect(xi + pxx, yi + 3 * u + py, u, u);
@@ -8104,15 +8203,14 @@ function drawTreasure(ctx, t) {
     ctx.fillRect(xi - 2 * u - o, ay - 2 * u, 4 * u + 2 * o, u + o);
     ctx.fillRect(xi - u - o, ay - u, 2 * u + 2 * o, u + o);
   };
-  arrow('#1a140c', u); arrow(rar.rim, 0);
-  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(xi - 4 * u, ay - 6 * u, 8 * u, u);
+  if (!calm) { arrow('#1a140c', u); arrow(rar.rim, 0); ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(xi - 4 * u, ay - 6 * u, 8 * u, u); }
 
   // Sprite
   if (isSpecies) drawSpeciesTreasure(ctx, x, y + bob, t, s);
   else drawLootSprite(ctx, xi, Math.round(y - 5 * s + bob), s, t.treasure_type, time, ph);
 
   // Orbiting sparkles: pixel crosses (1 unit) that twinkle
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < (calm ? 0 : 3); i++) {
     const a = time / 1400 + ph + i * 2.094;
     const tw = 0.5 + 0.5 * Math.sin(time / 180 + i * 1.7 + ph);
     const sx = Math.round(x + Math.cos(a) * (R + 4 * s)), sy = Math.round(cy + Math.sin(a) * (R + 4 * s) * 0.55 - 2 * s);
@@ -9975,6 +10073,21 @@ function initGameInput() {
   // Zoom buttons
   document.getElementById('btn-zoomin').onclick = () => smoothZoomBy(1, gc.width/2, gc.height/2, true);
   document.getElementById('btn-zoomout').onclick = () => smoothZoomBy(-1, gc.width/2, gc.height/2, true);
+  // Tool tray: +/− always, everything else behind ⋯ (hover opens it on
+  // desktop; a tap toggles; the tray folds 8 s after the last tap on touch).
+  // The dot marks non-default modes only (NE heat, GPS), not the default-on layers.
+  {
+    const zc = document.getElementById('zoom-controls'), more = document.getElementById('btn-tools');
+    let foldT = 0;
+    const setOpen = on => { zc.classList.toggle('open', on); more.setAttribute('aria-expanded', on ? 'true' : 'false'); invalidateHudInsets(); clearTimeout(foldT); if (on && isCoarsePointer()) foldT = setTimeout(() => setOpen(false), 8000); };
+    more.onclick = e => { e.stopPropagation(); setOpen(!zc.classList.contains('open')); };
+    zc.addEventListener('click', e => { if (zc.classList.contains('open') && isCoarsePointer() && e.target !== more) { clearTimeout(foldT); foldT = setTimeout(() => setOpen(false), 2500); } });
+    document.addEventListener('pointerdown', e => { if (zc.classList.contains('open') && !zc.contains(e.target)) setOpen(false); });
+    const on = id => { const b = document.getElementById(id); return b && b.style.display !== 'none' && !b.classList.contains('off'); };
+    const dot = () => zc.classList.toggle('has-active', on('btn-ne') || document.getElementById('btn-gps')?.classList.contains('active'));
+    new MutationObserver(dot).observe(document.getElementById('zc-tools'), { attributes: true, subtree: true, attributeFilter: ['class', 'style'] });
+    G._toolsOpen = setOpen;
+  }
   document.getElementById('btn-gearth').onclick = () => {
     // Open Google Maps satellite view on exactly this viewport.
     // Our scale: mapScale() CSS px per degree lon; Google (Web Mercator):
@@ -10707,8 +10820,11 @@ function onGameClick(e) {
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   const [lon, lat] = toGeo(x, y);
 
-  // Check treasures first
+  // Check treasures first (a cluster marker zooms in instead of claiming blindly)
+  const tcl = treasureClusterAt(x, y);
+  if (tcl) { openTreasureCluster(tcl); return; }
   for (const t of G.treasures) {
+    if (_treasureClustered.has(t.id)) continue;
     const [tx, ty] = toScreen(t.lon, t.lat);
     const hr = treasureHitRadius();
     if (Math.hypot(tx-x, ty-(y+6*treasureScale())) < hr) { claimTreasure(t); return; }
@@ -12241,6 +12357,7 @@ async function claimTreasure(t) {
   G.player = res.player; updateStats();
   spawnCollectFX(t, '+' + res.value + (res.type === 'xp' ? ' XP' : ' 🪙'), treasureRarity(t));
   G.treasures = G.treasures.filter(tr=>tr.id!==t.id);
+  BEACON.rounds = 0;
   const heraldTells = !G.tallUnlocked && enhancedLoaded() && !Herald.seen.has('trees_unlocked');
   if (heraldTells) setTimeout(() => Herald.hint('trees_unlocked'), 1200);
   // First treasure unlocks the giant trees (enhanced mode)
@@ -12606,7 +12723,8 @@ window.DEV = {
   /** Herald (typewriter hint box): DEV.herald('intro'|'quest'|'off') or DEV.herald('hint','first_claim'). */
   herald(mode, key) {
     if (mode === 'off') return Herald.dismiss();
-    if (mode === 'hint') { Herald.seen.delete(key); return Herald.hint(key); }
+    if (mode === 'hint') { Herald.seen.delete(key); Herald.quietUntil = 0; Herald.hint(key); Herald._next(); return; }
+    if (mode === 'queue') return { queue: Herald.queue.map(q => q.key), quietMs: Math.max(0, Herald.quietUntil - Date.now()), calm: Herald.calm() };
     Herald.reset(); Herald.start(mode || 'intro');
   },
   /** Show/hide non-map chrome (search, badges, attribution, loading hint). */
@@ -12800,6 +12918,43 @@ window.DEV = {
 const Herald = {
   el: null, seen: new Set(), lines: [], idx: 0, timer: null, typing: null, mode: null, hideTimer: null,
   reduced: window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches,
+  // Attention budget: everything the Herald says on his own (hints, quest
+  // beats) goes through `enqueue` and only appears when the player is *calm* —
+  // no popup open, camera settled ≥ 1.2 s, nothing else on screen, and a quiet
+  // gap after the last box (longer when the player closed it himself). Hints
+  // expire unseen; completions never. User-initiated briefings bypass the queue.
+  queue: [], quietUntil: 0, QUIET: 14000, QUIET_USER: 30000, _pumpT: 0,
+  available() { this.init(); return !!this.el; },
+  calm(item) {
+    if (!this.el || this.el.classList.contains('show')) return false;
+    if (document.querySelector('.popup.open') || [...document.querySelectorAll('.modal-bg')].some(m => m.style.display !== 'none')) return false;
+    if (document.querySelector('.screen.active')?.id !== 'screen-game') return false;
+    if (typeof _camMovedAt !== 'undefined' && performance.now() - _camMovedAt < 1200) return false;
+    if ((typeof ZOOM !== 'undefined' && ZOOM.target != null) || (G.drag && G.drag.active) || G.flow) return false;
+    if (!(item && item.prio >= 2) && Date.now() < this.quietUntil) return false;
+    return true;
+  },
+  enqueue(item) {
+    this.init(); if (!this.el) return;
+    if (item.key && this.queue.some(q => q.key === item.key)) return;
+    this.queue.push(item); this.pump();
+  },
+  pump(ms) {
+    if (this._pumpT) return;
+    this._pumpT = setTimeout(() => { this._pumpT = 0; this._next(); }, ms || 400);
+  },
+  _next() {
+    const now = Date.now();
+    this.queue = this.queue.filter(q => !q.expires || q.expires > now);
+    if (!this.queue.length) return;
+    this.queue.sort((a, b) => (b.prio || 0) - (a.prio || 0));
+    const q = this.queue[0];
+    if (!this.calm(q)) { this.pump(500); return; }
+    this.queue.shift();
+    this.play(q.lines, q.mode, q.autoHide, q.compact);
+    if (q.onShow) q.onShow();
+    if (this.queue.length) this.pump(1000);
+  },
 
   init() {
     if (this.el) return;
@@ -12820,7 +12975,7 @@ const Herald = {
       this.el.style.visibility = busy ? 'hidden' : '';
     }, 300);
   },
-  reset() { this.seen.clear(); this.dismiss(); },
+  reset() { this.seen.clear(); this.queue = []; this.quietUntil = 0; this.dismiss(); },
 
   /** Quest tapped in the sidebar → detailed briefing with a one-tap action. */
   activeQuestId: null, action: null,
@@ -12868,7 +13023,7 @@ const Herald = {
       this.play(lines, 'intro');
     } else if (q && G.freshPlayer && !this.seen.has('quest0')) {
       this.seen.add('quest0');
-      this.play([this.questLine(q)], 'quest');
+      this.enqueue({ key: 'quest0', lines: [this.questLine(q)], mode: 'quest', autoHide: 14000, compact: true, expires: Date.now() + 120000 });
     }
   },
 
@@ -12877,16 +13032,18 @@ const Herald = {
     this.init(); if (!this.el || this.seen.has(key)) return;
     if (this.mode === 'intro' && this.el.classList.contains('show')) return; // don't interrupt the intro
     const H = {
-      first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Mach es noch einmal auf und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — das bringt XP und zählt zum 30 %-Ziel.') },
-      first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 60 Minuten — jeder zu seiner Zeit. Ist deiner golden, zeigt ein 🌾-Marker: ernten bringt Münzen. Wartest du zu lang, ernten die Bauern. Oder lass ihn als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen — das zählt zum Naturschutz.') },
-      trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar! Goldene Bäume zeigen dir, wo sie stehen. Kauf dir eine Parzelle mit so einem Riesen für die Aufgabe') + ' <b>' + tr('Baumriese') + '</b>.' },
-      drought: { icon:'☀️', tag: tr('Dürre'), html: tr('Das Grundwasser steht hier') + ' <b>' + fmtSigma(G.drought?.sigma || 0) + '</b> ' + tr('unter normal — deine Felder tragen nur') + ' <b>×' + ((G.dossiers[G.drought?.kg]?.game?.yield_factor) ?? 0.6).toFixed(1).replace('.', ',') + '</b>. ' + tr('Ein 🕳️ Brunnen schützt, Brache zählt zum Naturschutz.') + ' <span class="pp-ez-link" onclick="openDossier(null,\'water\')">📖 ' + tr('Chronik') + '</span>' },
-      enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Da gibt’s echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz, dann siehst du sie.') },
+      first_claim: { icon:'🌿', tag: tr('Tipp'), html: tr('Dein erstes Stückerl Land! Öffne es nochmal und wandle es in') + ' <b>🌿 ' + tr('Naturschutz') + '</b> ' + tr('um — XP und 30 %-Ziel.') },
+      first_field: { icon:'🌾', tag: tr('Dein Acker'), html: tr('Äcker reifen alle 60 Minuten. Golden + 🌾-Marker = ernten, sonst tun es die Bauern. Oder als') + ' <b>🌿 ' + tr('Brache') + '</b> ' + tr('liegen lassen — zählt zum Naturschutz.') },
+      trees_unlocked: { icon:'🌲', tag: tr('Freigeschaltet'), html: tr('Riesenbäume sichtbar — goldene Bäume zeigen, wo sie stehen. Eine Parzelle mit so einem Riesen erfüllt') + ' <b>' + tr('Baumriese') + '</b>.' },
+      drought: { icon:'☀️', tag: tr('Dürre'), html: tr('Grundwasser') + ' <b>' + fmtSigma(G.drought?.sigma || 0) + '</b> ' + tr('unter normal — Felder tragen nur') + ' <b>×' + ((G.dossiers[G.drought?.kg]?.game?.yield_factor) ?? 0.6).toFixed(1).replace('.', ',') + '</b>. ' + tr('Ein 🕳️ Brunnen schützt.') + ' <span class="pp-ez-link" onclick="openDossier(null,\'water\')">📖 ' + tr('Chronik') + '</span>' },
+      enhanced: { icon:'✨', tag: tr('Enhanced Gelände'), html: tr('Echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz.') },
     };
     if (!H[key]) return;
     if (key === 'enhanced' && (!G.freshPlayer || G.tallUnlocked)) { this.seen.add(key); return; }
     this.seen.add(key);
-    this.play([H[key]], 'hint', 9000);
+    // Hints are whispers: compact box, no typewriter, gone after 9 s, dropped
+    // unseen when the player stays busy for 90 s (the moment has passed).
+    this.enqueue({ key, lines: [H[key]], mode: 'hint', autoHide: 9000, compact: true, expires: Date.now() + 90000 });
   },
 
   /** Quest completed → celebrate, then reveal the next one. */
@@ -12904,10 +13061,21 @@ const Herald = {
       }
       this.renderDots();
     }
-    const lines = [{ icon:'🏆', tag: tr('Passt!'), html: '<b>' + esc(tr(title || 'Aufgabe')) + '</b> ✔', cls:'done' }];
-    // Next quest gets appended once loadChallenges() refreshed — see questsChanged().
-    this._awaitNext = true;
-    this.play(lines, 'done', 7000);
+    // One action can finish several quests at once (claim + treasure + …):
+    // collect the burst for 1.5 s and announce it as a single beat.
+    this._burst = this._burst || [];
+    if (title && !this._burst.includes(title)) this._burst.push(title);
+    clearTimeout(this._burstT);
+    this._burstT = setTimeout(() => {
+      const titles = this._burst.splice(0);
+      if (!titles.length) return;
+      const names = titles.map(t => '<b>' + esc(tr(t)) + '</b>').join(', ');
+      const html = titles.length > 1 ? names + ' ✔  <span class="rw">' + esc(tr(titles.length + ' Aufgaben erledigt')) + '</span>' : names + ' ✔';
+      const lines = [{ icon:'🏆', tag: tr('Passt!'), html, cls:'done' }];
+      // Next quest gets appended once loadChallenges() refreshed — see questsChanged().
+      this.enqueue({ key: 'done:' + titles.join('|'), lines, mode: 'done', autoHide: 7000, compact: true, prio: 2,
+        onShow: () => { this._awaitNext = true; this.questsChanged(); } });
+    }, 1500);
   },
   questsChanged() {
     if (!this._awaitNext) return;
@@ -12930,7 +13098,7 @@ const Herald = {
     }, 1200);
   },
 
-  play(lines, mode, autoHide) {
+  play(lines, mode, autoHide, compact) {
     // Something already on screen → chain the new lines onto it instead of clobbering.
     if (this.el.classList.contains('show') && this.lines.length) {
       this.lines.push(...lines); this.autoHide = autoHide || this.autoHide; this.renderDots();
@@ -12941,8 +13109,8 @@ const Herald = {
       return;
     }
     clearTimeout(this.hideTimer); this.stopTyping();
-    this.lines = lines; this.idx = 0; this.mode = mode; this.autoHide = autoHide || 0;
-    this.el.className = 'herald show' + (mode === 'quest' ? ' quest' : '');
+    this.lines = lines; this.idx = 0; this.mode = mode; this.autoHide = autoHide || 0; this.compact = !!compact;
+    this.el.className = 'herald show' + (mode === 'quest' ? ' quest' : '') + (compact ? ' compact' : '');
     this.showLine();
   },
   renderDots() {
@@ -12975,7 +13143,7 @@ const Herald = {
   type(html, done) {
     const t = document.getElementById('herald-text');
     t.classList.remove('typed');
-    if (this.reduced) { t.innerHTML = html; t.classList.add('typed'); done(); return; }
+    if (this.reduced || this.compact) { t.innerHTML = html; t.classList.add('typed'); done(); return; }
     const tokens = html.match(/<[^>]+>|&[a-z#0-9]+;|[\s\S]/gu) || [];
     let i = 0, out = '';
     const step = () => {
@@ -13002,7 +13170,9 @@ const Herald = {
   dismiss(user) {
     if (!this.el) return;
     this.stopTyping(); clearTimeout(this.hideTimer);
+    const wasShown = this.el.classList.contains('show');
     this.el.classList.remove('show', 'ready');
+    if (wasShown) this.quietUntil = Date.now() + (user ? this.QUIET_USER : this.QUIET);
     if (user && this.mode === 'intro') this.seen.add('quest0');
     if (this.mode === 'brief') { this.activeQuestId = null; document.querySelectorAll('.quest-item.active').forEach(q => q.classList.remove('active')); }
     this.action = null; const ab = document.getElementById('herald-act'); if (ab) ab.style.display = 'none';

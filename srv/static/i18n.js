@@ -444,6 +444,15 @@ const I18N_EXACT = {
   'Ernten fehlen.': 'harvests to go.',
   'Äcker reifen alle 60 Minuten — jeder zu seiner Zeit. Ist deiner golden, zeigt ein 🌾-Marker: ernten bringt Münzen. Wartest du zu lang, ernten die Bauern. Oder lass ihn als': 'Fields ripen every 60 minutes — each in its own time. When yours turns golden a 🌾 marker appears: harvesting earns coins. Wait too long and the farmers take it. Or leave it as',
   'liegen — das zählt zum Naturschutz.': '— that counts towards nature conservation.',
+  'Äcker reifen alle 60 Minuten. Golden + 🌾-Marker = ernten, sonst tun es die Bauern. Oder als': 'Fields ripen every 60 minutes. Golden + 🌾 marker = harvest, or the farmers will. Or leave it as',
+  'liegen lassen — zählt zum Naturschutz.': '— counts towards nature conservation.',
+  'Dein erstes Stückerl Land! Öffne es nochmal und wandle es in': 'Your first piece of land! Open it again and convert it to',
+  'um — XP und 30 %-Ziel.': '— XP and the 30 % goal.',
+  'Riesenbäume sichtbar — goldene Bäume zeigen, wo sie stehen. Eine Parzelle mit so einem Riesen erfüllt': 'Giant trees revealed — golden trees show where they stand. A parcel with such a giant completes',
+  'unter normal — Felder tragen nur': 'below normal — fields yield only',
+  'Ein 🕳️ Brunnen schützt.': 'A 🕳️ well protects.',
+  'Echte Baumhöhen aus Laserscans — und versteckte Riesenbäume. Find zuerst einen Schatz.': 'Real tree heights from laser scans — and hidden giant trees. Find a treasure first.',
+  'Werkzeuge & Ebenen': 'Tools & layers',
   'Ein Acker von dir ist reif — die 🌾-Marker zeigen ihn. Tipp drauf und ernte, bevor die Bauern es tun.': 'One of your fields is ripe — the 🌾 marker shows it. Tap it and harvest before the farmers do.',
   'Äcker reifen alle 60 Minuten, jeder zu seiner Zeit. Dein nächster ist in': 'Fields ripen every 60 minutes, each in its own time. Your next one is ripe in',
   'reif — dann erscheint ein 🌾-Marker.': '— a 🌾 marker will appear then.',
@@ -598,6 +607,8 @@ const I18N_RX = [
   [/^(.*) Dein Chat ist für (.+) gesperrt\.$/, function(_,a,b){return trx(a)+' Your chat is muted for '+b.replace('Min.','min').replace('Std.','h').replace('Tagen','days')+'.';}],
   [/^Dein Chat ist noch (.+) gesperrt\.$/, function(_,b){return 'Your chat is still muted for '+b.replace('Min.','min').replace('Std.','h').replace('Tagen','days')+'.';}],
   [/^Dein Chat wurde dauerhaft gesperrt\.$/, 'Your chat has been permanently disabled.'],
+
+  [/^(\d+) Aufgaben erledigt$/, '$1 quests completed'],
 
   // ---------- loading progress ----------
   [/^⏳ Lade Gelände…$/, '⏳ Loading terrain…'],

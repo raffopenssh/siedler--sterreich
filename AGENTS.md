@@ -655,6 +655,34 @@ are smashable — never register from the cached base layer (coordinates differ)
 Debris runs the anim loop at 16 ms while `SMASH.fx.length`. `DEV.smash()` /
 `DEV.smash(true)` / `DEV.smash('reset')`, xbrowser scene `smash`.
 
+## Attention budget — HUD, Herald, hints, toasts (2026-10-09, "screen too busy")
+
+One idea: **the player's attention is a budget; nothing unsolicited spends it while he is busy.**
+- **Herald**: everything the Herald says on his own (`hint`, fresh-player `quest`, `completed`) goes through
+  `Herald.enqueue({key, lines, mode, autoHide, compact, prio, expires, onShow})` and appears only when
+  `Herald.calm()` — no popup/modal open, camera settled ≥ 1.2 s, no zoom ease/drag/flow, nothing shown, and a
+  quiet gap after the last box (`QUIET` 14 s, `QUIET_USER` 30 s when the player closed it). Hints are
+  **compact** (`.herald.compact`: one-liner, no typewriter, 9 s) and expire unseen after 90 s; completions
+  (`prio 2`, no expiry, skip the quiet gap) are **coalesced** — a burst within 1.5 s becomes one line
+  („A, B ✔ 2 Aufgaben erledigt“) and the own-completion toast is dropped (Herald says it). Only the intro and
+  user-initiated briefings (`brief`) play directly with the typewriter. Keep hint texts ≤ 2 sentences.
+  `DEV.herald('queue')` → `{queue, quietMs, calm}`; `DEV.herald('hint', key)` bypasses the quiet gap.
+- **Toasts**: `toast(msg, type, {quiet:true})` = chatter (other players' moves, ticker) — shown only when nothing
+  else is live (no toast, no queue, no Herald, ≥ 3 s since the last), never queued. The queue holds ≤ 4
+  (`TOAST_QMAX`), entries older than 12 s (`TOAST_QAGE`) are dropped unseen, `opts.key` replaces a queued twin,
+  phones show ≤ 2 at once (`toastMax()`). Own rewards stay `'ok'`.
+- **Beacons** (treasure compass, giant-tree mist): `beaconTurn()` × `beaconSettled()` fades them out while the
+  camera moves and the hand-over gap grows 5 s → 25 s (`BEACON.rounds`, reset on a treasure claim).
+- **Treasures zoomed out** (`drawTreasureLayer`, < `TREASURE_CLUSTER_Z` 15.5): calm sprites (ring + sprite,
+  no arrow/sparkles/soft fill) and anything within `TREASURE_CLUSTER_PX` 36 px merges into one cluster marker
+  (rarest sprite + offset twin + `×N` badge, `rank` in `TREASURE_RARITY`). Tap = `openTreasureCluster` zooms
+  until they part (never claims blindly); `_treasureClustered` ids are skipped by the single hit-test.
+- **Zoom column**: `+`/`−`/`#btn-tools` at rest; Earth, share, N2K, Flurnamen, NE eye, GPS live in `#zc-tools`
+  (`.zoom-controls.open`, hover on fine pointers, auto-fold 8 s on touch, `G._toolsOpen(bool)`); the gold dot
+  (`has-active`) marks non-default modes only (NE heat, GPS). `hudSafeInsets` follows the folded column.
+- **Chips**: Enhanced badge / water chip fold to icons after 8–14 s (`.min`); a folded drought chip stops pulsing.
+- xbrowser scenes `treasure-cluster`, `tools-tray`, `tools-tray-closed`, `herald-compact`.
+
 ## Quests → Herald
 
 Built-in quests live in `generateChallenges` + `backfillChallenges` (+ `questProgressFor`/`questSatisfied`/`questProgress` counters). `GET /api/session/{id}/challenges` returns live `progress/goal`

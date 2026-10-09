@@ -698,6 +698,18 @@ input[type=text]:focus { border-color:var(--gold); }
 }
 .zoom-controls .btn { width:36px; height:36px; padding:0; text-align:center; line-height:1; font-size:16px; display:grid; place-content:center; overflow:hidden; } /* line-height:1 + overflow: Firefox otherwise reports a 6 px taller line box than the button */
 .zoom-controls .btn.active { background:var(--green); border-color:#5a9; color:#fff; }
+/* Secondary tools (Earth, share, layers, GPS) fold under one "more" button so
+   the column is three buttons at rest — tap/hover opens the tray. A gold dot
+   on the button says "a layer is on" while folded. */
+.zc-tools { display:flex; flex-direction:column; gap:inherit; max-height:0; overflow:hidden; opacity:0; transform:translateY(-6px);
+  transition:max-height .25s ease, opacity .2s ease, transform .2s ease; pointer-events:none; }
+.zoom-controls.open .zc-tools { max-height:360px; opacity:1; transform:none; pointer-events:auto; }
+@media (hover:hover) and (pointer:fine) { .zoom-controls:hover .zc-tools { max-height:360px; opacity:1; transform:none; pointer-events:auto; } }
+.zc-more { position:relative; color:var(--gold); }
+.zoom-controls.open .zc-more, .zoom-controls:hover .zc-more { background:var(--panel-light); }
+.zc-more .zc-dot { position:absolute; top:4px; right:4px; width:6px; height:6px; background:var(--green-light); box-shadow:0 0 0 1px #000; display:none; }
+.zoom-controls.has-active:not(.open) .zc-more .zc-dot { display:block; }
+@media (prefers-reduced-motion: reduce) { .zc-tools { transition:none; } }
 
 /* ===== Bottom sheet toggle (hidden on desktop) ===== */
 .sb-toggle {
@@ -1254,8 +1266,17 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .herald-close:hover { color:var(--text-bright); }
 @keyframes heraldBlink { 50% { opacity:0; } }
 @keyframes heraldBob { 50% { transform:translateY(3px); } }
+/* compact = whisper: hints, quest beats, completions — one line, no typewriter */
+.herald.compact { min-height:0; padding:8px 30px 6px 8px; gap:10px; width:min(520px, calc(100% - 2 * var(--hud-side))); }
+.herald.compact .herald-avatar { flex-basis:34px; height:34px; font-size:20px; }
+.herald.compact .herald-text { font-size:18px; min-height:0; }
+.herald.compact .herald-tag { margin-bottom:3px; }
+.herald.compact .herald-foot { margin-top:2px; min-height:8px; }
+.herald.compact .herald-next { display:none; }
 @media (max-width:768px) {
   .herald { bottom:62px; padding:8px 30px 6px 8px; gap:8px; width:calc(100% - 16px); min-height:0; }
+  .herald.compact { width:calc(100% - 16px); }
+  .herald.compact .herald-text { font-size:17px; }
   .herald-avatar { flex-basis:38px; height:38px; font-size:22px; }
   .herald-text { font-size:18px; min-height:2.4em; }
   .herald-tag { font-size:7px; }
@@ -1313,6 +1334,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .water-chip.st-low { border-color:#e8a83a; color:#ffe2a6; }
 .water-chip.st-very_low { border-color:#e05040; color:#ffc4bc; }
 .water-chip.st-very_low.pulse { animation:wcPulse 1.6s ease-in-out infinite; }
+.water-chip.min.pulse { animation:none; }   /* folded chip = acknowledged, stop nagging */
 .water-chip.st-high { border-color:#4aa8e8; color:#c8e8ff; }
 @keyframes wcPulse { 0%,100% { box-shadow:2px 2px 0 #000, 0 0 0 rgba(224,80,64,0); } 50% { box-shadow:2px 2px 0 #000, 0 0 10px rgba(224,80,64,.7); } }
 .sb-chronik { cursor:pointer; margin-top:8px; padding:4px 6px; align-items:center; background:rgba(0,0,0,.25); border:1px solid var(--panel-light); transition:border-color .15s; }
