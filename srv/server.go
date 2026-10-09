@@ -884,10 +884,19 @@ func (s *Server) handleGetSessionParcels(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleGetSessionTreasures(w http.ResponseWriter, r *http.Request) {
-	treasures, err := s.Q.GetSessionTreasures(r.Context(), r.PathValue("id"))
+	rows, err := s.Q.GetSessionTreasures(r.Context(), r.PathValue("id"))
 	if err != nil {
 		jsonErr(w, "error", 500)
 		return
+	}
+	// Durchzügler that have moved on are not listed: the compass must never
+	// lead a player to a wanderer the claim will answer with 410.
+	now := time.Now()
+	treasures := make([]dbgen.Treasure, 0, len(rows))
+	for _, t := range rows {
+		if !roamingGone(t, now) {
+			treasures = append(treasures, t)
+		}
 	}
 	jsonResp(w, treasures)
 }
@@ -1793,7 +1802,7 @@ func (s *Server) handleClaimTreasure(w http.ResponseWriter, r *http.Request) {
 	if s.DB.QueryRowContext(r.Context(), "SELECT treasure_type, created_at, found_by FROM treasures WHERE id = ?", req.TreasureID).Scan(&pre.Type, &pre.CreatedAt, &pre.FoundBy) == nil &&
 		roamingGone(dbgen.Treasure{TreasureType: pre.Type, CreatedAt: pre.CreatedAt, FoundBy: pre.FoundBy}, time.Now()) {
 		s.DB.ExecContext(r.Context(), "DELETE FROM treasures WHERE id = ? AND found_by IS NULL", req.TreasureID)
-		jsonErr(w, "This animal has moved on", 410)
+		jsonErr(w, "Dieser Durchzügler ist weitergezogen", 410)
 		return
 	}
 

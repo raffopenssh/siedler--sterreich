@@ -5,6 +5,7 @@
 // ============================================================
 
 const I18N_EXACT = {
+  'Dieser Durchzügler ist weitergezogen': 'This wanderer has moved on',
   // ---------- minimap ----------
   'ziehen': 'drag',
   'Klick: springen · Ziehen: schwenken · Doppelklick: heranzoomen': 'Click: jump · Drag: pan · Double-click: zoom in',

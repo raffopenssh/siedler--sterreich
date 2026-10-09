@@ -4736,7 +4736,12 @@ function beaconTurn(id) {
   const fout = alone ? 1 : Math.max(0, Math.min(1, (BEACON.show + 400 - age) / 800));
   return Math.min(fin, fout) * beaconSettled();
 }
-function unfoundTreasures() { return (G.treasures || []).filter(t => !t.found_by); }
+const ROAMING_LIFETIME_MS = 45 * 60 * 1000;   // srv/treasures.go roamingLifetime
+// A Durchzügler older than its lifetime has moved on even if no /roam call
+// pruned the row yet (the server answers 410 on claim) — compass, sprites and
+// hit-tests all read this list, so a stale one never becomes a flight target.
+function treasureGone(t) { return t.treasure_type === 'roaming' && t.created_at && Date.now() - Date.parse(t.created_at) > ROAMING_LIFETIME_MS; }
+function unfoundTreasures() { return (G.treasures || []).filter(t => !t.found_by && !treasureGone(t)); }
 function treasureDistM(t) { const mLon = 111320 * Math.cos(G.cam.lat * Math.PI / 180); return Math.hypot((t.lon - G.cam.lon) * mLon, (t.lat - G.cam.lat) * 110540); }
 async function maybeRoamTreasures(nearestM) {
   if (!G.session || !G.player || G.flow) return;
@@ -12389,7 +12394,12 @@ window.doRespondOffer = async function(offerId, accept) {
 
 async function claimTreasure(t) {
   const res = await POST('/api/claim-treasure', {player_id:G.player.id, treasure_id:t.id});
-  if (res.error) { toast(res.error,'err'); return; }
+  if (res.error) {
+    toast(res.error,'err');
+    // gone upstream (moved on / claimed by someone else): drop the sprite
+    const st = res._meta && res._meta.status; if (st === 410 || st === 409 || st === 404) { G.treasures = G.treasures.filter(x => x.id !== t.id); render(); }
+    return;
+  }
   if (res.type === 'roaming' && res.species_german) {
     toast(tr(`🐾 Wildtier-Begegnung: ${res.species_german} (${res.species_name})\nEin Durchzügler — du hast ihn gesichtet, bevor er weiterzog — +${res.value}🪙 +${Math.floor(res.value/2)}⚡`), 'ok');
   } else if ((res.type === 'species' || res.type === 'n2k_species') && res.species_german) {
