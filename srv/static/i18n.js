@@ -15,7 +15,7 @@ const I18N_EXACT = {
   'Neues Spiel': 'New Game',
   '🍀 Auf Glück': '🍀 Feeling lucky',
   'Erkunden': 'Explore',
-  'Wir finden dir ein Fleckchen Österreich': 'We find you a patch of Austria',
+  'Zufälliges Fleckchen Österreich': 'A random patch of Austria',
   '📍 Gemeinde selbst wählen': '📍 Pick a place yourself',
   '⚔️ Mitspielen': '⚔️ Join game',
   'Beta · keine Cookies · kein Tracking': 'Beta · no cookies · no tracking',
