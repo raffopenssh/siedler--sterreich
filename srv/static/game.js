@@ -2202,7 +2202,7 @@ async function fetchKGPolygonsBlocking(budgetMs) {
   const st = G.cellState[centre.key] || {};
   G.loadTiming.cadastre = Date.now() - t0;
   G.loadTiming.cadastreCache = st.xcache || '';
-  if (st.state === 'ready') setLoadSub(G.parcelPolys.length + ' ' + tr('Parzellen') + (st.xcache === 'HIT' || st.xcache === 'WARM' ? ' · ' + tr('aus Zwischenspeicher') : ' · ' + tr('live aus BEV-Kacheln')));
+  if (st.state === 'ready') setLoadSub(tr(G.parcelPolys.length + ' Parzellen') + (st.xcache === 'HIT' || st.xcache === 'WARM' ? ' · ' + tr('aus Zwischenspeicher') : ' · ' + tr('live aus BEV-Kacheln')));
   else setLoadSub(tr('Kataster kommt gleich nach – die Karte öffnet schon'));
   setLoadProgress(70);
   loadEnhancedForKGs();
@@ -6900,7 +6900,7 @@ function forestStageLabel(fs) {
     case 'jungwuchs': return '🌱 ' + tr('Jungwuchs') + ' · ' + tr('Stangenholz in') + ' ' + fmtMin(fs.nextInS);
     case 'stangenholz': return '🌲 ' + tr('Stangenholz') + ' · ' + tr('erntereif in') + ' ' + fmtMin(fs.nextInS);
   }
-  return '🌳 ' + tr('Baumholz') + (fs.factor < 1 ? ' · ' + Math.round(fs.factor * 100) + ' % ' + tr('Wert') : ' · ' + tr('hiebsreif'));
+  return '🌳 ' + tr('Baumholz') + (fs.factor < 1 ? ' · ' + tr(Math.round(fs.factor * 100) + ' % Wert') : ' · ' + tr('hiebsreif'));
 }
 
 /** Lazy timber estimate per parcel (server: /api/forest-value, timber.go). */
@@ -10914,7 +10914,7 @@ function showParcelPopup(f, tappedFp) {
     // folded "Details" header carries its own one-liner
     const fl = parcelFlur(f);
     const bits = [];
-    if (bldgCount > 0) bits.push(densityLabel.replace(/^\S+\s/, ''));
+    if (bldgCount > 0) bits.push(tr(densityLabel.replace(/^\S+\s/, '')));
     if (fl) bits.push(fl.label);
     ppSecSummary('det', bits.join(' · ') || pid);
   }
@@ -11048,7 +11048,7 @@ function showParcelPopup(f, tappedFp) {
     const ezKey = p.kg_code + '-EZ' + ez;
     const ezParcels = G.ezIndex[ezKey] || [];
     if (ezParcels.length > 1) {
-      ezEl.innerHTML = `<span class="pp-ez-link" onclick="openEZPopup('${p.kg_code}','${ez}')">EZ ${ez} · ${ezParcels.length} ${tr('Parzellen')} ▸</span>`;
+      ezEl.innerHTML = `<span class="pp-ez-link" onclick="openEZPopup('${p.kg_code}','${ez}')">EZ ${ez} · ${tr(ezParcels.length + ' Parzellen')} ▸</span>`;
       G.ezHighlight = {kg: p.kg_code, ez: ez};
     } else {
       ezEl.textContent = ez ? 'EZ ' + ez : '-';
@@ -11520,7 +11520,7 @@ function similarAutoRadius() {
 function similarRadiusNow() { return (G.similar && G.similar.radius) || Math.max(G.similarRadius, similarAutoRadius()); }
 function similarRadiusLabel() {
   const km = similarRadiusNow() / 1000;
-  return (km >= 2 ? Math.round(km) : km.toFixed(1).replace('.0', '')) + ' km ' + tr('Umkreis');
+  return tr((km >= 2 ? Math.round(km) : km.toFixed(1).replace('.0', '')) + ' km Umkreis');
 }
 function updateSimilarRadiusLabel() {
   const span = document.getElementById('pp-similar-radius');
@@ -12085,14 +12085,14 @@ window.doClaim = async function() {
   });
   if (res.error) { toast(res.error,'err'); return; }
   dealFX('buy', G.sel, res.price);
-  if (res.inherited && res.regen < 1) setTimeout(() => toast('🌱 ' + tr('Günstig erworben') + ': ' + tr('Bestand erholt sich noch') + ' · ' + Math.round(res.regen * 100) + ' % ' + tr('Wert'), 'ok'), 600);
+  if (res.inherited && res.regen < 1) setTimeout(() => toast('🌱 ' + tr('Günstig erworben') + ': ' + tr('Bestand erholt sich noch') + ' · ' + tr(Math.round(res.regen * 100) + ' % Wert'), 'ok'), 600);
   if (res.ne_bonus_xp > 0) { const v = NE_VERDICT[res.ne_verdict] || NE_VERDICT.unknown; setTimeout(() => toast('👁 ' + tr('Spurenleser') + ': +' + res.ne_bonus_xp + '⚡ · ' + v.ico + ' ' + tr(v.de), 'ok'), 1400); }
   if (res.station_bonus_xp > 0) setTimeout(() => toast('📏 ' + tr('Pegelwart') + ': +' + res.station_bonus_xp + '⚡ ' + tr('für die Messstelle'), 'ok'), 900);
   if (res.tall_bonus_xp > 0) {
     toast('🏴 Gekauft für '+res.price+'🪙! 🌲 Riesenbaum-Bonus: +'+res.tall_bonus_xp+'⚡','ok');
   } else {
     const fl = parcelFlur(G.sel);
-    toast('🏴 Gekauft für '+res.price+'🪙!' + (fl && fl.t.layer === 'ried' ? ' 🌾 ' + tr('Ried') + ' „' + fl.label + '“' : fl && fl.inside ? ' · ' + fl.label : ''),'ok');
+    toast(tr('🏴 Gekauft für '+res.price+'🪙!' + (fl && fl.t.layer === 'ried' ? ' 🌾 Ried „' + fl.label + '“' : fl && fl.inside ? ' · ' + fl.label : '')),'ok');
   }
   G.player = res.player; updateStats();
   await loadClaimed(); render(); showParcelPopup(G.sel); loadChallenges();
@@ -12143,7 +12143,7 @@ window.doSell = async function(claimId) {
   const res = await POST('/api/sell-parcel', {session_id:G.session.id, player_id:G.player.id, claim_id:claimId, parcel_id: sel && sel.properties.parcel_id, crop_group: sel ? parcelCrop(sel.properties) : ''});
   if (res.error) { toast(res.error,'err'); return; }
   if (sel) dealFX('sell', sel, res.sell_price);
-  toast('💰 Verkauft für '+res.sell_price+'🪙' + (res.regen < 1 ? ' · ' + Math.round(res.regen * 100) + ' % ' + tr('Wert') : '') + (res.xp_lost > 0 ? ' · −' + res.xp_lost + '⚡' : ''),'ok');
+  toast('💰 Verkauft für '+res.sell_price+'🪙' + (res.regen < 1 ? ' · ' + Math.round(res.regen * 100) + ' % Wert' : '') + (res.xp_lost > 0 ? ' · −' + res.xp_lost + '⚡' : ''),'ok');
   G.player = res.player; updateStats();
   await loadClaimed(); render();
   document.getElementById('parcel-popup').classList.remove('open');
@@ -14887,6 +14887,12 @@ Object.assign(window.DEV, {
 
 // ================= DEV: migration / soak helpers =================
 Object.assign(window.DEV, {
+  /** i18n audit of the current state: visible DOM text in the wrong language for
+   *  LANG (?lang=en → German leaks, ?lang=de → English leaks) + every tr() miss
+   *  since the last DEV.i18n(true) (canvas labels, toasts, popup rows). Prints the
+   *  report and returns {lang, dom[], misses[]}. tools/xb.sh --i18n walks every
+   *  scene with it; tools/i18n/README.md has the full recipe. */
+  i18n(reset) { const r = window.i18nSweep({ reset: !!reset }); console.log(r.text); return r; },
   /** Loaded / pending grid cells with X-Cache and timing. DEV.cells('pending') filters. */
   cells(filter) {
     const rows = Object.values(G.cellState).filter(c => !filter || c.state === filter)

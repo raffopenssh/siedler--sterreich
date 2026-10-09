@@ -385,7 +385,7 @@ const I18N_EXACT = {
   'erntereif in': 'harvestable in',
   'Baumholz': 'Timber stand',
   'hiebsreif': 'ready to fell',
-  'Wert': 'value',
+  'Wert': 'Value',
   'Wald': 'Forest',
   'Feld': 'Field',
   'Holzvorrat': 'Growing stock',
@@ -458,7 +458,7 @@ const I18N_EXACT = {
   'Servus in': 'Welcome to',
   'Almhütte': 'alpine hut', 'Hof': 'farmstead', 'aufgelassener Hof': 'abandoned farmstead', 'Gipfel': 'summit',
   'Übergang': 'pass', 'Tal': 'valley', 'Gletscher': 'glacier', 'Gebiet': 'area', 'Riedname': 'field name',
-  'Ried': 'field', 'Flur': 'place', 'BEV Geographische Namen': 'BEV official geographic names',
+  'Ried': 'Field name', 'Flur': 'Place', 'BEV Geographische Namen': 'BEV official geographic names',
   'Flurnamen sichtbar': 'Place names shown', 'Flurnamen ausgeblendet': 'Place names hidden',
   'Alles hier ist echt — jede Parzelle stammt aus dem österreichischen Kataster.': 'Everything here is real — every parcel comes from the Austrian cadastre.',
   'So geht’s': 'How it works',
@@ -675,6 +675,7 @@ const I18N_RX = [
     }).join(', ');
   }],
   [/^([A-Za-zÄÖÜäöüß ]+?) (\([×X]?\d+\))$/, function(_,base,suff){return (I18N_EXACT[base]!==undefined?I18N_EXACT[base]:base)+' '+suff;}],
+  [/^([A-Za-zÄÖÜäöüß/ ]+?) (\d+ ?%)( …)?$/, function(_,base,pct,t){ return (I18N_EXACT[base]!==undefined?I18N_EXACT[base]:base)+' '+pct+(t||''); }],
   [/^([A-Za-zÄÖÜäöüß ]+?) (\d+%)$/, function(_,base,pct){return (I18N_EXACT[base]!==undefined?I18N_EXACT[base]:base)+' '+pct;}],
   [/^\((Bauland \(bebaut\)|Bauland|Ackerland|Grünland|Wald|Sonstig)\)$/, function(_,c){return '('+({'Bauland (bebaut)':'building land (built-up)','Bauland':'building land','Ackerland':'farmland','Grünland':'grassland','Wald':'forest','Sonstig':'other'})[c]+')';}],
   [/^Spielpreis: (.+?) · (.+?) €\/m² echt$/, 'Game price: $1 · $2 €/m² real'],
@@ -733,7 +734,7 @@ Object.assign(I18N_EXACT, {
   '⏳ Kataster wird live aus BEV-Kacheln zusammengesetzt …': '⏳ Assembling cadastre live from BEV tiles …',
   'Kataster wird live aus BEV-Kacheln zusammengesetzt …': 'Assembling cadastre live from BEV tiles …',
   'Kataster kommt gleich nach – die Karte öffnet schon': 'Cadastre follows in a moment – the map is opening already',
-  'Zelle': 'cell', 'Zellen': 'cells', 'Parzellen': 'parcels',
+  'Zelle': 'cell', 'Zellen': 'cells', 'Parzellen': 'Parcels',
   'aus Zwischenspeicher': 'from cache', 'live aus BEV-Kacheln': 'live from BEV tiles',
   'vorgewärmt': 'prewarmed', 'Gelände': 'terrain', 'kein Vorschlag': 'no suggestion',
   'Kataster gerade nicht erreichbar': 'Cadastre currently unreachable',
@@ -838,8 +839,54 @@ Object.assign(I18N_EXACT, {
   'Nicht deine Parzelle': 'Not your parcel', 'Ein Brunnen lohnt sich nur auf Äckern und Wiesen': 'A well only pays off on fields and meadows',
   'Dieser Wald ist außer Nutzung gestellt': 'This forest has been set aside',
   'Grundstück in der KG nicht gefunden (Nummer prüfen)': 'Parcel not found in this KG (check the number)',
+  // parcel popup rows
+  'Anbau': 'Crop', 'Brache': 'Fallow', 'Grünland': 'Grassland', 'Grünbrache': 'Green fallow',
+  'Beobachtung': 'Observation', 'Keine': 'None', '🌾 Minimal': '🌾 Minimal',
+  'Adressen werden gesucht …': 'Searching addresses …', 'Suche Adressen & Orte …': 'Searching addresses & places …',
+  'Nicht genug Münzen': 'Not enough coins', 'Parzelle gekauft · +120 ⚡': 'Parcel bought · +120 ⚡',
+  'Rat auf Draht 147': 'Rat auf Draht 147 (youth helpline)',
+  'Flachdach': 'Flat roof', 'Steildach': 'Pitched roof',
+  // AMA subsidy schemes (dossier farm tab, farm-subsidies-austria)
+  'Einkommensgrundstützung für Nachhaltigkeit': 'Basic income support for sustainability',
+  'Regelungen für Klima und Umwelt': 'Eco-schemes for climate and environment',
+  'Umwelt-, Klima- und andere Bewirtschaftungsverpflichtungen': 'Environmental, climate and other management commitments',
+  'Zahlung für Gebiete mit naturbedingten Benachteiligungen': 'Payment for areas with natural constraints',
+  'Ergänzende Umverteilungseinkommensstützung': 'Complementary redistributive income support',
+  'Junglandwirte': 'Young farmers', 'Investitionen in materielle Vermögenswerte': 'Investments in physical assets', 'Vorhaben im Weinsektor': 'Wine sector measures', 'Bio-Bergbauer': 'Organic mountain farm',
+  // server nsNames (srv/agent.go, plural BEV labels in agent/similar rows)
+  'Parkplätze': 'Parking lots', 'Äcker, Wiesen oder Weiden': 'Fields, meadows or pastures', 'Gärten': 'Gardens', 'Weingärten': 'Vineyards',
+  'Alpen': 'Alpine pastures', 'Krummholzflächen': 'Krummholz areas', 'Wälder': 'Forests', 'Verbuschte Flächen': 'Scrubland', 'Forststraßen': 'Forest roads',
+  'Fließende Gewässer': 'Flowing waters', 'Stehende Gewässer': 'Standing waters', 'Feuchtgebiete': 'Wetlands', 'Vegetationsarme Flächen': 'Sparsely vegetated areas',
+  'Betriebsflächen': 'Industrial areas', 'Gewässerrandflächen': 'Riparian areas', 'Verkehrsrandflächen': 'Roadside areas', 'Friedhöfe': 'Cemeteries',
+  'Gebäudenebenflächen': 'Building ancillary areas', 'Abbauflächen, Halden, Deponien': 'Quarries, dumps, landfills', 'Fels- und Geröllflächen': 'Rock and scree areas',
+  'Schienenverkehrsanlagen': 'Rail facilities', 'Straßenverkehrsanlagen': 'Road facilities', 'Freizeitflächen': 'Recreation areas',
 });
 I18N_RX.push(
+  // "Weingarten 99 %, Straße 1 % …" / "Wald 60 %, Äcker/Wiesen/Weiden 40 %" — landuse share lists
+  [/^([^,]+?( \d+ ?%| \([×X]?\d+\))?)(, [^,]+?( \d+ ?%| \([×X]?\d+\))?)+( …)?$/, function(m0){
+    var tail = / …$/.test(m0) ? ' …' : ''; var body = tail ? m0.slice(0, -2) : m0;
+    var parts = body.split(', '); var any = false;
+    var out = parts.map(function(part){ var mm = part.match(/^(.+?)( \d+ ?%| \([×X]?\d+\))?$/); var base = mm[1], suff = mm[2] || ''; var hit = I18N_EXACT[base]; if (hit !== undefined) any = true; return (hit !== undefined ? hit : base) + suff; });
+    return any ? out.join(', ') + tail : m0;
+  }],
+  // crop row "🍇 Wein · 976 m²" / "🌾 Winterweizen · 1,2 ha · 🌿 Bio" (INVEKOS crop names are German data)
+  [/^(\S+ )(.+?)( · [\d.,]+ (?:ha|m²))( · 🌿 Bio)?$/, function(_,e,n,a,o){ var hit = I18N_EXACT[n]; return e + (hit !== undefined ? hit : n) + a + (o ? ' · 🌿 Organic' : ''); }],
+  [/^LiDAR-Beobachtung ?(.*)$/, 'LiDAR observation $1'],
+  [/^(\d+) % Wert$/, '$1 % value'],
+  [/^([\d.,]+) km Umkreis$/, 'within $1 km'],
+  [/^(· )?([\d,]+) Gst\. je Einlage$/, '$1$2 parcels per folio'],
+  [/^· 1 Etage$/, '· 1 story'], [/^· (\d+) Etagen$/, '· $1 stories'],
+  [/^(🏙️ Dicht|🏡 Mittel|🌾 Gering|Dicht|Mittel|Gering) \((\d+) Geb\.\)$/, function(_,d,n){ return ({'🏙️ Dicht':'🏙️ Dense','🏡 Mittel':'🏡 Medium','🌾 Gering':'🌾 Low','Dicht':'Dense','Mittel':'Medium','Gering':'Low'})[d]+' ('+n+' bldg.)'; }],
+  [/^(.+) \((\d+) Riesen\)$/, '$1 ($2 giants)'],
+  [/^(📍 .+), Bezirk (.+)$/, '$1, district $2'],
+  [/^(📍 .+), Katastralgemeinde (.+)$/, '$1, cadastral municipality $2'],
+  [/^📍 Katastralgemeinde (.+)$/, '📍 Cadastral municipality $1'],
+  [/^(.+) ha\/Jahr$/, '$1 ha/year'], [/^(.+) €\/Jahr$/, '$1 €/year'],
+  [/^✨ Enhanced — LiDAR-Geländedaten aktiv( · 👁 .+)?$/, '✨ Enhanced — LiDAR terrain data active$1'],
+  [/^(.+) · mit LiDAR-Geländeabgleich ✨$/, '$1 · with LiDAR terrain matching ✨'],
+  [/^(.+) · (Steildach|Flachdach)$/, function(_,a,r){ return a + ' · ' + ({Steildach:'pitched roof',Flachdach:'flat roof'})[r]; }],
+  [/^🐾 (?:Wildtier-Begegnung|Wildlife encounter): (.+?) \((.+)\)$/, function(_,sp,lat){ return '🐾 Wildlife encounter: ' + (I18N_EXACT[sp] !== undefined ? I18N_EXACT[sp] : sp) + ' (' + lat + ')'; }],
+  [/^Ein Durchzügler — du hast ihn gesichtet, bevor er weiterzog — (.+)$/, 'A wanderer — you spotted it before it moved on — $1'],
   [/^(\d+) \((\d+) frei\)$/, '$1 ($2 available)'],
   [/^🏴 Gekauft für (\d+)🪙! 🌾 Ried (.+)$/, '🏴 Bought for $1🪙! 🌾 Field $2'],
   [/^🏴 Gekauft für (\d+)🪙! · (.+)$/, '🏴 Bought for $1🪙! · $2'],
@@ -895,14 +942,68 @@ I18N_RX.push(
   var de = forced ? /^de/i.test(forced)
     : /^de/i.test(navigator.language || (navigator.languages||[])[0] || 'de');
   window.LANG = de ? 'de' : 'en';
+  // ---- audit helpers (both languages) ----
+  // Heuristics for "looks German" / "looks English". Used by i18nSweep() and the
+  // tr() miss log; shared with tools/i18n/sweep.js and tools/xbrowser (--lang=en).
+  var DE_RX = /[äöüÄÖÜß]|\b(und|oder|der|die|das|mit|für|nicht|kein|keine|wird|werden|Gemeinde|Parzelle|Parzellen|Kataster|bearbeitet|Spiel|wählen|zurück|Münzen|Schätze|Lizenzen|laden|Karte|noch|schon|dein|deine|hier|jetzt|alle|wieder|Baum|Bäume|Gebäude|Fläche|Nutzung|Wert|Preis|kaufen|Kaufen|verkaufen|Verkaufen|Ernte|ernten|Brunnen|Wasser|Angebot|Spieler|Aufgabe|Zelle|Zellen|Gelände|frei|Besitzer|Daten|Fehler|Wald|Wiese|Acker|Feld|Bauland|bei|von|zum|zur|auf|aus|im|ein|eine|Jahre|Riesen|entfernt|geladen|gefunden|Suche|Ort|Lage|Höhe|Hang|Boden|Tag|Nacht|Keine|Kein|Noch|Deine|Dein|Anbau|Ried|Flur|Etage|Etagen|Stunden|Minuten|Tage|Jahr|seit|bis|nach|vor|über|unter|Wein|Obst|Holz|Stadt|Dorf|Gemeinden|Bauwerk|Bauwerke|Beobachtung|beobachtet|Abweichung|Veränderung|Sonstige|Sonstiges|Gewässer|Straße|Garten|Wiesen|Weiden|Äcker|Alm|Fels|Geb\.|Etage|Dicht|Mittel|Gering|gesucht|Jahr|Förderung|Waldverlust|aktiv|Bezirk|Katastralgemeinde|gekauft|Dach|Ausrichtung|Datenquelle|Keine|Minimal|Flachdach|Steildach)\b/;
+  var EN_RX = /\b(the|and|with|for|your|you|parcel|parcels|forest|level|rugged|loading|load|buy|sell|owner|price|area|coins|quest|quests|treasure|water|field|fields|building|buildings|nearly|slightly|not|no|yet|found|search|searching|click|tap|again)\b/;
+  var isDE = function(s){ return DE_RX.test(s); };
+  var isEN = function(s){ return EN_RX.test(s); };
+  // Strings that tr()/the DOM walker could not translate (only kept when they
+  // look like the *wrong* language for the active LANG). Map text → {n, src}.
+  var MISS = {};
+  function noteMiss(s, src) {
+    var t = String(s).trim(); if (!t) return;
+    var m = MISS[t]; if (m) { m.n++; return; }
+    MISS[t] = { n: 1, src: src };
+  }
+  // i18nSweep(): what a player sees right now in the wrong language — visible
+  // DOM text nodes + placeholder/title/aria-label + tr() misses (canvas labels,
+  // toasts…) since the last reset. Returns {lang, dom[], misses[], text}.
+  // DEV.i18n() is the in-game alias; tools/xbrowser --lang=en runs it per scene.
+  window.i18nSweep = function(opts) {
+    opts = opts || {};
+    var bad = de ? isEN : isDE; var misses_filter = function(){ return false; };
+    // proper nouns are not leaks: municipality / KG / player names, toponyms
+    var names = {};
+    try { var g = window.G || {}; if (g.session) { names[g.session.municipality_name] = 1; names[g.session.name] = 1; } var kn = g.kgNames || {}; for (var k in kn) names[kn[k]] = 1; (g.players || []).forEach(function(pl){ names[pl.name] = 1; }); if (g.player) names[g.player.name] = 1; } catch (e) {}
+    try { var si = window.SIDX; if (si && si.ready) { (si.g || []).forEach(function(r){ names[r.name] = 1; names[r.district] = 1; names[r.state] = 1; }); (si.k || []).forEach(function(r){ names[r.name] = 1; }); } } catch (e) {}
+    ['Niederösterreich','Oberösterreich','Steiermark','Kärnten','Salzburg','Tirol','Vorarlberg','Burgenland','Wien','Österreich','ÖSTERREICH'].forEach(function(n){ names[n] = 1; });
+    delete names[undefined]; delete names[''];
+    // strip known names (longest first) before the language test — "Groundwater · Dürnstein" is English
+    var nameList = Object.keys(names).sort(function(a, b){ return b.length - a.length; });
+    var stripNames = function(v){ for (var i = 0; i < nameList.length; i++) { if (nameList[i].length > 2 && v.indexOf(nameList[i]) >= 0) v = v.split(nameList[i]).join('X'); } return v; };
+    var badS = bad; bad = function(v){ return badS(v) && badS(stripNames(v)); };
+    var out = {}; var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); var t;
+    var vis = function(e){ for (var n = e; n; n = n.parentElement) { var cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') return false; } return true; };
+    var skipEl = function(e){ return e.closest && e.closest('#chat-log, script, style, .i18n-user'); };
+    while ((t = w.nextNode())) { var p = t.parentElement; if (!p || skipEl(p)) continue; var v = t.nodeValue.trim(); if (v && bad(v) && vis(p)) out[v.slice(0, 160)] = (out[v.slice(0, 160)] || 0) + 1; }
+    var els = document.querySelectorAll('[placeholder],[title],[aria-label]');
+    for (var i = 0; i < els.length; i++) { var e = els[i]; if (skipEl(e)) continue; for (var a = 0; a < 3; a++) { var an = ['placeholder','title','aria-label'][a]; var av = e.getAttribute(an); if (av && bad(av) && vis(e)) out['@' + an + ': ' + av.slice(0, 160)] = 1; } }
+    // toponym heuristic (en only): an umlaut-only hit whose words are all capitalised / numeric /
+    // name particles (an, der, bei, ob, am, im, a.d.) is a place or person name, not UI text.
+    var PART = /^(an|in|der|die|dem|des|bei|ob|am|im|a\.d\.|von|zu|und|·|–|—|-|km|%|m|m²|ha|KG|EZ|PLZ)$/;
+    var looksName = function(v){ if (de) return false; var w = v.replace(/^[^\wÄÖÜäöüß]+/, '').split(/[\s,()·]+/).filter(Boolean); if (!w.length) return false; var stop = v.replace(/[äöüÄÖÜß]/g, 'x'); if (DE_RX.test(stop)) return false; return w.every(function(x){ return /^[A-ZÄÖÜ\d]/.test(x) || PART.test(x) || /^\d/.test(x); }); };
+    var dom = Object.keys(out).filter(function(v){ return !names[v] && !names[v.replace(/ ▸$/, '')] && !looksName(v); });
+    misses_filter = looksName;
+    var misses = Object.keys(MISS).filter(function(k){ return !names[k] && !misses_filter(k) && bad(k); }).map(function(k){ return { text: k, n: MISS[k].n, src: MISS[k].src }; });
+    if (opts.reset) MISS = {};
+    var text = (dom.length ? 'DOM (' + dom.length + '):\n  ' + dom.join('\n  ') : 'DOM: clean') + '\n' +
+      (misses.length ? 'tr() misses (' + misses.length + '):\n  ' + misses.map(function(m){ return m.text + '  ×' + m.n + (m.src ? '  [' + m.src + ']' : ''); }).join('\n  ') : 'tr(): clean');
+    return { lang: window.LANG, dom: dom, misses: misses, text: text };
+  };
+  window.i18nMisses = function(){ return MISS; };
+
   if (de) {
-    window.tr  = function(s){ return s; };
-    window.trx = function(s){ return s; };
+    // German is canonical: tr() is identity, but English literals leaking in
+    // (upstream labels, mapping-table values) are still logged for DEV.i18n().
+    window.tr  = function(s){ if (typeof s === 'string' && isEN(s)) noteMiss(s, 'tr'); return s; };
+    window.trx = window.tr;
     return;
   }
   document.documentElement.lang = 'en';
 
-  function trx(s) {
+  function trx(s, src) {
     if (typeof s !== 'string' || !s) return s;
     var hit = I18N_EXACT[s];
     if (hit !== undefined) return hit;
@@ -912,8 +1013,9 @@ I18N_RX.push(
       if (hit !== undefined) return s.replace(t, hit);
     }
     for (var i = 0; i < I18N_RX.length; i++) {
-      if (I18N_RX[i][0].test(t)) return s.replace(t, t.replace(I18N_RX[i][0], I18N_RX[i][1]));
+      if (I18N_RX[i][0].test(t)) { var r = t.replace(I18N_RX[i][0], I18N_RX[i][1]); if (r !== t) return s.replace(t, r); }
     }
+    if (isDE(t)) noteMiss(t, src || 'tr');
     return s;
   }
   window.tr = trx;
@@ -930,7 +1032,7 @@ I18N_RX.push(
     for (var a = 0; a < ATTRS.length; a++) {
       if (el.hasAttribute && el.hasAttribute(ATTRS[a])) {
         var av = el.getAttribute(ATTRS[a]);
-        var tv = trx(av);
+        var tv = trx(av, '@' + ATTRS[a]);
         if (tv !== av) el.setAttribute(ATTRS[a], tv);
       }
     }
@@ -938,7 +1040,7 @@ I18N_RX.push(
   function translateNode(root) {
     if (root.nodeType === 3) { // text node
       if (root.parentElement && skip(root.parentElement)) return;
-      var v = trx(root.nodeValue);
+      var v = trx(root.nodeValue, 'dom');
       if (v !== root.nodeValue) root.nodeValue = v;
       return;
     }
@@ -952,7 +1054,7 @@ I18N_RX.push(
     var t;
     while ((t = w.nextNode())) {
       if (t.parentElement && skip(t.parentElement)) continue;
-      var nv = trx(t.nodeValue);
+      var nv = trx(t.nodeValue, 'dom');
       if (nv !== t.nodeValue) t.nodeValue = nv;
     }
   }

@@ -20,6 +20,11 @@ const BASE = process.env.BASE || 'http://localhost:8000';
 const ENGINES = String(args.engines || 'chromium,firefox,webkit').split(',');
 const FORMS = String(args.form || 'desktop,mobile').split(',');
 const ONLY = args.only ? String(args.only).split(',') : null;
+// --lang=en|de: UI language for the walk. Every scene additionally runs the
+// in-page i18n sweep (window.i18nSweep, see srv/static/i18n.js): visible text /
+// attributes in the wrong language + tr() misses → "N i18n" flag in the report.
+const LANG = /^(en|de)$/.test(String(args.lang || '')) ? String(args.lang) : 'de';
+const I18N_ONLY = !!args['i18n-only'];   // skip screenshots/pixel checks, just the language sweep
 const OUT = path.resolve('out'); fs.mkdirSync(OUT, { recursive: true });
 const engines = { chromium, firefox, webkit };
 
@@ -39,7 +44,8 @@ async function session() {
 const CHECKS = `(() => {
   const vis = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity > 0.05; };
   const pathOf = el => { const p = []; for (let e = el; e && e !== document.body && p.length < 4; e = e.parentElement) p.unshift(e.tagName.toLowerCase() + (e.id ? '#' + e.id : e.classList.length ? '.' + [...e.classList].slice(0, 2).join('.') : '')); return p.join('>'); };
-  const out = { clipped: [], offscreen: [], fonts: {}, screen: null };
+  const out = { clipped: [], offscreen: [], fonts: {}, screen: null, i18n: null };
+  try { if (window.i18nSweep) { const r = window.i18nSweep({ reset: true }); out.i18n = { lang: r.lang, dom: r.dom.slice(0, 40), misses: r.misses.slice(0, 40).map(m => m.text + (m.src ? ' [' + m.src + ']' : '')) }; } } catch (e) { out.i18n = { error: String(e) }; }
   out.screen = [...document.querySelectorAll('.screen.active')].map(e => e.id).join(',');
   // viewport sanity: a scrolled document / offset visual viewport shifts fixed chrome in screenshots
   const vv = window.visualViewport; const sbt = document.getElementById('sb-toggle');
@@ -112,19 +118,21 @@ for (const form of FORMS) for (const name of ENGINES) {
     const rec = { tag, engine: name, form, errors: [], checks: null, info: null, shot: `${sc.id}--${tag}.png`, ms: 0 };
     const t0 = Date.now();
     try {
-      rec.info = await sc.run({ page, S, BASE, form, engine: name, sleep }) ?? null;
-      if (sc.anim) rec.anim = await page.evaluate(`(${SAMPLE})(350)`);
-      await page.screenshot({ path: path.join(OUT, rec.shot), animations: 'allow' });
+      rec.info = await sc.run({ page, S, BASE, form, engine: name, sleep, LANG }) ?? null;
+      if (sc.anim && !I18N_ONLY) rec.anim = await page.evaluate(`(${SAMPLE})(350)`);
+      if (!I18N_ONLY) await page.screenshot({ path: path.join(OUT, rec.shot), animations: 'allow' });
       rec.checks = await page.evaluate(CHECKS);
     } catch (e) { rec.fail = String(e.message).split('\n')[0].slice(0, 300); try { await page.screenshot({ path: path.join(OUT, rec.shot) }); } catch {} }
     rec.ms = Date.now() - t0;
     rec.errors = errors.slice(0, 10);
     (results[sc.id] ||= { title: sc.title, anim: !!sc.anim, by: {} }).by[tag] = rec;
-    console.log(`${tag.padEnd(16)} ${sc.id.padEnd(22)} ${rec.fail ? 'FAIL ' + rec.fail : 'ok'} ${rec.anim ? 'anim=' + rec.anim.diffPct + '%' : ''} ${rec.errors.length ? 'errs=' + rec.errors.length : ''} ${rec.checks?.clipped?.length ? 'clipped=' + rec.checks.clipped.length : ''} ${rec.checks?.offscreen?.length ? 'offscreen=' + rec.checks.offscreen.length : ''} ${rec.ms}ms`);
+    const i18n = rec.checks?.i18n; const leaks = i18n ? (i18n.dom?.length || 0) + (i18n.misses?.length || 0) : 0;
+    console.log(`${tag.padEnd(16)} ${sc.id.padEnd(22)} ${rec.fail ? 'FAIL ' + rec.fail : 'ok'} ${rec.anim ? 'anim=' + rec.anim.diffPct + '%' : ''} ${rec.errors.length ? 'errs=' + rec.errors.length : ''} ${rec.checks?.clipped?.length ? 'clipped=' + rec.checks.clipped.length : ''} ${rec.checks?.offscreen?.length ? 'offscreen=' + rec.checks.offscreen.length : ''} ${leaks ? 'i18n=' + leaks : ''} ${rec.ms}ms`);
+    if (leaks) for (const l of [...(i18n.dom || []), ...(i18n.misses || [])]) console.log('    i18n leak: ' + l);
   };
   for (const sc of PRE_SCENES) await run(sc);
   // game session: one load, then walk all in-game states
-  await page.goto(`${BASE}/?lang=de&dev=1&pid=${S.pid}&pname=${encodeURIComponent(S.pname)}&rejoin=${S.token}&sid=${S.sid}#v=${S.lon},${S.lat},16`, { waitUntil: 'load', timeout: 90000 });
+  await page.goto(`${BASE}/?lang=${LANG}&dev=1&pid=${S.pid}&pname=${encodeURIComponent(S.pname)}&rejoin=${S.token}&sid=${S.sid}#v=${S.lon},${S.lat},16`, { waitUntil: 'load', timeout: 90000 });
   try {
     await page.waitForFunction(() => typeof G !== 'undefined' && G.session && document.getElementById('screen-game').classList.contains('active'), null, { timeout: 120000 });
     await page.evaluate(() => DEV.idle(20000));
@@ -147,17 +155,21 @@ function mismatch(a, b) {
 }
 for (const [id, r] of Object.entries(results)) for (const [tag, rec] of Object.entries(r.by)) {
   const ref = r.by[`chromium-${rec.form}`];
-  if (ref && ref !== rec) rec.mismatch = mismatch(path.join(OUT, ref.shot), path.join(OUT, rec.shot));
+  if (ref && ref !== rec && !I18N_ONLY) rec.mismatch = mismatch(path.join(OUT, ref.shot), path.join(OUT, rec.shot));
 }
 
 // ---- report ----
 fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(results, null, 1));
 const tags = [...new Set(Object.values(results).flatMap(r => Object.keys(r.by)))];
 const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const summaryLeaks = {}; for (const [id, r] of Object.entries(results)) for (const x of Object.values(r.by)) for (const l of [...(x.checks?.i18n?.dom || []), ...(x.checks?.i18n?.misses || [])]) (summaryLeaks[l] ||= []).push(id);
+fs.writeFileSync(path.join(OUT, 'i18n-leaks.txt'), Object.entries(summaryLeaks).map(([l, ids]) => l + '\t' + [...new Set(ids)].join(',')).join('\n'));
+if (Object.keys(summaryLeaks).length) console.log(`i18n leaks (${LANG}): ${Object.keys(summaryLeaks).length} distinct → out/i18n-leaks.txt`);
 let html = `<!doctype html><meta charset=utf-8><title>Siedler cross-browser report</title><style>
 body{font:13px/1.4 system-ui;margin:16px;background:#111;color:#ddd}h1{font-size:18px}table{border-collapse:collapse}td,th{border:1px solid #333;padding:4px;vertical-align:top}
 img{max-width:460px;display:block;background:#000}.m img{max-width:200px}.bad{color:#f66;font-weight:600}.warn{color:#fc6}.ok{color:#6c6}pre{white-space:pre-wrap;font-size:11px;max-width:460px;margin:2px 0;color:#bbb}
-.sum td{font-size:12px}a{color:#9cf}</style><h1>Siedler Österreich — cross-browser state walk (${new Date().toISOString().slice(0, 16)})</h1>`;
+.sum td{font-size:12px}a{color:#9cf}</style><h1>Siedler Österreich — cross-browser state walk (${new Date().toISOString().slice(0, 16)}) · lang=${LANG}</h1>`;
+if (Object.keys(summaryLeaks).length) html += `<h2>i18n leaks (${LANG})</h2><pre class=bad>${esc(Object.entries(summaryLeaks).map(([l, ids]) => l + '   ← ' + [...new Set(ids)].join(', ')).join('\n'))}</pre>`;
 html += `<h2>Summary</h2><table class=sum><tr><th>scene</th>${tags.map(t => `<th>${t}</th>`).join('')}</tr>`;
 for (const [id, r] of Object.entries(results)) {
   html += `<tr><td><a href="#${id}">${esc(r.title)}</a></td>` + tags.map(t => {
@@ -170,6 +182,8 @@ for (const [id, r] of Object.entries(results)) {
     if (x.checks?.offscreen?.length) flags.push(`<span class=warn>${x.checks.offscreen.length} offscreen</span>`);
     if (r.anim && x.anim && x.anim.diffPct < 0.05) flags.push(`<span class=bad>dead anim</span>`);
     if (x.mismatch != null && x.mismatch > 35) flags.push(`<span class=warn>Δ${x.mismatch}%</span>`);
+    const li = x.checks?.i18n ? (x.checks.i18n.dom?.length || 0) + (x.checks.i18n.misses?.length || 0) : 0;
+    if (li) flags.push(`<span class=bad>${li} i18n</span>`);
     return `<td>${flags.join(' ') || '<span class=ok>ok</span>'}</td>`;
   }).join('') + '</tr>';
 }
@@ -184,6 +198,7 @@ for (const [id, r] of Object.entries(results)) {
     if (x.anim) html += `<pre>anim diff ${x.anim.diffPct}% · painted ${x.anim.paintedPct}%</pre>`;
     if (x.info) html += `<pre>${esc(JSON.stringify(x.info)).slice(0, 300)}</pre>`;
     for (const e of x.errors) html += `<pre class=bad>${esc(e)}</pre>`;
+    if (x.checks?.i18n) { for (const l of x.checks.i18n.dom || []) html += `<pre class=bad>i18n ${esc(l)}</pre>`; for (const l of x.checks.i18n.misses || []) html += `<pre class=bad>i18n tr() ${esc(l)}</pre>`; }
     if (x.checks) { for (const c of x.checks.clipped) html += `<pre class=warn>clipped ${esc(c.el)} +${c.ox}×${c.oy}px (${c.w}×${c.h}) “${esc(c.text)}”</pre>`; for (const c of x.checks.offscreen) html += `<pre class=warn>offscreen ${esc(c.el)} ${c.rect}</pre>`; if (!Object.values(x.checks.fonts).every(Boolean)) html += `<pre class=bad>fonts ${esc(JSON.stringify(x.checks.fonts))}</pre>`; }
     html += '</td>';
   }

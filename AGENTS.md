@@ -21,6 +21,22 @@ Live: `https://siedler-oesterreich.exe.xyz:8000/`. DB `./db.sqlite3`. Service
 `docs/migration-2026-10.md` (the only place that documents past providers —
 code, comments and docs elsewhere describe the current setup only).
 
+## i18n — bilingual DE/EN is mandatory
+
+Every player-visible string must read correctly in **both** `?lang=de` (canonical, what
+is in the markup/code/server) and `?lang=en` (translated at runtime by
+`srv/static/i18n.js`: DOM walker + MutationObserver for the document, `tr()` for
+canvas labels, toasts and innerHTML built in game.js, `I18N_EXACT` whole-node matches +
+`I18N_RX` anchored patterns for composites; server messages stay German and get an
+exact entry). Build the final string first and `tr()` *that* (`tr(n + ' Parzellen')`),
+never fragments. Before committing UI text run the three checks in
+`tools/i18n/README.md`: `node tools/i18n/audit.js srv/static/game.js` (static),
+`tools/xb.sh --i18n` (runtime walk of every xbrowser scene in English, leaks in
+`tools/xbrowser/out/i18n-leaks.txt` + the report; `--lang=de` for English leaks),
+`DEV.i18n()` in the game for the state in front of you (`DEV.i18n(true)` resets the
+`tr()` miss log). Add an xbrowser scene for every new popup/overlay so the audit sees
+it. Bump `i18n.js?v=` in index.html whenever the dictionary changes.
+
 ## Layout
 
 ```

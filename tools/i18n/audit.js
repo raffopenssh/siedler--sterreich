@@ -3,7 +3,7 @@ const src=fs.readFileSync('srv/static/i18n.js','utf8');
 const dict=src.slice(0, src.indexOf('// Runtime:'));
 const ctx={}; new Function('with(this){'+dict+'; this.I18N_EXACT=I18N_EXACT; this.I18N_RX=I18N_RX;}').call(ctx);
 const {I18N_EXACT,I18N_RX}=ctx;
-function trx(s){ var hit=I18N_EXACT[s]; if(hit!==undefined) return hit; var t=s.trim(); if(t!==s){hit=I18N_EXACT[t]; if(hit!==undefined) return s.replace(t,hit);} for(var i=0;i<I18N_RX.length;i++){ if(I18N_RX[i][0].test(t)) return s.replace(t,t.replace(I18N_RX[i][0],I18N_RX[i][1])); } return s; }
+function trx(s){ var hit=I18N_EXACT[s]; if(hit!==undefined) return hit; var t=s.trim(); if(t!==s){hit=I18N_EXACT[t]; if(hit!==undefined) return s.replace(t,hit);} for(var i=0;i<I18N_RX.length;i++){ if(I18N_RX[i][0].test(t)){ var r=t.replace(I18N_RX[i][0],I18N_RX[i][1]); if(r!==t) return s.replace(t,r); } } return s; }
 const file=process.argv[2]; const js=fs.readFileSync(file,'utf8');
 const DE=/[A-Za-zÄÖÜäöüß]{3}/;
 // tokenize strings

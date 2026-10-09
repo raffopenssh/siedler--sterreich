@@ -11,17 +11,17 @@ const settle = (page, ms = 700) => page.waitForTimeout(ms);
 
 // ---------- pre-game screens (own navigations) ----------
 export const PRE_SCENES = [
-  { id: 'welcome', title: 'Welcome screen', run: async ({ page, BASE }) => {
-    await page.goto(`${BASE}/?lang=de&dev=1`, { waitUntil: 'load' });
+  { id: 'welcome', title: 'Welcome screen', run: async ({ page, BASE, LANG }) => {
+    await page.goto(`${BASE}/?lang=${LANG}&dev=1`, { waitUntil: 'load' });
     await page.waitForSelector('#screen-welcome.active'); await settle(page, 1200);
     await page.fill('#input-name', 'Prüfer Ärger-Übel'); await settle(page, 300);
   } },
-  { id: 'welcome-invite', title: 'Welcome via /join/<code>', run: async ({ page, BASE, S }) => {
-    await page.goto(`${BASE}/join/${S.invite}?lang=de&dev=1`, { waitUntil: 'load' });
+  { id: 'welcome-invite', title: 'Welcome via /join/<code>', run: async ({ page, BASE, S, LANG }) => {
+    await page.goto(`${BASE}/join/${S.invite}?lang=${LANG}&dev=1`, { waitUntil: 'load' });
     await page.waitForSelector('#screen-welcome.active'); await settle(page, 1500);
   } },
-  { id: 'pick', title: 'Municipality picker', run: async ({ page, BASE }) => {
-    await page.goto(`${BASE}/?lang=de&dev=1`, { waitUntil: 'load' });
+  { id: 'pick', title: 'Municipality picker', run: async ({ page, BASE, LANG }) => {
+    await page.goto(`${BASE}/?lang=${LANG}&dev=1`, { waitUntil: 'load' });
     await page.waitForSelector('#screen-welcome.active');
     await ev(page, () => show('pick')); await settle(page, 2500);
   } },
@@ -92,6 +92,9 @@ export const SCENES = [
   { id: 'chat-rules-closed', title: 'Rules closed, sidebar collapsed', run: async ({ page }) => { await ev(page, () => { document.getElementById('btn-rules-close')?.click(); const m = document.getElementById('chat-rules-modal'); if (m) m.style.display = 'none'; DEV.sheet(false); }); await settle(page, 400); } },
   { id: 'sheet', title: 'Mobile bottom sheet expanded', forms: ['mobile'], run: async ({ page }) => { await ev(page, () => DEV.sheet(true)); await settle(page, 800); } },
   { id: 'sheet-popup', title: 'Mobile: popup over sheet', forms: ['mobile'], run: async ({ page }) => ev(page, async () => { DEV.sheet(false); const c = DEV.parcelsNear(f => f.area_sqm > 1500, 1)[0]; if (!c) return 'none'; await DEV.parcel(c.parcel_id, true); await new Promise(r => setTimeout(r, 1500)); }) },
+  { id: 'attrib', title: 'Map attribution panel open', run: async ({ page }) => { await ev(page, () => { DEV.closeAll(); const b = document.getElementById('map-attrib-toggle'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); }); await settle(page, 600); } },
+  { id: 'attrib-closed', title: 'Attribution closed', run: async ({ page }) => { await ev(page, () => { const b = document.getElementById('map-attrib-toggle'); if (b && b.getAttribute('aria-expanded') === 'true') b.click(); }); await settle(page, 300); } },
+  { id: 'popup-owned', title: 'Parcel popup · owned (mock claim: sell / convert / Ernte rows)', run: async ({ page, S }) => { await closeAll(page); return ev(page, async s => { await DEV.goto(s.lon, s.lat, 17); const c = DEV.parcelsNear(f => f.area_sqm > 1500 && extractLuCode('', f) === '48', 1)[0] || DEV.parcelsNear(f => f.area_sqm > 1500, 1)[0]; if (!c) return 'none'; await DEV.mock(c.parcel_id, {}); await DEV.parcel(c.parcel_id); await new Promise(r => setTimeout(r, 2500)); for (const n of ['det', 'bldg', 'env']) { const b = document.querySelector('.pp-sec-h[data-sec="' + n + '"]'); if (b && !b.parentElement.classList.contains('open')) b.click(); } await new Promise(r => setTimeout(r, 600)); return c.parcel_id; }, S); } },
   { id: 'no-chrome', title: 'Map only (chrome off)', run: async ({ page }) => { await ev(page, () => { DEV.closeAll(); DEV.chrome(false); }); await settle(page, 500); } },
   { id: 'chrome-back', title: 'Chrome back + sidebar hidden', run: async ({ page }) => { await ev(page, () => { DEV.chrome(true); DEV.sidebar(false); }); await settle(page, 500); } },
   { id: 'gps', title: 'GPS marker', run: async ({ page, S }) => { await ev(page, () => DEV.sidebar(true)); await ev(page, s => DEV.gps(s.lon + 0.0005, s.lat + 0.0003), S); await settle(page, 800); } },
