@@ -12228,12 +12228,12 @@ async function claimTreasure(t) {
   const res = await POST('/api/claim-treasure', {player_id:G.player.id, treasure_id:t.id});
   if (res.error) { toast(res.error,'err'); return; }
   if (res.type === 'roaming' && res.species_german) {
-    toast(`🐾 ${tr('Wildtier-Begegnung')}: ${res.species_german} (${res.species_name})\n${tr('Ein Durchzügler — du hast ihn gesichtet, bevor er weiterzog')} — +${res.value}🪙 +${Math.floor(res.value/2)}⚡`, 'ok');
+    toast(tr(`🐾 Wildtier-Begegnung: ${res.species_german} (${res.species_name})\nEin Durchzügler — du hast ihn gesichtet, bevor er weiterzog — +${res.value}🪙 +${Math.floor(res.value/2)}⚡`), 'ok');
   } else if ((res.type === 'species' || res.type === 'n2k_species') && res.species_german) {
     const catLabels = {'EN':'Stark gefährdet','VU':'Gefährdet','NT':'Potenziell gefährdet','LC':'Nicht gefährdet'};
     const catEmoji = {'EN':'🔴','VU':'🟠','NT':'🔵','LC':'🟢'};
     const n2k = res.type === 'n2k_species' ? '🛡️ Natura-2000-Bonus! ' : '';
-    toast(`🦎 ${n2k}Artenfund: ${res.species_german} (${res.species_name})\n${catEmoji[res.species_category]||''} ${catLabels[res.species_category]||res.species_category} — +${res.value}🪙`, 'ok');
+    toast(tr(`🦎 ${n2k}Artenfund: ${res.species_german} (${res.species_name})\n${catEmoji[res.species_category]||''} ${catLabels[res.species_category]||res.species_category} — +${res.value}🪙`), 'ok');
   } else {
     const emoji = {xp:'⚡',rare_seed:'🌱',ancient_map:'🗺️',coins:'🪙'}[res.type]||'🪙';
     toast('💎 Schatz! +'+res.value+emoji,'ok');

@@ -628,8 +628,12 @@ const I18N_RX = [
   [/^📨 Angebot gesendet: (\d+)🪙$/, '📨 Offer sent: $1🪙'],
 
   // ---------- treasures / species ----------
+  // two-line species toast: "🦎 [🛡️ Natura-2000-Bonus! ]Artenfund: Uhu (Bubo bubo)\n🟢 Nicht gefährdet — +600🪙"
+  [/^🦎 (🛡️ Natura-2000-Bonus! )?Artenfund: (.+?) \((.+?)\)\n(\S+ )?(.+?) — \+(\d+)🪙$/, function(_,n2k,sp,lat,em,cat,v){ var ex = function(s){ return I18N_EXACT[s] !== undefined ? I18N_EXACT[s] : s; }; return '🦎 ' + (n2k ? '🛡️ Natura 2000 bonus! ' : '') + 'Species found: ' + ex(sp) + ' (' + lat + ')\n' + (em || '') + ex(cat) + ' — +' + v + '🪙'; }],
   [/^🦎 🛡️ Natura-2000-Bonus! Artenfund: ([\s\S]+)$/, '🦎 🛡️ Natura 2000 bonus! Species found: $1'],
   [/^🦎 Artenfund: ([\s\S]+)$/, '🦎 Species found: $1'],
+  // two-line roaming toast (built as one German string in claimTreasure)
+  [/^🐾 Wildtier-Begegnung: (.+?) \((.+?)\)\nEin Durchzügler — du hast ihn gesichtet, bevor er weiterzog — (.+)$/, function(_,sp,lat,rest){ return '🐾 Wildlife encounter: ' + (I18N_EXACT[sp] !== undefined ? I18N_EXACT[sp] : sp) + ' (' + lat + ')\nA wanderer — you spotted it before it moved on — ' + rest; }],
   [/^💎 Schatz! \+(\d+)(.+)$/, '💎 Treasure! +$1$2'],
 
   // ---------- giant trees ----------
@@ -800,6 +804,7 @@ Object.assign(I18N_EXACT, {
   '🔍 Keine ähnlichen Parzellen in der Nähe gefunden': '🔍 No similar parcels found nearby',
   'ähnliche Parzellen in der Nähe': 'similar parcels nearby', 'verglichen': 'compared',
   'kein Einschlag seit 2001': 'no logging since 2001', 'Bilanz seit 2001': 'balance since 2001',
+  'Waldgeschichte': 'Forest history', 'Jungbestand': 'young stand', 'Vorrat': 'stock',
   '🧪 Nitrat': '🧪 Nitrate', '🌿 Bio': '🌿 Organic',
   'Bergbauer': 'Mountain farm', 'Bio-Bergbauer': 'Organic mountain farm', 'Bio': 'Organic', 'Ackerbau': 'Arable', 'Viehhaltung': 'Livestock',
   'Wein': 'Wine', 'Obst': 'Fruit', 'ohne Fläche': 'landless', 'sonstige': 'other',
@@ -968,11 +973,14 @@ I18N_RX.push(
     var names = {};
     try { var g = window.G || {}; if (g.session) { names[g.session.municipality_name] = 1; names[g.session.name] = 1; } var kn = g.kgNames || {}; for (var k in kn) names[kn[k]] = 1; (g.players || []).forEach(function(pl){ names[pl.name] = 1; }); if (g.player) names[g.player.name] = 1; } catch (e) {}
     try { var si = window.SIDX; if (si && si.ready) { (si.g || []).forEach(function(r){ names[r.name] = 1; names[r.district] = 1; names[r.state] = 1; }); (si.k || []).forEach(function(r){ names[r.name] = 1; }); } } catch (e) {}
-    ['Niederösterreich','Oberösterreich','Steiermark','Kärnten','Salzburg','Tirol','Vorarlberg','Burgenland','Wien','Österreich','ÖSTERREICH'].forEach(function(n){ names[n] = 1; });
+    try { (window.G && G.toponyms || []).forEach(function(t){ if (t && t.name) names[t.name] = 1; }); } catch (e) {}
+    ['Niederösterreich','Oberösterreich','Steiermark','Kärnten','Salzburg','Tirol','Vorarlberg','Burgenland','Wien','Österreich','ÖSTERREICH','Rat auf Draht'].forEach(function(n){ names[n] = 1; });
     delete names[undefined]; delete names[''];
     // strip known names (longest first) before the language test — "Groundwater · Dürnstein" is English
     var nameList = Object.keys(names).sort(function(a, b){ return b.length - a.length; });
-    var stripNames = function(v){ for (var i = 0; i < nameList.length; i++) { if (nameList[i].length > 2 && v.indexOf(nameList[i]) >= 0) v = v.split(nameList[i]).join('X'); } return v; };
+    // toponym shapes "Mautern an der Donau", "Kainach bei Voitsberg", "Sankt Ruprecht ob Murau" are names, not UI text
+    var TOPO_RX = /\b[A-ZÄÖÜ][\wäöüß.-]+(?: [A-ZÄÖÜ][\wäöüß.-]+)? (?:an|in|im|am|bei|ob|unter|ober|vor|auf|zu) (?:der |dem |den |des )?[A-ZÄÖÜ][\wäöüß.-]+/g;
+    var stripNames = function(v){ for (var i = 0; i < nameList.length; i++) { if (nameList[i].length > 2 && v.indexOf(nameList[i]) >= 0) v = v.split(nameList[i]).join('X'); } return v.replace(TOPO_RX, 'X'); };
     var badS = bad; bad = function(v){ return badS(v) && badS(stripNames(v)); };
     var out = {}; var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); var t;
     var vis = function(e){ for (var n = e; n; n = n.parentElement) { var cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') return false; } return true; };
@@ -983,7 +991,7 @@ I18N_RX.push(
     // toponym heuristic (en only): an umlaut-only hit whose words are all capitalised / numeric /
     // name particles (an, der, bei, ob, am, im, a.d.) is a place or person name, not UI text.
     var PART = /^(an|in|der|die|dem|des|bei|ob|am|im|a\.d\.|von|zu|und|·|–|—|-|km|%|m|m²|ha|KG|EZ|PLZ)$/;
-    var looksName = function(v){ if (de) return false; var w = v.replace(/^[^\wÄÖÜäöüß]+/, '').split(/[\s,()·]+/).filter(Boolean); if (!w.length) return false; var stop = v.replace(/[äöüÄÖÜß]/g, 'x'); if (DE_RX.test(stop)) return false; return w.every(function(x){ return /^[A-ZÄÖÜ\d]/.test(x) || PART.test(x) || /^\d/.test(x); }); };
+    var looksName = function(v){ if (de) return false; var w = v.replace(/^[^\wÄÖÜäöüß]+/, '').split(/[\s,()·]+/).filter(Boolean); if (!w.length) return false; var stop = v.replace(/[äöüÄÖÜß]/g, 'x').replace(/\b(an|in|im|am|bei|ob|a\.d\.) (der|dem|den|des)?\b/g, ''); if (DE_RX.test(stop)) return false; return w.every(function(x){ return /^[A-ZÄÖÜ\d]/.test(x) || PART.test(x) || /^\d/.test(x); }); };
     var dom = Object.keys(out).filter(function(v){ return !names[v] && !names[v.replace(/ ▸$/, '')] && !looksName(v); });
     misses_filter = looksName;
     var misses = Object.keys(MISS).filter(function(k){ return !names[k] && !misses_filter(k) && bad(k); }).map(function(k){ return { text: k, n: MISS[k].n, src: MISS[k].src }; });
