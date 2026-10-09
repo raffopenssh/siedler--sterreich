@@ -1,9 +1,9 @@
-# ne-report.timer — run ne-report.service daily around 03:30 (local), after the bevdirect tile-cache sweep.
+# ne-report.timer — run ne-report.service daily at 02:00 Europe/Vienna, 2 h after the midnight contrib prewarm (srv/contrib.go contribWarmHour/contribNightHour) filled the RAM stash; done before 05:00, no CPU spike during the day.
 [Unit]
 Description=Daily NE epoch reports (siedler → umfeld-at)
 
 [Timer]
-OnCalendar=*-*-* 03:30:00
+OnCalendar=*-*-* 02:00:00 Europe/Vienna
 RandomizedDelaySec=15min
 Persistent=true
 

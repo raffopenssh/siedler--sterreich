@@ -13,7 +13,7 @@ package srv
 // night_min scales with the universe (contribNightMinFor: 1.5 × universe/days,
 // 7 850 → 128/night ≈ 35 min, ~300 MB tiles), overdue KGs (promoted mid-quarter
 // after their hash day) are pulled in, and warmContribRun prewarms tonight's
-// list at 14:00 regardless of the player activity tier.
+// list at 23:00 Vienna time regardless of the player activity tier.
 // Every night runs at least night_min KGs, pulling not-yet-reported KGs forward. Every KG is assigned a day of the quarter by
 // hash(quarter, kg) — stable for the quarter, random across Austria, and new
 // KGs appearing mid-quarter simply fall onto some day without shifting the
@@ -23,7 +23,7 @@ package srv
 // Completely separate from prewarming: it reads bevdirect directly, writes no
 // kg_warm rows and no api_cache cells, so /api/lucky (which only trusts
 // kg_warm + the enhanced registry) is unaffected. Load ≈ 16 KGs × ~10 cells
-// a night ≈ 30 MB of BEV tiles, at 03:30 UTC with Nice=15.
+// a night ≈ 30 MB of BEV tiles, at 01:00 UTC with Nice=15, CPUQuota 60 %.
 //
 // GET /api/contrib/plan → {quarter, day, days, kgs[], per_day_avg, universe,
 // reported_quarter, catch_up_days}; also `contrib{}` in /api/warm/status.
@@ -42,14 +42,19 @@ import (
 )
 
 const (
-	contribCatchUpDays = 3              // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 40             // floor: fill up to at least this many KGs a night (~90 MB tiles, ~30 min)
-	contribNightMargin = 1.5            // night_min = max(floor, margin × universe/days) — 1 933 KGs → 40, 3 900 → 64, 7 850 → 128
-	contribNightMax    = 200            // cap on KGs needing fresh BEV tiles (≈ 0.45 GB, ~1 h); warm (cheap) KGs are never capped
-	contribWarmCap     = 100            // KGs of tonight's plan the prewarmer builds in the afternoon (warmContribRun)
-	contribWarmHour    = 14             // local hour the contrib prewarm fires (tiles stay in bevdirect's 24 h RAM LRU until 03:30)
-	contribWarmWindow  = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
-	contribReportDir   = "data/ne-reports"
+	contribCatchUpDays = 3                  // today + the two nights before (ne_report's 7-day skip dedups)
+	contribNightMin    = 200                // floor: fill every night to this many KGs — what the 00:00–05:00 window holds (prewarm ~90 min, report ~90 min); ≈ 0.45 GB tiles
+	contribNightMargin = 1.5                // night_min = max(floor, margin × universe/days)
+	contribNightMax    = 200                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
+	contribWarmCap     = 200                // KGs of tonight's plan the prewarmer builds at midnight (warmContribRun) — the whole night
+	contribRollMinAge  = 7 * 24 * time.Hour // rolling sweep: once the quarter's unreported KGs are done, re-report the least recently reported (ne_report skips < 7 d anyway)
+	// Night schedule, Europe/Vienna wall clock (DST-safe): the prewarm (bevdirect assembly, paced
+	// 1.5 s/cell, ~3 s per cell → ~2.5 h for a 300-KG night) starts at 23:00, the python report run at 02:00
+	// (CPUQuota 60 %, ~25 s/KG → ~2 h) — everything done before 05:00, no CPU spike during the day.
+	contribWarmHour   = 23             // Vienna hour the contrib prewarm fires (cells → RAM stash, 24 h); 3 h window for ~300 KGs
+	contribNightHour  = 2              // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer)
+	contribWarmWindow = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
+	contribReportDir  = "data/ne-reports"
 )
 
 // quarterOf returns the quarter label ("2026-Q4"), its first day and length in days.
@@ -85,6 +90,7 @@ type contribPlan struct {
 	Cheap       []string `json:"cheap"`      // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
 	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
 	Overdue     int      `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
+	Rolling     int      `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
 	NightMin    int      `json:"night_min"`
 	NightMax    int      `json:"night_max"`
 	LeftQ       int      `json:"left_quarter"`     // v2.4 KGs without a report this quarter
@@ -120,7 +126,14 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		return p
 	}
 	p.PerDayAvg = float64(len(uni)) / float64(days)
-	reported := contribReportedSince(start)
+	lastReport := contribLastReport()
+	reported := map[string]bool{}
+	since := start.Format("2006-01-02")
+	for kg, d := range lastReport {
+		if d >= since {
+			reported[kg] = true
+		}
+	}
 	p.ReportedQ = len(reported)
 	for _, kg := range uni {
 		d := contribDayOf(label, kg, days)
@@ -191,6 +204,30 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		p.Fill = append(p.Fill, kg)
 		p.Cheap = append(p.Cheap, kg)
 	}
+	// Rolling sweep: the quarter's unreported KGs are exhausted and the night
+	// still has room — re-report the least recently reported KGs (≥ 7 d old)
+	// so the whole universe is observed continuously, not once a quarter.
+	if len(p.KGs) < p.NightMin {
+		for _, kg := range p.KGs {
+			in[kg] = true
+		}
+		cut := now.Add(-contribRollMinAge).Format("2006-01-02")
+		var roll []string
+		for _, kg := range uni {
+			if !in[kg] && lastReport[kg] != "" && lastReport[kg] <= cut {
+				roll = append(roll, kg)
+			}
+		}
+		sort.SliceStable(roll, func(i, j int) bool { return lastReport[roll[i]] < lastReport[roll[j]] })
+		for _, kg := range roll {
+			if len(p.KGs) >= p.NightMin {
+				break
+			}
+			p.KGs = append(p.KGs, kg)
+			p.Fill = append(p.Fill, kg)
+			p.Rolling++
+		}
+	}
 	return p
 }
 
@@ -213,22 +250,33 @@ func (s *Server) recentlyWarmedKGs(window time.Duration) map[string]time.Time {
 	return out
 }
 
-// contribReportedSince: KGs with a report file (KG.YYYY-MM-DD.json) dated on/after t.
-func contribReportedSince(t time.Time) map[string]bool {
-	out := map[string]bool{}
+// contribLastReport: kg → date (YYYY-MM-DD) of its newest report file (KG.YYYY-MM-DD.json).
+func contribLastReport() map[string]string {
+	out := map[string]string{}
 	ents, err := os.ReadDir(contribReportDir)
 	if err != nil {
 		return out
 	}
-	since := t.Format("2006-01-02")
 	for _, e := range ents {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".meta.json") {
 			continue
 		}
 		parts := strings.Split(strings.TrimSuffix(name, ".json"), ".")
-		if len(parts) == 2 && len(parts[0]) == 5 && parts[1] >= since {
-			out[parts[0]] = true
+		if len(parts) == 2 && len(parts[0]) == 5 && parts[1] > out[parts[0]] {
+			out[parts[0]] = parts[1]
+		}
+	}
+	return out
+}
+
+// contribReportedSince: KGs with a report file dated on/after t.
+func contribReportedSince(t time.Time) map[string]bool {
+	out := map[string]bool{}
+	since := t.Format("2006-01-02")
+	for kg, d := range contribLastReport() {
+		if d >= since {
+			out[kg] = true
 		}
 	}
 	return out
@@ -236,7 +284,11 @@ func contribReportedSince(t time.Time) map[string]bool {
 
 // GET /api/contrib/plan[?kg=NNNNN] — today's rotation; with ?kg the day that KG is due.
 func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
-	p := s.contribPlanNow(time.Now())
+	at := time.Now()
+	if r.URL.Query().Get("night") == "1" { // the plan the next ne-report run (and the RAM stash) uses
+		at = nextContribNight(at)
+	}
+	p := s.contribPlanNow(at)
 	if kg := r.URL.Query().Get("kg"); len(kg) > 0 {
 		kg = padKGCode(kg)
 		_, start, _ := quarterOf(time.Now())
@@ -250,9 +302,9 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
-		"ahead_days": p.AheadDays, "overdue": p.Overdue, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
+		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
-		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load()}
+		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
 }
 
 var (
@@ -260,21 +312,42 @@ var (
 	contribWarmQueued atomic.Int64
 )
 
-// nextContribNight: the next 03:30 local (ne-report.timer) after now.
+// nextContribNight: the next contribNightHour local (ne-report.timer) after now.
 func nextContribNight(now time.Time) time.Time {
-	t := time.Date(now.Year(), now.Month(), now.Day(), 3, 30, 0, 0, now.Location())
+	return nextAt(now, contribNightHour)
+}
+
+var contribLoc = func() *time.Location {
+	if l, err := time.LoadLocation("Europe/Vienna"); err == nil {
+		return l
+	}
+	return time.FixedZone("CET", 3600)
+}()
+
+// nextAt: the next Vienna wall-clock `hour`:00 strictly after now.
+func nextAt(now time.Time, hour int) time.Time {
+	v := now.In(contribLoc)
+	t := time.Date(v.Year(), v.Month(), v.Day(), hour, 0, 0, 0, contribLoc)
 	if !t.After(now) {
 		t = t.AddDate(0, 0, 1)
 	}
 	return t
 }
 
+// contribPrewarmPending: true between the prewarm slot and the night run that
+// follows it — a restart in that window emptied the RAM stash, so the
+// prewarm must run again (it skips fully stashed KGs).
+func contribPrewarmPending(now time.Time) bool {
+	lastWarm := nextAt(now, contribWarmHour).AddDate(0, 0, -1)
+	return nextAt(lastWarm, contribNightHour).After(now)
+}
+
 // warmContribRun queues the KGs the nightly NE report will need fresh BEV
 // tiles for (tonight's plan minus the already-warm `cheap[]`), capped at
-// contribWarmCap, so the 03:30 run finds them in bevdirect's RAM LRU and
-// costs CPU only. Independent of the activity tier: the tiles are fetched
+// contribWarmCap, so the night run finds their raw documents in the RAM stash
+// (contrib_stash.go; else bevdirect's tile LRU) and costs python CPU only. Independent of the activity tier: the tiles are fetched
 // once either way (by us now or by ne-report at night) — this only moves the
-// download to the afternoon and makes the KGs playable (lucky) for a day.
+// download to the late evening and makes the KGs playable (lucky) for a day.
 // Returns the number queued.
 func (s *Server) warmContribRun() int {
 	if !kgUniverseOK() {
@@ -285,33 +358,45 @@ func (s *Server) warmContribRun() int {
 	for _, kg := range p.Cheap {
 		cheap[kg] = true
 	}
-	n := 0
+	n, fresh, stashed := 0, 0, 0
 	for _, kg := range p.KGs {
-		if n >= contribWarmCap {
-			break
-		}
-		if cheap[kg] {
+		if admin().KGs[kg] == nil {
 			continue
 		}
-		if s.enqueueWarm(kg, "contrib", 2) {
+		if contribStashComplete(s.contribKGCells(kg)) {
+			stashed++
+			continue
+		}
+		if cheap[kg] { // cells cached, stash missing (restart / built before the plan): CPU-only rebuilds, uncapped
+			if s.enqueueWarmOpt(kg, "contrib", 2, true) {
+				n++
+			}
+			continue
+		}
+		if fresh >= contribWarmCap {
+			continue
+		}
+		if s.enqueueWarmOpt(kg, "contrib", 2, true) {
 			n++
+			fresh++
 		}
 	}
 	contribWarmLast.Store(time.Now().UTC().Format(time.RFC3339))
 	contribWarmQueued.Store(int64(n))
-	slog.Info("warm: contrib plan queued", "kgs", n, "tonight", len(p.KGs), "cheap", len(p.Cheap), "night_min", p.NightMin, "overdue", p.Overdue)
+	slog.Info("warm: contrib plan queued", "kgs", n, "fresh", fresh, "stashed", stashed, "tonight", len(p.KGs), "cheap", len(p.Cheap), "night_min", p.NightMin, "overdue", p.Overdue)
 	return n
 }
 
-// warmContribLoop fires warmContribRun every day at contribWarmHour local.
+// warmContribLoop fires warmContribRun every day at contribWarmHour (Vienna time).
 func (s *Server) warmContribLoop() {
+	// After a restart between the 23:00 prewarm and the night run the RAM
+	// stash is empty: re-run once (skips KGs whose cells are all stashed).
+	if contribPrewarmPending(time.Now()) {
+		time.Sleep(90 * time.Second)
+		s.warmContribRun()
+	}
 	for {
-		now := time.Now()
-		t := time.Date(now.Year(), now.Month(), now.Day(), contribWarmHour, 0, 0, 0, now.Location())
-		if !t.After(now) {
-			t = t.AddDate(0, 0, 1)
-		}
-		time.Sleep(time.Until(t))
+		time.Sleep(time.Until(nextAt(time.Now(), contribWarmHour)))
 		s.warmContribRun()
 	}
 }

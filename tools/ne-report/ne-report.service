@@ -16,5 +16,10 @@ EnvironmentFile=-/home/exedev/siedler/tools/ne-report/ne-report.env
 ExecStart=/home/exedev/siedler/tools/ne-report/run.sh
 Nice=15
 IOSchedulingClass=idle
+# 2-vCPU box: cap the reporter (python canonicalisation ~13 s CPU per KG) so the live game and
+# bevdirect keep a core; the raw-cell stash (srv/contrib_stash.go) removes bevdirect's share
+# of the night. Spreads the run over ~2× the wall time at half the load.
+CPUQuota=60%
+CPUWeight=30
 TimeoutStartSec=8h
 MemoryMax=2G

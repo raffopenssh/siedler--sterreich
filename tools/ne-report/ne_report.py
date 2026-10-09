@@ -31,6 +31,7 @@ import argparse
 import concurrent.futures as cf
 import datetime as dt
 import glob
+import gzip
 import json
 import os
 import shutil
@@ -112,13 +113,40 @@ def full_cells_in(bbox, cells):
             if i * GRID >= W - eps and (i + 1) * GRID <= E + eps and j * GRID >= S - eps and (j + 1) * GRID <= N + eps]
 
 
-def fetch_cell(bev, i, j, path, max_total_s=900):
-    """GET one aligned cell through vtcseamless' BevDirect.cell (loops on ready:false/pending with
-    retry_after_s, normalises null layers to [] for bevdirect < v0.3.3). Never writes a non-ready
-    or truncated document."""
+def stash_cell(siedler, i, j):
+    """The raw bevdirect document of an aligned cell from the game server's RAM stash
+    (GET /api/contrib/cell?i&j, srv/contrib_stash.go): the 23:00 contrib prewarm already made
+    bevdirect assemble tonight's cells, so re-using the byte-identical answer saves one full
+    assembly (1–2.5 s CPU) per cell at night. None when not stashed or the server is down."""
+    if not siedler:
+        return None
+    try:
+        req = urllib.request.Request(f"{siedler}/api/contrib/cell?i={i}&j={j}",
+                                     headers={"Accept": "application/json", "Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            if r.headers.get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            doc = json.loads(raw)
+    except Exception:
+        return None
+    if not doc.get("ready") or doc.get("pending") or doc.get("truncated"):
+        return None
+    for layer in ("parcels", "footprints", "landuse"):
+        if doc.get(layer) is None:
+            doc[layer] = []
+    return doc
+
+
+def fetch_cell(bev, i, j, path, max_total_s=900, siedler=None):
+    """GET one aligned cell — the game server's RAM stash first (stash_cell), else through
+    vtcseamless' BevDirect.cell (loops on ready:false/pending with retry_after_s, normalises null
+    layers to [] for bevdirect < v0.3.3). Never writes a non-ready or truncated document."""
     t0 = time.time()
     errors = 0
-    while True:
+    doc = stash_cell(siedler, i, j)
+    src = "stash" if doc is not None else "bevdirect"
+    while doc is None:
         try:
             doc = bev.cell(i, j, deadline_s=max_total_s)
             break
@@ -141,18 +169,18 @@ def fetch_cell(bev, i, j, path, max_total_s=900):
     return dict(i=i, j=j, bbox=[W, S, E, N], parcels=len(doc.get("parcels") or []), footprints=len(doc.get("footprints") or []),
                 landuse=len(doc.get("landuse") or []), incomplete=sum(1 for p in doc.get("parcels") or [] if p.get("complete") is False),
                 bevdirect_version=doc.get("bevdirect_version"), coord_decimals=doc.get("coord_decimals"),
-                ms=doc.get("query_time_ms"), s=round(time.time() - t0, 1))
+                ms=doc.get("query_time_ms"), s=round(time.time() - t0, 1), src=src)
 
 
-def fetch_cells(bev, cells, workdir, inflight=2):
+def fetch_cells(bev, cells, workdir, inflight=2, siedler=None):
     os.makedirs(workdir, exist_ok=True)
     out = []
     with cf.ThreadPoolExecutor(max_workers=inflight) as ex:
-        futs = {ex.submit(fetch_cell, bev, i, j, os.path.join(workdir, f"cell_{i}_{j}.json")): (i, j) for i, j in cells}
+        futs = {ex.submit(fetch_cell, bev, i, j, os.path.join(workdir, f"cell_{i}_{j}.json"), 900, siedler): (i, j) for i, j in cells}
         for fut in cf.as_completed(futs):
             r = fut.result()          # raises on a failed cell → whole KG aborts (never build on a partial set)
             log(f"  cell {r['i']}_{r['j']}: parcels={r['parcels']} (truncated at pad {r['incomplete']}) footprints={r['footprints']} "
-                f"landuse={r['landuse']} bevdirect={r['bevdirect_version']} ({r['s']}s)")
+                f"landuse={r['landuse']} bevdirect={r['bevdirect_version']} ({r['s']}s, {r['src']})")
             out.append(r)
     return sorted(out, key=lambda r: (r["j"], r["i"]))
 
@@ -342,11 +370,12 @@ def process_kg(a, kg):
     if os.path.isdir(work):
         shutil.rmtree(work)
     t0 = time.time()
-    fetched = fetch_cells(a.bevc, cells, work, inflight=a.inflight)
+    fetched = fetch_cells(a.bevc, cells, work, inflight=a.inflight, siedler=a.siedler or None)
     if len(fetched) != len(cells):                       # belt and braces: fetch_cells raises on any failed cell
         raise RuntimeError(f"{kg}: {len(fetched)} of {len(cells)} aligned cells fetched — refusing a partial build")
     log(f"{kg}: fetched {len(fetched)} cells in {time.time() - t0:.0f}s "
-        f"(bevdirect {sorted({r['bevdirect_version'] for r in fetched})}, {sum(r['incomplete'] for r in fetched)} parcel copies truncated at the pad)")
+        f"(bevdirect {sorted({r['bevdirect_version'] for r in fetched})}, {sum(r['incomplete'] for r in fetched)} parcel copies truncated at the pad, "
+        f"{sum(1 for r in fetched if r['src'] == 'stash')} from the game server's stash)")
 
     nec = os.path.join(a.out, "nec", f"{kg}.{a.epoch}.nec")
     os.makedirs(os.path.dirname(nec), exist_ok=True)
@@ -425,6 +454,8 @@ def main(argv=None):
     ap.add_argument("--epoch", default=dt.date.today().strftime("%Y-%m"), help="ISO month (default: current)")
     ap.add_argument("--observer", default="siedler-oesterreich")
     ap.add_argument("--bev", default=os.environ.get("BEV_API", "http://127.0.0.1:8787"))
+    ap.add_argument("--siedler", default=os.environ.get("SIEDLER_API", "http://localhost:8000"),
+                    help="game server whose RAM stash of raw cells is tried before bevdirect ('' = off)")
     ap.add_argument("--umfeld", default=os.environ.get("UMFELD_API", "https://umfeld-at.exe.xyz"))
     ap.add_argument("--contrib-prefix", default=os.environ.get("UMFELD_CONTRIB_PREFIX", "/contrib"),
                     help="path prefix of umfeld's contributor API for the report POST (default /contrib)")

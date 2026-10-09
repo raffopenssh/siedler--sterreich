@@ -328,6 +328,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/warm/run-plan", s.requireAhead(s.handleWarmRunPlan))
 	mux.HandleFunc("POST /api/warm/trim", s.requireAhead(s.handleWarmTrim))
 	mux.HandleFunc("GET /api/contrib/plan", s.handleContribPlan)
+	mux.HandleFunc("GET /api/contrib/cell", s.handleContribCell)
 	mux.HandleFunc("GET /api/contrib/stats", s.handleContribStats)
 	mux.HandleFunc("GET /api/kg-geo/{kg}", s.handleKGGeo)
 	mux.HandleFunc("GET /api/search-index", s.handleSearchIndex)

@@ -174,25 +174,44 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   `luckySpot` scans a 7×7 grid (~270 m steps) keeping the KG playable and the cluster ≥ n−1. Cluster draws
   < `interestGood` 0.45 are redrawn (≤ 6), per-Gemeinde picks < 0.25; the best dull one is the fallback.
   Answer carries `interest`, `interest_why`; `GET /api/lucky?lon&lat` scores any spot (QA). Flat field ≈ 0.1, village edge + brook + wood ≈ 0.8.
-- **Contrib rotation** (`srv/contrib.go`, separate from warming): `GET /api/contrib/plan` = today's
-  v2.4 KGs for the nightly NE epoch report (`tools/ne-report/run.sh` → umfeld `/contrib`). Each KG gets
-  a day of the quarter by `hash(quarter, kg)` → the whole universe (1 400 now, ~4 000 soon) is reported at
-  least once a quarter — the quarter is the **change resolution** of the chunk protocol (first report baselines
-  a KG's chunks, later ones upload only changed ones; an unreported KG has no baseline), so full coverage per
-  quarter is mandatory as the universe grows to 7 850. Nights are filled to ≥ `night_min` =
-  `max(40, 1.5 × universe/92)` (`contribNightMinFor`: 1 900 → 40, 3 900 → 64, 7 850 → 128 ≈ 35 min) with
-  not-yet-reported KGs — **overdue first** (promoted mid-quarter after their hash day, `overdue`), then due
-  later (`fill[]`/`ahead_days`); `warmContribRun` (14:00 local daily + on `run-plan`, **independent of the
-  activity tier**, cap `contribWarmCap` 100, reason `contrib`, prio 2) prewarms tonight's non-cheap KGs so the
-  03:30 run is CPU-only (`contrib.warm_last/warm_last_queued`); **KGs the prewarmer built < 24 h ago go first** (`cheap[]`, BEV
-  tiles still on bevdirect's disk → CPU only, **uncapped** — everything warm & unreported is reported that night);
-  unreported KGs of the last 2 nights are caught up; cap `night_max` 200 applies only to KGs needing fresh tiles. Unit timeout 8 h.
-  Reports are built from **aligned cells only** with `--input-bbox` = the union of those cells (stable bbox per cell block → the operator's coverage rule `coverage{bbox, cells_n, best_cells_n, status}` can compare them; `change_suspect:"coverage_lossy"` = lossy build, its diffs are never surfaced — `meta.change.surfaced`), KGs whose umfeld domain contains no whole aligned cell are skipped (`--min-full-cells 1`, ~55 % of KGs; `0` = report every KG). Verified 2026-10-06 (first real run — until then a silenced SyntaxError in run.sh made every night fall back to the
-  3-KG sample): 242 KGs in 88 min, 241 ok / 1 skipped, 241× POST 200, ~13 s build + ~4 s fetch per KG. Recipe for a big
-  night: `POST /api/warm/run-plan` in the afternoon → everything lands in `cheap[]`. The plan answers `source:"none"` for
-  seconds during an srtm registry full refresh; run.sh retries 4× 30 s before using the fallback sample.
-  `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json` files. Reads bevdirect directly, writes
-  no `kg_warm`/cells → `/api/lucky` unaffected. `/api/warm/status` → `contrib{}`. **Never feed `v24_kgs` to run.sh.** Public counter `GET /api/contrib/stats` (`srv/contrib_stats.go`: latest report per KG → kgs, Σ cells_n, Σ KG km² from the admin table, universe, 10 min cache) feeds the „Beitrag zum Nutzungsmonitoring“ callout on impressum/imprint (`static/contrib-stats.js`, `.legal-callout`/`.legal-stats` in legal.css).
+- **Contrib rotation** (`srv/contrib.go`, separate from warming): `GET /api/contrib/plan` (`?night=1` = the plan the
+  next run uses, `?kg=` its due day) = tonight's v2.4 KGs for the NE epoch report (`tools/ne-report/run.sh` → umfeld
+  `/contrib`). Each KG gets a day of the quarter by `hash(quarter, kg)` and the quarter is the **change resolution** of
+  the chunk protocol (first report baselines a KG's chunks, later ones upload only changed ones), but nights are
+  filled to `night_min` = **200 KGs** (`contribNightMin`, what the night window holds): **overdue first** (promoted
+  mid-quarter after their hash day), then due later (`fill[]`/`ahead_days`), plus every `cheap[]` KG (warmed < 24 h,
+  uncapped); once the quarter's unreported KGs are exhausted the **rolling sweep** re-reports the least recently
+  reported KGs ≥ 7 d old (`rolling`), so the whole universe (2 100 now, 7 850 eventually) is observed continuously
+  — ~10 nights per sweep today. Cap `night_max` 200 applies only to KGs needing fresh tiles (≈ 0.45 GB/night).
+  **Schedule (Europe/Vienna wall clock, `contribLoc`, DST-safe): prewarm 23:00 (`contribWarmHour`,
+  `warmContribRun`, independent of the activity tier, cap 200, reason `contrib`, prio 2, paced `warmContribPause`
+  1.5 s/cell ≈ ½ duty on bevdirect) → `ne-report.timer` 02:00 (`contribNightHour`; the unit has `Nice=15`,
+  `CPUQuota=60%`, `CPUWeight=30`) → done before 05:00. Nothing contrib-related runs by day.** A restart between
+  23:00 and 02:00 re-runs the prewarm after 90 s (`contribPrewarmPending`).
+  **RAM stash** (`srv/contrib_stash.go`): bevdirect assembles a cell from tiles on every `/viewport` (1–2.5 s CPU);
+  before 2026-10-09 the night run re-assembled every cell the prewarm had just built (bevdirect 140 % + python 70 %
+  on 2 vCPUs for 1.5–2 h). Now `buildCell` keeps the **raw** bevdirect document (same query as vtcseamless'
+  `BevDirect.cell`, byte-identical → same digest) of every ready, untruncated aligned cell built by a contrib job
+  (and of any cell holding a parcel of tonight's KGs) **in memory only** — gzip, ≤ 768 MB LRU, expires with the
+  cell ≤ 24 h, lost on restart, never on disk — and `ne_report.py` reads `GET /api/contrib/cell?i&j` (loopback
+  only, `--siedler`) before falling back to bevdirect (per-cell log `(stash)`/`(bevdirect)`, per-KG "N from the
+  game server's stash"). Contrib jobs warm the cells of **umfeld's declared viewport** (`/ne/{kg}/head`
+  `input_bbox`, `contribKGCells`, head cached 7 d as `ne-head:v1:`), which is wider than the admin bbox (03012: 15 vs
+  9 cells) — exactly what the report reads; cached cells missing from the stash are rebuilt (`enqueueWarmOpt`
+  force skips the freshness guard). `/api/warm/status` → `contrib{stash{cells,docs,mb,put,hits,misses,evicted},
+  next_night, tz}`; QA: `POST /api/warm/run-plan?kg=NNNNN` (ahead token) = one contrib job, then
+  `ne_report.py NNNNN --force --pause 0` should log every cell `(stash)`.
+  Reports are built from **aligned cells only** with `--input-bbox` = the union of those cells (stable bbox per cell
+  block → the operator's coverage rule `coverage{bbox, cells_n, best_cells_n, status}` can compare them;
+  `change_suspect:"coverage_lossy"` = lossy build, its diffs are never surfaced — `meta.change.surfaced`), KGs whose
+  umfeld domain contains no whole aligned cell are skipped (`--min-full-cells 1`, ~55 % of KGs; `0` = report every
+  KG). The plan answers `source:"none"` for seconds during an srtm registry full refresh; run.sh retries 4× 30 s
+  before using the fallback sample. `reported_quarter`/`left_quarter` come from the `data/ne-reports/KG.<date>.json`
+  files (`contribLastReport`). Reads bevdirect/stash directly, `kg_warm` rows only via the prewarm → `/api/lucky`
+  sees contrib KGs as warm. **Never feed `v24_kgs` to run.sh.** Public counter `GET /api/contrib/stats`
+  (`srv/contrib_stats.go`: latest report per KG → kgs, Σ cells_n, Σ KG km² from the admin table, universe, 10 min
+  cache) feeds the „Beitrag zum Nutzungsmonitoring“ callout on impressum/imprint (`static/contrib-stats.js`,
+  `.legal-callout`/`.legal-stats` in legal.css).
 - **`ne_ready` is the v2.4 truth** (srtm afe147d, 2026-10-07): registry rows carry `ne_ready` (bool, authoritative),
   `ne_status` (served|partial|pending|not_processed), `ne_cells_published_at`; `product_version` reads
   `v2.4-pending` until the cells are ingested (metered, hours; ~365 pending now, self-promoting), raw value in

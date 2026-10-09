@@ -348,13 +348,18 @@ type vpKG struct {
 
 // buildCell fetches bevdirect + the srtm heightfield in parallel, enriches,
 // re-emits, caches (24 h, only when ready). Returns (body, status).
-func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
+// buildCellOpt: contrib=true marks a build made by a contrib warm job (every
+// aligned cell is stashed for the night run, contrib_stash.go).
+func (s *Server) buildCell(b bbox, key string) ([]byte, int) { return s.buildCellOpt(b, key, false) }
+
+func (s *Server) buildCellOpt(b bbox, key string, contrib bool) ([]byte, int) {
 	t0 := time.Now()
 	var (
 		vp     bevViewport
 		vpErr  error
 		vpSt   int
 		vpDown []byte // breaker body when the cadastre breaker is open
+		vpRaw  []byte // the bevdirect document as answered (contrib stash)
 		hf     *heightfield
 		ne     *neCols
 		neSt   *neStatus
@@ -391,6 +396,9 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 			return
 		}
 		vpErr = json.Unmarshal(raw, &vp)
+		if vpErr == nil {
+			vpRaw = raw
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -527,6 +535,9 @@ func (s *Server) buildCell(b bbox, key string) ([]byte, int) {
 		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{
 			CacheKey: key, Data: string(enc), ExpiresAt: time.Now().Add(ttl),
 		})
+		if c, ok := isAlignedCell(b.W, b.S, b.E, b.N); ok && !vp.Truncated {
+			s.contribStashPut(c, kgSeen, vpRaw, ttl, contrib) // raw bevdirect doc for tonight's NE report (contrib_stash.go)
+		}
 	}
 	slog.Info("viewport cell built", "key", key, "parcels", len(vp.Parcels), "incomplete", incomplete, "footprints", len(vp.Footprints),
 		"landuse", len(vp.Landuse), "ready", ready, "terrain", hf != nil, "ne", ne != nil, "ne_parcels", neParcels, "ms", time.Since(t0).Milliseconds(), "bev_ms", vp.QueryMs)

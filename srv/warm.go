@@ -38,12 +38,15 @@ import (
 )
 
 const (
-	warmDailyKGs   = 100
-	warmPatches    = 20 // 20 destinations a day → 20 lucky players land in 20 places
-	warmPatchSize  = warmDailyKGs / warmPatches
-	warmPlanVer    = "v4"
-	warmCellPause  = 800 * time.Millisecond
-	warmFreshGuard = 2 * time.Hour // don't re-warm what is still fresh for this long
+	warmDailyKGs  = 100
+	warmPatches   = 20 // 20 destinations a day → 20 lucky players land in 20 places
+	warmPatchSize = warmDailyKGs / warmPatches
+	warmPlanVer   = "v4"
+	warmCellPause = 800 * time.Millisecond
+	// contrib prewarm (midnight Vienna, 2 h ahead of the night run): a longer gap keeps
+	// bevdirect's assembly CPU (~1.4 cores per cell) at ~½ duty; 200 KGs × 9 cells × ~3 s ≈ 90 min.
+	warmContribPause = 1500 * time.Millisecond
+	warmFreshGuard   = 2 * time.Hour // don't re-warm what is still fresh for this long
 	// warmSeedMaxCells is a sanity guard only (like ne-report's --max-cells):
 	// the biggest Gemeinde in the admin table (Sölden) spans 322 cells, so
 	// every Gemeinde must stay seedable — never size-exclude destinations.
@@ -86,6 +89,13 @@ func newWarmer() *warmer {
 
 // enqueueWarm adds a KG unless it is fresh or already queued.
 func (s *Server) enqueueWarm(kg, reason string, prio int) bool {
+	return s.enqueueWarmOpt(kg, reason, prio, false)
+}
+
+// enqueueWarmOpt: force=true skips the freshness guard (contrib stash jobs —
+// the KG's cells may be fresh in api_cache yet missing from the RAM stash
+// after a restart; warmKG rebuilds only those).
+func (s *Server) enqueueWarmOpt(kg, reason string, prio int, force bool) bool {
 	if admin().KGs[kg] == nil {
 		return false
 	}
@@ -95,7 +105,7 @@ func (s *Server) enqueueWarm(kg, reason string, prio int) bool {
 	if w.queued[kg] || w.current.Load().(string) == kg {
 		return false
 	}
-	if exp, ok := s.kgWarmExpiry(kg); ok && time.Until(exp) > warmFreshGuard {
+	if exp, ok := s.kgWarmExpiry(kg); ok && !force && time.Until(exp) > warmFreshGuard {
 		return false
 	}
 	w.queued[kg] = true
@@ -205,6 +215,9 @@ func (s *Server) warmKG(kg, reason string) {
 	}
 	t0 := time.Now()
 	cells := k.cells()
+	if reason == "contrib" {
+		cells = s.contribKGCells(kg) // umfeld's declared viewport — what the night report reads
+	}
 	built, parcels := 0, 0
 	for _, c := range cells {
 		for s.warm.fg.Load() > 0 { // foreground first
@@ -213,13 +226,27 @@ func (s *Server) warmKG(kg, reason string) {
 		w, so, e, n := c.bbox()
 		b := bbox{w, so, e, n}
 		key, _ := vpCacheKey(b)
+		rebuild := false
 		if _, err := s.Q.GetCachedData(context.Background(), key); err == nil {
-			continue
+			// contrib: a cached cell whose raw bevdirect document is missing from the
+			// RAM stash (built before the plan knew the KG, or lost in a restart) is
+			// rebuilt so the night run never has to ask bevdirect (contrib_stash.go).
+			if reason != "contrib" || contribStashHas(c) {
+				continue
+			}
+			rebuild = true
 		}
 		var body []byte
 		var st int
 		for attempt := 0; attempt < 4; attempt++ {
-			body, st = s.cellJSON(b, key)
+			if rebuild {
+				body, st = s.buildCellOpt(b, key, true)
+			} else if reason == "contrib" {
+				v, _, _ := s.sf.Do(key, func() (any, error) { out, st := s.buildCellOpt(b, key, true); return sfRes{out, st}, nil })
+				body, st = v.(sfRes).body, v.(sfRes).status
+			} else {
+				body, st = s.cellJSON(b, key)
+			}
 			if st != 200 {
 				break
 			}
@@ -257,7 +284,11 @@ func (s *Server) warmKG(kg, reason string) {
 			}
 		}
 		s.warm.cells.Add(1)
-		time.Sleep(warmCellPause)
+		if reason == "contrib" {
+			time.Sleep(warmContribPause)
+		} else {
+			time.Sleep(warmCellPause)
+		}
 	}
 	s.DB.ExecContext(context.Background(),
 		`INSERT INTO kg_warm (kg_code, warmed_at, expires_at, cells, parcels, reason) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
@@ -273,8 +304,8 @@ func (s *Server) warmPlanner() {
 	// The plan prefers v2.4 (NE cells) Gemeinden — make sure the srtm KG
 	// registry is loaded before the first plan of the day is made.
 	s.enhancedKGsRaw()
-	go s.warmSpreadLoop() // far destinations ≥ 30 km apart (warmspread.go)
-	go s.warmContribLoop() // tonight's NE-report KGs, every day at 14:00 (contrib.go)
+	go s.warmSpreadLoop()  // far destinations ≥ 30 km apart (warmspread.go)
+	go s.warmContribLoop() // tonight's NE-report KGs, every day at 23:00 Vienna (contrib.go)
 	// Keep-warm (active tier only): the v2.4 KGs of Gemeinden played in the
 	// last week, capped (warmactivity.go). Never the whole v2.4 universe —
 	// that is 1 300+ KGs and would re-download gigabytes a day with no player.
@@ -1158,6 +1189,12 @@ func (s *Server) handleWarmTrim(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWarmRunPlan(w http.ResponseWriter, r *http.Request) {
 	if !kgUniverseOK() {
 		jsonRespStatus(w, map[string]any{"error": "kg universe unverified — plan paused"}, http.StatusServiceUnavailable)
+		return
+	}
+	// ?kg=NNNNN: one contrib job (prio 1, freshness guard off) — QA for the RAM stash.
+	if kg := r.URL.Query().Get("kg"); kg != "" {
+		ok := s.enqueueWarmOpt(padKGCode(kg), "contrib", 1, true)
+		jsonResp(w, map[string]any{"kg": padKGCode(kg), "queued": ok, "queue_len": len(s.warm.queue)})
 		return
 	}
 	limit := len(s.loadOrMakePlan(time.Now()).Patches)
