@@ -23,10 +23,10 @@ FALLBACK_KGS="05007 06030 63330"
 if [ $# -gt 0 ]; then
   KGS="$*"
 else
-  # Today's contrib rotation (srv/contrib.go): every v2.4 KG is assigned one day of the
-  # quarter by hash, so the whole universe (~1 400 KGs) is reported once a quarter at
-  # ~16 KGs a night; the list includes the two previous nights for catch-up (ne_report.py
-  # skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
+  # Today's contrib rotation (srv/contrib.go): every Austrian KG (7 850) is assigned one day of
+  # the quarter by hash, so the whole country is reported once a quarter at ~200 KGs a night
+  # (today + catch-up + the KGs the 22:00 prewarm stashed); the list includes the two previous
+  # nights for catch-up (ne_report.py skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
   # The plan is empty (source:"none") for a few seconds while the srtm KG registry does a
   # full refresh (hourly check) — retry before falling back to the sample.
   for try in 1 2 3 4; do

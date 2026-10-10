@@ -191,19 +191,31 @@ Single worker, ~0.8 s between cells, yields to foreground, skips KGs fresh ≥ 2
   < `interestGood` 0.45 are redrawn (≤ 6), per-Gemeinde picks < 0.25; the best dull one is the fallback.
   Answer carries `interest`, `interest_why`; `GET /api/lucky?lon&lat` scores any spot (QA). Flat field ≈ 0.1, village edge + brook + wood ≈ 0.8.
 - **Contrib rotation** (`srv/contrib.go`, separate from warming): `GET /api/contrib/plan` (`?night=1` = the plan the
-  next run uses, `?kg=` its due day) = tonight's v2.4 KGs for the NE epoch report (`tools/ne-report/run.sh` → umfeld
-  `/contrib`). Each KG gets a day of the quarter by `hash(quarter, kg)` and the quarter is the **change resolution** of
-  the chunk protocol (first report baselines a KG's chunks, later ones upload only changed ones), but nights are
-  filled to `night_min` = **200 KGs** (`contribNightMin`, what the night window holds): **overdue first** (promoted
-  mid-quarter after their hash day), then due later (`fill[]`/`ahead_days`), plus every `cheap[]` KG (warmed < 24 h,
-  uncapped); once the quarter's unreported KGs are exhausted the **rolling sweep** re-reports the least recently
-  reported KGs ≥ 7 d old (`rolling`), so the whole universe (2 100 now, 7 850 eventually) is observed continuously
-  — ~10 nights per sweep today. Cap `night_max` 200 applies only to KGs needing fresh tiles (≈ 0.45 GB/night).
-  **Schedule (Europe/Vienna wall clock, `contribLoc`, DST-safe): prewarm 23:00 (`contribWarmHour`,
+  next run uses, `?kg=` its due day) = tonight's KGs for the NE epoch report (`tools/ne-report/run.sh` → umfeld
+  `/contrib`). **Universe = the whole admin table (7 850 KGs, enhanced or not — umfeld has an lu digest for every
+  KG)**, since 2026-10-10. Each KG gets a day of the quarter by `hash(quarter, kg)` (~85/day) and the quarter is the
+  **change resolution** of the chunk protocol (first report baselines a KG's chunks, later ones upload only changed
+  ones); nights are filled to `night_min` = **200 KGs** (`contribNightMin`): today + catch-up (`contribCatchUpDays`
+  3), then **every `cheap[]` KG (warmed < 24 h, uncapped — these count toward night_min first, so the KGs the
+  22:00 prewarm built *are* the fill of the night that follows and the night reads them from the stash)**, then
+  unreported KGs in due order (`fill[]`/`ahead_days`, overdue first); once the quarter's unreported KGs are
+  exhausted the **rolling sweep** re-reports the least recently reported KGs ≥ 7 d old (`rolling`). Cap `night_max`
+  200 applies only to KGs needing fresh tiles (≈ 0.45 GB/night). **Small KGs** (`small`): a KG whose declared
+  umfeld viewport holds no whole aligned cell (or whose `/head` is 404) is what `ne_report.py --min-full-cells 1`
+  skips as `viewport_too_small` (~30 % of KGs) — `contribBBoxSmall` mirrors that rule on the cached head
+  (`ne-head:v1:`, 7 d), the plan leaves them out (`contribSmallKGs`, one api_cache query, no fetch) and the
+  prewarm skips them on first contact (`contribKGSmall`, fresh head), so they cost neither fill slots nor tiles.
+  Before 2026-10-10 the fill drew unwarmed KGs first, so each night ran ~416 KGs with 1 577 live cell builds and
+  128 too-small KGs (5.3 h, done 07:22) — never reintroduce that.
+  **Schedule (Europe/Vienna wall clock, `contribLoc`, DST-safe): prewarm 22:00 (`contribWarmHour`,
   `warmContribRun`, independent of the activity tier, cap 200, reason `contrib`, prio 2, paced `warmContribPause`
-  1.5 s/cell ≈ ½ duty on bevdirect) → `ne-report.timer` 02:00 (`contribNightHour`; the unit has `Nice=15`,
-  `CPUQuota=60%`, `CPUWeight=30`) → done before 05:00. Nothing contrib-related runs by day.** A restart between
-  23:00 and 02:00 re-runs the prewarm after 90 s (`contribPrewarmPending`).
+  1.5 s/cell ≈ ½ duty on bevdirect, ~200 KGs × 25 s ≈ 85 min) → `ne-report.timer` 01:00 (`contribNightHour`; the
+  unit has `Nice=15`, `CPUQuota=100%` (one of the 2 cores — nobody plays at that hour, Nice still yields),
+  `CPUWeight=30`; ~34 s CPU + ~10 s overhead per KG → ~225 KGs ≈ 2.8 h) → settled before 04:30 (goal 05:30).
+  Nothing contrib-related runs by day.** A restart between 22:00 and 01:00 re-runs the prewarm after 90 s
+  (`contribPrewarmPending`). Check a night: `journalctl -u ne-report --since <date>` → every cell `(stash)`,
+  `fetched … N from the game server's stash` = N, the `done:` line without `viewport_too_small`;
+  `systemctl show ne-report -p CPUUsageNSec -p ExecMainStartTimestamp -p ExecMainExitTimestamp`.
   **RAM stash** (`srv/contrib_stash.go`): bevdirect assembles a cell from tiles on every `/viewport` (1–2.5 s CPU);
   before 2026-10-09 the night run re-assembled every cell the prewarm had just built (bevdirect 140 % + python 70 %
   on 2 vCPUs for 1.5–2 h). Now `buildCell` keeps the **raw** bevdirect document (same query as vtcseamless'

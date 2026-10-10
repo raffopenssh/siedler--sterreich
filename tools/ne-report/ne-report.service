@@ -16,10 +16,11 @@ EnvironmentFile=-/home/exedev/siedler/tools/ne-report/ne-report.env
 ExecStart=/home/exedev/siedler/tools/ne-report/run.sh
 Nice=15
 IOSchedulingClass=idle
-# 2-vCPU box: cap the reporter (python canonicalisation ~13 s CPU per KG) so the live game and
-# bevdirect keep a core; the raw-cell stash (srv/contrib_stash.go) removes bevdirect's share
-# of the night. Spreads the run over ~2× the wall time at half the load.
-CPUQuota=60%
+# 2-vCPU box: one full core for the reporter (python canonicalisation, ~34 s CPU per KG measured
+# 2026-10-10) — it runs 01:00–04:30 Vienna when nobody plays; Nice/CPUWeight still hand the core to
+# the game whenever someone does. bevdirect keeps the other core, but with the raw-cell stash
+# (srv/contrib_stash.go) it has next to nothing to do at night (every cell `(stash)`).
+CPUQuota=100%
 CPUWeight=30
 TimeoutStartSec=8h
 MemoryMax=2G

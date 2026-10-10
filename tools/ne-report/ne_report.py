@@ -117,7 +117,7 @@ def full_cells_in(bbox, cells):
 
 def stash_cell(siedler, i, j):
     """The raw bevdirect document of an aligned cell from the game server's RAM stash
-    (GET /api/contrib/cell?i&j, srv/contrib_stash.go): the 23:00 contrib prewarm already made
+    (GET /api/contrib/cell?i&j, srv/contrib_stash.go): the 22:00 contrib prewarm already made
     bevdirect assemble tonight's cells, so re-using the byte-identical answer saves one full
     assembly (1–2.5 s CPU) per cell at night. None when not stashed or the server is down."""
     if not siedler:

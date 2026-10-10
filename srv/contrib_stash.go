@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -222,36 +223,95 @@ func (s *Server) contribKGCells(kg string) []cellID {
 	if k == nil {
 		return nil
 	}
-	key := "ne-head:v1:" + kg
-	var bb []float64
-	if c, err := s.Q.GetCachedData(context.Background(), key); err == nil {
-		json.Unmarshal([]byte(c), &bb)
-	} else {
-		time.Sleep(220 * time.Millisecond) // umfeld ≤ 5 req/s; a first run asks for ~300 heads
-		resp, err := upstreamGet(umfeldAPI + "/ne/" + kg + "/head")
-		if err == nil {
-			defer resp.Body.Close()
-			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			if resp.StatusCode == 200 {
-				var h struct {
-					LU struct {
-						Header struct {
-							InputBBox []float64 `json:"input_bbox"`
-						} `json:"header"`
-					} `json:"lu"`
-				}
-				if json.Unmarshal(raw, &h) == nil && len(h.LU.Header.InputBBox) == 4 {
-					bb = h.LU.Header.InputBBox
-				}
-			}
-			if resp.StatusCode == 200 || resp.StatusCode == 404 {
-				enc, _ := json.Marshal(bb) // 404 → "null": remembered too, re-asked after 7 d
-				s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(enc), ExpiresAt: time.Now().Add(7 * 24 * time.Hour)})
-			}
-		}
-	}
+	bb, _ := s.contribHeadBBox(kg)
 	if len(bb) != 4 || bb[2] <= bb[0] || bb[3] <= bb[1] || bb[2]-bb[0] > 1 || bb[3]-bb[1] > 1 {
 		return k.cells()
 	}
 	return cellsForBBox(bb[0], bb[1], bb[2], bb[3])
+}
+
+// contribHeadBBox: the declared umfeld viewport of a KG (lu.header.input_bbox),
+// fetched once and cached 7 d as ne-head:v1:<kg> ("null" for a 404).
+// known=false when the head was never asked for.
+func (s *Server) contribHeadBBox(kg string) (bb []float64, known bool) {
+	key := "ne-head:v1:" + kg
+	if c, err := s.Q.GetCachedData(context.Background(), key); err == nil {
+		json.Unmarshal([]byte(c), &bb)
+		return bb, true
+	}
+	time.Sleep(220 * time.Millisecond) // umfeld ≤ 5 req/s; a first run asks for ~300 heads
+	resp, err := upstreamGet(umfeldAPI + "/ne/" + kg + "/head")
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == 200 {
+		var h struct {
+			LU struct {
+				Header struct {
+					InputBBox []float64 `json:"input_bbox"`
+				} `json:"header"`
+			} `json:"lu"`
+		}
+		if json.Unmarshal(raw, &h) == nil && len(h.LU.Header.InputBBox) == 4 {
+			bb = h.LU.Header.InputBBox
+		}
+	}
+	if resp.StatusCode == 200 || resp.StatusCode == 404 {
+		enc, _ := json.Marshal(bb) // 404 → "null": remembered too, re-asked after 7 d
+		s.Q.SetCachedData(context.Background(), dbgen.SetCachedDataParams{CacheKey: key, Data: string(enc), ExpiresAt: time.Now().Add(7 * 24 * time.Hour)})
+		return bb, true
+	}
+	return nil, false
+}
+
+// contribBBoxSmall mirrors ne_report.py (full_cells_in, --min-full-cells 1):
+// a viewport that contains no whole aligned 0.02° cell yields no report.
+// A missing/404 head (bb == nil) counts as small too (ne_report: not_built).
+func contribBBoxSmall(bb []float64) bool {
+	if len(bb) != 4 || bb[2] <= bb[0] || bb[3] <= bb[1] {
+		return true
+	}
+	const eps = 1e-9
+	for _, c := range cellsForBBox(bb[0], bb[1], bb[2], bb[3]) {
+		w, s, e, n := c.bbox()
+		if w >= bb[0]-eps && e <= bb[2]+eps && s >= bb[1]-eps && n <= bb[3]+eps {
+			return false
+		}
+	}
+	return true
+}
+
+// contribKGSmall asks (or fetches) the head of one KG — used by the prewarm so
+// KGs the report would skip cost no BEV tiles.
+func (s *Server) contribKGSmall(kg string) bool {
+	bb, known := s.contribHeadBBox(kg)
+	return known && contribBBoxSmall(bb)
+}
+
+// contribSmallKGs: every KG whose *cached* head says "small" — one query over
+// api_cache, no upstream call, so the plan (called on every cell build via
+// contribStashKGs) stays cheap. KGs never asked for are not small; the prewarm
+// learns them on first contact and the next plan leaves them out.
+func (s *Server) contribSmallKGs() map[string]bool {
+	out := map[string]bool{}
+	rows, err := s.DB.QueryContext(context.Background(),
+		"SELECT cache_key, data FROM api_cache WHERE cache_key LIKE 'ne-head:v1:%' AND expires_at > datetime('now')")
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, data string
+		if rows.Scan(&key, &data) != nil {
+			continue
+		}
+		var bb []float64
+		json.Unmarshal([]byte(cacheUnpack(data)), &bb)
+		if contribBBoxSmall(bb) {
+			out[strings.TrimPrefix(key, "ne-head:v1:")] = true
+		}
+	}
+	return out
 }
