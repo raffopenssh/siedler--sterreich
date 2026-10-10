@@ -23,4 +23,4 @@ IOSchedulingClass=idle
 CPUQuota=100%
 CPUWeight=30
 TimeoutStartSec=8h
-MemoryMax=2G
+MemoryMax=2800M

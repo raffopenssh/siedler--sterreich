@@ -5,7 +5,7 @@
 | unit | what | notes |
 |---|---|---|
 | `srv` | `./siedler` on :8000 | `sudo systemctl restart srv`; `journalctl -u srv -f`. Maintenance: `touch MAINTENANCE` (bypass cookie `siedler_dev=1` / `?dev=1`). |
-| `bevdirect-serve` | cadastre assembler :8787 (/opt/bevdirect) | `User=exedev`, `-cells 120 -prefetch 0`, `MemoryMax=3G`, `GOMEMLIMIT=2560MiB`. Upgrade recipe: providers.md. |
+| `bevdirect-serve` | cadastre assembler :8787 (/opt/bevdirect) | `User=exedev`, `-cells 120 -prefetch 0`, `MemoryHigh=3G` + `MemoryMax=3800M`, `GOMEMLIMIT=3000MiB`. Upgrade recipe: providers.md. |
 | `ne-report.timer/service` | nightly NE report 01:00 Vienna | contrib.md. Units in `tools/ne-report/`, installed by `INSTALL_UNITS=1 tools/ne-report/setup.sh`. |
 | `xb-report` | serves `tools/xbrowser/out/report.html` on :8765 | |
 

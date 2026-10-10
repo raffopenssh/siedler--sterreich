@@ -36,7 +36,7 @@ upgrades inside that class need no re-baselining. Library import path `github.co
 
 **Upgrade**: `curl -fsSL https://raw.githubusercontent.com/raffopenssh/vtcseamless/main/bootstrap.sh | PREFIX=/opt/bevdirect PORT=8787 VERSION=vX.Y.Z sudo -E bash`.
 **install.sh overwrites the unit** (sets `User=root`, `-cells 160`, prefetch on) and does *not* restart a
-running instance: restore `User=exedev`, `-cells 120 -prefetch 0` (keep `MemoryMax=3G`, `GOMEMLIMIT=2560MiB`),
+running instance: restore `User=exedev`, `-cells 120 -prefetch 0` (keep `MemoryHigh=3G` + `MemoryMax=3800M`, `GOMEMLIMIT=3000MiB`),
 `daemon-reload`, restart (`SOURCE.txt` in /opt/bevdirect). Then bump `bevdirectVersion` in `srv/licenses.go`
 and the version in `impressum.html`/`imprint.html`.
 
