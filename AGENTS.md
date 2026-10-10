@@ -25,10 +25,9 @@ node tools/i18n/audit.js srv/static/game.js; tools/xb.sh --quick # UI checks (do
    `upstreamGet`/`upstreamClient` (never `http.Get`, never hand-set `Accept-Encoding`).
 2. **Kataster-derived data is RAM-only on our side** (raw BEV tiles, bevdirect `/viewport|/parcel|/ez` docs,
    assembled cells, NEC1 containers): ≤ 24 h in memory, nothing on disk, nothing in git, nothing in `/tmp`
-   when you finish. *Status 2026-10-10: tiles and the contrib stash comply; `vp:v1` cells / parcel+ez lookups
-   still sit in `api_cache` (SQLite) ≤ 24 h and `.nec`/work files are pruned > 24 h — migration to RAM-only is
-   the open task; until it lands, keep the ≤ 24 h discipline and the legal pages true (`docs/providers.md`
-   § hygiene).* NE cells (srtm), heightfields, hillshade, umfeld context are not cadastre and may be cached.
+   when you finish. `vp:v1` cells and `parcel:v1`/`ez:v1` look-ups live in `cadastreRAM` (`srv/ramcache.go`) — `Store`
+   routes those key prefixes away from SQLite; `.nec`/work files (derived statistics) are pruned > 24 h
+   (`docs/providers.md` § hygiene). NE cells (srtm), heightfields, hillshade, umfeld context are not cadastre and may be cached.
 3. The DB stores **no cadastre ids** — HMAC `parcel_hash`/`ez_hash` only (`srv/parcelhash.go`).
 4. Every cadastre-derived answer carries the BEV `notice`; legal pages (impressum/imprint/datenschutz/privacy,
    `/api/licenses`) must describe what the code actually does.

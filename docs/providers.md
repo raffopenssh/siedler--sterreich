@@ -48,9 +48,10 @@ keep code and pages true to each other:
 | tier | what | where it may live | lifetime |
 |---|---|---|---|
 | **raw** | BEV `.pbf` tiles; raw bevdirect `/viewport` documents kept for the night report | **RAM only** (bevdirect LRU; `contrib_stash`) | ≤ 24 h, lost on restart |
-| **assembled / derived** | `vp:v1` cells in `api_cache` (SQLite), `ne-report` work cells, NEC1 `.nec` containers (per-H3-cell statistics), any `/parcel`, `/ez`, `/viewport` dump | disk allowed | **≤ 24 h, then gone** (janitor, `run.sh` prune, you) |
+| **assembled** | `vp:v1` cells, `parcel:v1`, `ez:v1` look-ups | **RAM only** — `srv/ramcache.go` (`cadastreRAM`, ≤ 1.4 GB gzipped, oldest-fetch eviction); `Store` routes these key prefixes there, SQLite never sees them; boot purges strays + clears/re-queues `kg_warm` | ≤ 24 h hard cap, lost on restart |
+| **derived statistics** | `ne-report` work cells, NEC1 `.nec` containers (per-H3-cell statistics), `pctx`/`similar`/`timber` derivations (hash-keyed, no geometry) | disk allowed | **≤ 24 h, then gone** (janitor, `run.sh` prune, you) |
 
-Nothing else: no parcel database, no cadastre ids in the DB (hashes only), nothing findable by GNR/EZ without a
+Any `/parcel`, `/ez`, `/viewport` dump is tier "assembled": never on disk. Nothing else: no parcel database, no cadastre ids in the DB (hashes only), nothing findable by GNR/EZ without a
 location. `run.sh` prunes `data/ne-reports/work/` and `data/ne-reports/nec/*.nec` (> 24 h) on every run; the
 digest-only reports `KG.<date>.json`/`.meta.json` carry no cadastre content and stay. When you dump a
 `/viewport`, `/parcel` or `/ez` response for debugging (curl → `/tmp/*.json`, `--keep-cells`, test fixtures),
@@ -58,8 +59,8 @@ digest-only reports `KG.<date>.json`/`.meta.json` carry no cadastre content and 
 
 Audit: `find / -xdev -name "*.pbf"` (none), `ls data/ne-reports/work`, `find data/ne-reports/nec -mmin +1440`
 (none), `grep -l footprints /tmp/*.json`, `sudo ls -l /proc/$(pidof bevdirect-serve)/fd` (no regular files),
-`sqlite3 db.sqlite3 "select count(*) from api_cache where cache_key like 'vp:%' and expires_at < datetime('now')"`
-(0 after the hourly janitor). Licence copies: `docs/licences/README.md`.
+`sqlite3 db.sqlite3 "select count(*) from api_cache where cache_key like 'vp:%' or cache_key like 'parcel:v1:%' or cache_key like 'ez:v1:%'"`
+(always 0), `/api/metrics` → `api_cache.ram_mb` / `vp_rows` for what is in RAM. Licence copies: `docs/licences/README.md`.
 
 ## KG universe & srtm registry
 

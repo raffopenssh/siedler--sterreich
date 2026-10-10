@@ -1,6 +1,7 @@
 package srv
 
-// Transparent compression for api_cache bodies.
+// Transparent compression for api_cache bodies + routing of cadastre keys to
+// the RAM-only store (ramcache.go — rule 2: nothing BEV-derived on disk).
 //
 // Cadastre cells (`vp:v1:*`) are ~1 MB of JSON each and were stored as plain
 // text — 645 cells ≈ 650 MB, the bulk of db.sqlite3. Store wraps the sqlc
@@ -14,6 +15,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"strings"
@@ -62,6 +64,12 @@ func cacheUnpack(s string) string {
 }
 
 func (q Store) GetCachedData(ctx context.Context, key string) (string, error) {
+	if isRAMKey(key) {
+		if v, ok := cadastreRAM.get(key); ok {
+			return cacheUnpack(v), nil
+		}
+		return "", sql.ErrNoRows
+	}
 	s, err := q.Queries.GetCachedData(ctx, key)
 	if err != nil {
 		return s, err
@@ -70,6 +78,9 @@ func (q Store) GetCachedData(ctx context.Context, key string) (string, error) {
 }
 
 func (q Store) GetStaleCachedData(ctx context.Context, key string) (dbgen.GetStaleCachedDataRow, error) {
+	if isRAMKey(key) {
+		return dbgen.GetStaleCachedDataRow{}, sql.ErrNoRows
+	}
 	r, err := q.Queries.GetStaleCachedData(ctx, key)
 	if err == nil {
 		r.Data = cacheUnpack(r.Data)
@@ -79,12 +90,42 @@ func (q Store) GetStaleCachedData(ctx context.Context, key string) (dbgen.GetSta
 
 func (q Store) SetCachedData(ctx context.Context, p dbgen.SetCachedDataParams) error {
 	p.Data = cachePack(p.Data)
+	if isRAMKey(p.CacheKey) {
+		cadastreRAM.set(p.CacheKey, p.Data, p.ExpiresAt)
+		return nil
+	}
 	return q.Queries.SetCachedData(ctx, p)
 }
 
 func (q Store) SetCachedDataEtag(ctx context.Context, p dbgen.SetCachedDataEtagParams) error {
 	p.Data = cachePack(p.Data)
+	if isRAMKey(p.CacheKey) {
+		cadastreRAM.set(p.CacheKey, p.Data, p.ExpiresAt)
+		return nil
+	}
 	return q.Queries.SetCachedDataEtag(ctx, p)
+}
+
+func (q Store) TouchCache(ctx context.Context, p dbgen.TouchCacheParams) error {
+	if isRAMKey(p.CacheKey) {
+		cadastreRAM.touch(p.CacheKey, p.ExpiresAt)
+		return nil
+	}
+	return q.Queries.TouchCache(ctx, p)
+}
+
+// DeleteCacheLike covers both stores: a pattern may match RAM keys (cell
+// purges on NE adoption) as well as SQLite rows.
+func (q Store) DeleteCacheLike(ctx context.Context, pattern string) (int64, error) {
+	n := cadastreRAM.deleteLike(pattern)
+	m, err := q.Queries.DeleteCacheLike(ctx, pattern)
+	return n + m, err
+}
+
+func (q Store) DeleteExpiredCache(ctx context.Context) (int64, error) {
+	n := cadastreRAM.sweep()
+	m, err := q.Queries.DeleteExpiredCache(ctx)
+	return n + m, err
 }
 
 // compressLegacyCache gzips pre-existing plain rows in small batches (keeps the

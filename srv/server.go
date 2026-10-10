@@ -174,6 +174,19 @@ func (s *Server) setUpDatabase(dbPath string) error {
 // cacheJanitor periodically deletes expired api_cache rows so the SQLite file
 // doesn't accumulate gigabytes of dead cached API blobs (which slows every
 // table scan and bloats backups). Runs hourly.
+// incrementalVacuum hands freed pages back to the OS. The pragma yields one
+// row per freed batch, so it must be stepped to the end — Exec would stop
+// after the first step and free (almost) nothing.
+func (s *Server) incrementalVacuum() {
+	rows, err := s.DB.Query("PRAGMA incremental_vacuum;")
+	if err == nil {
+		for rows.Next() {
+		}
+		rows.Close()
+	}
+	s.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+}
+
 func (s *Server) cacheJanitor() {
 	for {
 		n, err := s.Q.DeleteExpiredCache(context.Background())
@@ -184,8 +197,7 @@ func (s *Server) cacheJanitor() {
 			// Hand the freed pages back to the OS: the file has auto_vacuum=INCREMENTAL
 			// (set once by hand, see docs/ops.md), so this actually shrinks db.sqlite3
 			// instead of leaving hundreds of MB on the freelist; a no-op otherwise.
-			s.DB.Exec("PRAGMA incremental_vacuum;")
-			s.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+			s.incrementalVacuum()
 		}
 		time.Sleep(1 * time.Hour)
 	}
@@ -194,6 +206,7 @@ func (s *Server) cacheJanitor() {
 func (s *Server) Serve(addr string) error {
 	loadParcelKey(filepath.Join(filepath.Dir(s.StaticDir), ".."))
 	s.hashLegacyParcelRows()
+	s.reconcileRAMCacheAtBoot()
 	go s.cacheJanitor()
 	go s.compressLegacyCache()
 	go s.safetyJanitor()

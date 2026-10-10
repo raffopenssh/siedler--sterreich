@@ -91,18 +91,7 @@ func (s *Server) neObservedSeed() {
 	if len(s.neObservedSet()) > 0 {
 		return
 	}
-	rows, err := s.DB.QueryContext(context.Background(), "SELECT cache_key FROM api_cache WHERE cache_key LIKE ? AND expires_at > datetime('now')", vpKeyPrefix+"%")
-	if err != nil {
-		return
-	}
-	var keys []string
-	for rows.Next() {
-		var k string
-		if rows.Scan(&k) == nil {
-			keys = append(keys, k)
-		}
-	}
-	rows.Close()
+	keys := cadastreRAM.keys(vpKeyPrefix)
 	n, kgs := 0, 0
 	for _, k := range keys {
 		var c cellID

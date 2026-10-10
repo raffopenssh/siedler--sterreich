@@ -51,3 +51,9 @@ this file is where the "why" lives.
 - **`footprints: null`** from bevdirect ≤ v0.3.2 crashed the frozen `ne_cells.canon`. → fixed upstream in
   v0.3.3; client normalises older servers.
 - **`ne_cells build` ignores `truncated`.** → our driver checks `ready` *and* `truncated`.
+
+- **2026-10-10 — cadastre cells were on disk.** `api_cache` held 2 931 `vp:v1` rows (810 MB gzipped) with
+  raw parcel ids, NS codes and geometry, plus the `parcel:v1:<id>`/`ez:v1` code paths — a rule-2 violation
+  hiding behind "≤ 24 h". Fix: `srv/ramcache.go` + prefix routing in `Store`; boot purges strays and
+  re-queues previously warm KGs. Lesson: a TTL is not a storage tier — route by key prefix at the store, not
+  by discipline at each call site.

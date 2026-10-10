@@ -317,16 +317,16 @@ func (s *Server) apiCacheStatsQuery() map[string]any {
 	} else {
 		out["bytes"] = 0
 	}
-	var vpRows int64
-	var oldest *string
-	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*), MIN(fetched_at) FROM api_cache WHERE cache_key LIKE 'vp:%'").Scan(&vpRows, &oldest); err == nil {
-		out["vp_rows"] = vpRows
-		if oldest != nil {
-			if t, err := parseSQLiteTime(*oldest); err == nil {
-				out["vp_oldest_age_s"] = int64(time.Since(t).Seconds())
-				out["vp_oldest_fetched_at"] = t.UTC().Format(time.RFC3339)
-			}
-		}
+	// Cadastre cells live in RAM only (ramcache.go), never in api_cache.
+	vpRows, vpBytes, oldest := cadastreRAM.stats(vpKeyPrefix)
+	out["vp_rows"] = vpRows
+	out["vp_mb"] = round1(float64(vpBytes) / 1e6)
+	ramRows, ramBytes, _ := cadastreRAM.stats("")
+	out["ram_rows"] = ramRows
+	out["ram_mb"] = round1(float64(ramBytes) / 1e6)
+	if !oldest.IsZero() {
+		out["vp_oldest_age_s"] = int64(time.Since(oldest).Seconds())
+		out["vp_oldest_fetched_at"] = oldest.UTC().Format(time.RFC3339)
 	}
 	return out
 }

@@ -7,7 +7,8 @@ Tables: `players` (coins start 10000, xp, level, rejoin_token, agent), `game_ses
 well_at, well_depth_m, ne_verdict), `treasures`, `challenges`, `chat_messages`, `offers`, `api_cache` (hourly
 `cacheJanitor` prunes expired rows + `PRAGMA incremental_vacuum`), `kg_warm`, `parcel_harvest_state`.
 
-- `s.Q` is `Store` (`srv/cachestore.go`) wrapping sqlc: api_cache bodies > 2 KB are stored gzipped (magic
+- `s.Q` is `Store` (`srv/cachestore.go`) wrapping sqlc: cadastre keys (`vp:v1:`, `parcel:v1:`, `ez:v1:`) are
+  routed to the RAM-only `cadastreRAM` (`srv/ramcache.go`) and never reach SQLite; other api_cache bodies > 2 KB are stored gzipped (magic
   detected on read) — never read `api_cache.data` with raw SQL expecting JSON (column is `cache_key`, `data`,
   `fetched_at`, `expires_at`, `etag`).
 - Migration: `db/migrations/NNN-name.sql` ending with `INSERT OR IGNORE INTO migrations (migration_number,
