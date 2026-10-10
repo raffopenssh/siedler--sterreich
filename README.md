@@ -1,63 +1,11 @@
-# Go Shelley Template
+# Siedler Österreich
 
-This is a starter template for building Go web applications on exe.dev. It demonstrates end-to-end usage including HTTP handlers, authentication, database integration, and deployment.
+Multiplayer browser game on real Austrian cadastre data (BEV, CC BY 4.0): explore, claim parcels, convert land
+to nature reserves — Settlers IV pixel-art look. Go + SQLite backend, vanilla-JS canvas frontend. Nightly we
+report cadastre-change digests to umfeld-at (`docs/contrib.md`).
 
-Use this as a foundation to build your own service.
+Live: https://siedler-oesterreich.exe.xyz:8000/
 
-## Building and Running
-
-Build with `make build`, then run `./srv`. The server listens on port 8000 by default.
-
-## Running as a systemd service
-
-To run the server as a systemd service:
-
-```bash
-# Install the service file
-sudo cp srv.service /etc/systemd/system/srv.service
-
-# Reload systemd and enable the service
-sudo systemctl daemon-reload
-sudo systemctl enable srv.service
-
-# Start the service
-sudo systemctl start srv
-
-# Check status
-systemctl status srv
-
-# View logs
-journalctl -u srv -f
-```
-
-To restart after code changes:
-
-```bash
-make build
-sudo systemctl restart srv
-```
-
-## Authorization
-
-exe.dev provides authorization headers and login/logout links
-that this template uses.
-
-When proxied through exed, requests will include `X-ExeDev-UserID` and
-`X-ExeDev-Email` if the user is authenticated via exe.dev.
-
-## Database
-
-This template uses sqlite (`db.sqlite3`). SQL queries are managed with sqlc.
-
-## Code layout
-
-- `cmd/srv`: main package (binary entrypoint)
-- `srv`: HTTP server logic (handlers)
-- `srv/templates`: Go HTML templates
-- `db`: SQLite open + migrations (001-base.sql)
-
-## License
-
-Beta / open source. Code is MIT-licensed — see [LICENSE](LICENSE). Bundled and
-runtime data (BEV cadastre, LiDAR, Red List, fonts, Austrian outline) carry
-their own open licences, listed at the end of the LICENSE file.
+- Agent/developer guide: `AGENTS.md` (rules, mental model, repo map)
+- Topic docs: `docs/README.md`
+- Build & deploy: `go build -o siedler ./cmd/srv/ && sudo systemctl restart srv`
