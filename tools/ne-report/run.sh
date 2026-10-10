@@ -60,6 +60,10 @@ fi
 # Cadastre hygiene: fetched /viewport cells under data/ne-reports/work are scratch input only
 # and must never outlive 24 h (orphans from crashed or --keep-cells runs included).
 find "$HERE/../../data/ne-reports/work" -mindepth 1 -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+# Same rule for the NEC1 containers (per-cell cadastre statistics derived from the tiles): kept only so a
+# failed POST can be inspected with `ne_cells dump/compare`; the change protocol reads them from RAM in the
+# same run. Digest-only reports (KG.<date>.json / .meta.json) carry no cadastre content and stay.
+find "$HERE/../../data/ne-reports/nec" -name "*.nec" -mmin +1440 -delete 2>/dev/null || true
 
 # Token: ne-peer.key in the repo root wins, else the environment. ne_report.py logs a clear
 # "POST skipped — no peer token" line when neither exists.

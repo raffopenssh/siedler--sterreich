@@ -21,12 +21,13 @@ tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless
 tools/ne-report/ne_report.py    the pipeline for one or more KGs (see --help)
 tools/ne-report/run.sh          driver: KG list = today's rotation from GET /api/contrib/plan (srv/contrib.go),
                                 else a 3-KG fallback sample — never the whole v2.4 universe
-tools/ne-report/ne-report.service, ne-report.timer   daily 03:30 UTC (+≤15 min jitter), Nice=15, idle IO,
-                                Requires/After bevdirect-serve.service, Persistent=true
+tools/ne-report/ne-report.service, ne-report.timer   daily 01:00 Europe/Vienna (+≤15 min jitter), Nice=15,
+                                CPUQuota=100%, idle IO, Requires/After bevdirect-serve.service, Persistent=true
 data/ne-reports/KG.<date>.json        the report as POSTed (gitignored)
 data/ne-reports/KG.<date>.meta.json   build summary, umfeld head numbers, cells fetched, POST answer
-data/ne-reports/nec/KG.<epoch>.nec    the NEC1 container we built (for `ne_cells dump/compare`)
-data/ne-reports/work/KG/cell_i_j.json fetched bevdirect cells (only with --keep-cells)
+data/ne-reports/nec/KG.<epoch>.nec    the NEC1 container we built (for `ne_cells dump/compare`); pruned > 24 h by run.sh
+data/ne-reports/work/KG/cell_i_j.json fetched bevdirect cells (only with --keep-cells); pruned > 24 h by run.sh
+                                (both are kataster-derived — policy is moving them to tmpfs, see providers.md § hygiene)
 ```
 
 ## How to run
@@ -34,7 +35,7 @@ data/ne-reports/work/KG/cell_i_j.json fetched bevdirect cells (only with --keep-
 ```bash
 tools/ne-report/setup.sh                       # once / after pull
 tools/ne-report/run.sh 05007 63330             # explicit KGs
-tools/ne-report/run.sh                         # today's contrib rotation, skips KGs with a report < 7 d old
+tools/ne-report/run.sh                         # tonight's contrib plan (/api/contrib/plan?night=1), skips KGs with a report < 7 d old
 FORCE=1 tools/ne-report/run.sh 05007           # ignore the 7-day skip
 tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py --help
 sudo systemctl start ne-report.service; journalctl -u ne-report -f
@@ -68,22 +69,11 @@ Historic reports are not touched — the operator re-classifies them on read. Me
 `tools/ne-report/ne-report.env`, gitignored). Without one the POST is a no-op with the log line
 `POST skipped — no peer token …`. Token in place since 2026-10-06 (token name `siedler-oesterreich`, POST → 200); unauthenticated POSTs answer 404 by design.
 
-## Quarterly rotation (`srv/contrib.go`, 2026-10-06)
+## Rotation, schedule, stash
 
-Every v2.4 KG (registry `v24`, ~1 400) is assigned one **day of the quarter** by
-`sha256("contrib:" + quarter + ":" + kg) mod days` — random across Austria, stable for the quarter,
-new KGs appearing mid-quarter land on some day without shifting the others. `GET /api/contrib/plan`
-→ `{quarter, day, days, today[], fill[], ahead_days, kgs[], universe, per_day_avg, night_min 40, night_max 120,
-reported_quarter, left_quarter, catch_up_days}`; `kgs[]` = today's KGs + still-unreported KGs of the two
-previous nights (catch-up) + **fill**: first the not-yet-reported KGs the prewarmer built in the last 24 h
-(`cheap[]` — their BEV tiles are still on bevdirect's disk, 9 cells in 4 s instead of 13 s+; **uncapped**, on boost
-days 100–200 of them, ~30–50 s CPU each, unit timeout 8 h),
-then not-yet-reported KGs due later in the quarter, in due order, until ≥ 40 KGs — so a 1 400-KG universe
-is swept in ~3–5 weeks, 4 000 KGs in a quarter (~43/night), the quarter being the guarantee. Reported/left counts are read from the `data/ne-reports/KG.<date>.json` file names;
-
-`?kg=NNNNN` → `next_for_kg` (the date that KG is due). `/api/warm/status` carries the compact `contrib{}`.
-The rotation is independent of prewarming: it reads bevdirect directly, writes neither `kg_warm`
-nor `api_cache` cells, so `/api/lucky` is unaffected. ≈ 16 KGs × ~10 cells ≈ 30 MB BEV tiles a night.
+The KG list, the 22:00 prewarm → 01:00 report schedule, the RAM stash and the plan fields are documented in
+[contrib.md](contrib.md) (`srv/contrib.go`). `run.sh` only ever takes its KGs from `GET /api/contrib/plan?night=1`
+(or the command line); never the whole v2.4 universe.
 
 ## 2026-10-04 — contributor path & bevdirect v0.3.0
 
@@ -145,4 +135,4 @@ python (11–44 s). bevdirect's cell cache went 2 → 37 cells over the three KG
 2. ~~`/api/warm/status` has no `v24_kgs` yet~~ — it has all 1 386 since 2026-10-06; `run.sh` now uses
    `/api/contrib/plan` (quarterly rotation) instead, never the whole list.
 3. `ne_cells build` only checks `ready`, not `truncated`, on bevdirect documents — we check both.
-4. The timer runs at 03:30 **UTC** (host clock is UTC).
+4. The timer runs on the **Europe/Vienna** wall clock (01:00); the host clock is UTC — `journalctl` shows UTC.
