@@ -47,7 +47,7 @@ this file is where the "why" lives.
 
 ## Data hygiene / legal
 - **`.nec` containers were never pruned** (1 216 files, 829 > 24 h, found 2026-10-10). → run.sh prunes them;
-  policy moving to RAM-only for everything kataster-derived (see providers.md).
+  derived NE statistics may live on disk, raw/assembled cadastre may not (providers.md § hygiene).
 - **`footprints: null`** from bevdirect ≤ v0.3.2 crashed the frozen `ne_cells.canon`. → fixed upstream in
   v0.3.3; client normalises older servers.
 - **`ne_cells build` ignores `truncated`.** → our driver checks `ready` *and* `truncated`.
@@ -56,4 +56,5 @@ this file is where the "why" lives.
   raw parcel ids, NS codes and geometry, plus the `parcel:v1:<id>`/`ez:v1` code paths — a rule-2 violation
   hiding behind "≤ 24 h". Fix: `srv/ramcache.go` + prefix routing in `Store`; boot purges strays and
   re-queues previously warm KGs. Lesson: a TTL is not a storage tier — route by key prefix at the store, not
-  by discipline at each call site.
+  by discipline at each call site. Second pass the same day found `similar:v7` (77 rows with parcel ids),
+  `bldg-info:v2` and `timber:<hash>` (parcel_id in the body) on the same path → added to `ramPrefixes`.

@@ -694,7 +694,7 @@ func (s *Server) handleForestValue(w http.ResponseWriter, r *http.Request) {
 	lu := q.Get("lu")
 	plon, _ := strconv.ParseFloat(q.Get("lon"), 64)
 	plat, _ := strconv.ParseFloat(q.Get("lat"), 64)
-	ck := "timber:" + parcelHash(pid)
+	ck := "timber:est:" + parcelHash(pid)
 	var e timberEstimate
 	if cached, err := s.Q.GetCachedData(r.Context(), ck); err == nil && json.Unmarshal([]byte(cached), &e) == nil {
 		w.Header().Set("X-Cache", "HIT")
@@ -762,7 +762,7 @@ func (s *Server) handleHarvestForest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Pay what the popup promised: reuse the cached (v3/history-backed) estimate.
 	var est timberEstimate
-	if cached, err := s.Q.GetCachedData(r.Context(), "timber:"+parcelHash(req.ParcelID)); err != nil || json.Unmarshal([]byte(cached), &est) != nil || est.Coins == 0 {
+	if cached, err := s.Q.GetCachedData(r.Context(), "timber:est:"+parcelHash(req.ParcelID)); err != nil || json.Unmarshal([]byte(cached), &est) != nil || est.Coins == 0 {
 		est = s.estimateTimber(r.Context(), claim.KgCode, req.ParcelID, claim.AreaSqm, lu, false)
 	}
 	if !est.IsForest {

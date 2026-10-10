@@ -23,11 +23,13 @@ node tools/i18n/audit.js srv/static/game.js; tools/xb.sh --quick # UI checks (do
 **Data & legal**
 1. The browser never talks to a data host; every upstream call goes through our proxies via
    `upstreamGet`/`upstreamClient` (never `http.Get`, never hand-set `Accept-Encoding`).
-2. **Kataster-derived data is RAM-only on our side** (raw BEV tiles, bevdirect `/viewport|/parcel|/ez` docs,
-   assembled cells, NEC1 containers): ≤ 24 h in memory, nothing on disk, nothing in git, nothing in `/tmp`
-   when you finish. `vp:v1` cells and `parcel:v1`/`ez:v1` look-ups live in `cadastreRAM` (`srv/ramcache.go`) — `Store`
-   routes those key prefixes away from SQLite; `.nec`/work files (derived statistics) are pruned > 24 h
-   (`docs/providers.md` § hygiene). NE cells (srtm), heightfields, hillshade, umfeld context are not cadastre and may be cached.
+2. **Kataster content is RAM-only on our side**: raw BEV tiles, bevdirect `/viewport|/parcel|/ez` docs, assembled
+   cells and every answer that quotes parcel ids/land use from them (`vp:v1`, `parcel:v1`, `ez:v1`, `similar:`,
+   `bldg-info:`, `timber:est:`) live in `cadastreRAM` (`srv/ramcache.go`, ≤ 24 h) — `Store` routes by key prefix,
+   SQLite never sees them; a new cadastre-quoting cache key goes into `ramPrefixes`. Nothing in git, nothing
+   in `/tmp` when you finish; the ne-report work dir (raw cells) is wiped per KG. **Derived NE statistics are
+   fine on disk** (that is the point of NE): NEC1 `.nec` containers, digests, srtm NE cells, heightfields,
+   hillshade, umfeld context (`docs/providers.md` § hygiene).
 3. The DB stores **no cadastre ids** — HMAC `parcel_hash`/`ez_hash` only (`srv/parcelhash.go`).
 4. Every cadastre-derived answer carries the BEV `notice`; legal pages (impressum/imprint/datenschutz/privacy,
    `/api/licenses`) must describe what the code actually does.

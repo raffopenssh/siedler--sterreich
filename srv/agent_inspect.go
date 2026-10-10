@@ -924,7 +924,7 @@ func (s *Server) inspectChronik(kg string) any {
 // srtm /landscape trees; same cache as GET /api/forest-value).
 func (s *Server) inspectForest(kg, pid string, area float64, lu string, lon, lat float64) any {
 	var e timberEstimate
-	ck := "timber:" + parcelHash(pid)
+	ck := "timber:est:" + parcelHash(pid)
 	if cached, err := s.Q.GetCachedData(context.Background(), ck); err == nil && json.Unmarshal([]byte(cached), &e) == nil {
 		// hit
 	} else {

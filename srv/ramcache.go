@@ -25,7 +25,9 @@ const (
 	ramMaxBytes = 1400 << 20 // gzipped bodies; ~2 900 cells fit
 )
 
-var ramPrefixes = []string{vpKeyPrefix, "parcel:v1:", "ez:v1:"}
+// similar/bldg-info/timber:est answers quote parcel ids and land use from the
+// cells, so they are cadastre-derived too.
+var ramPrefixes = []string{vpKeyPrefix, "parcel:v1:", "ez:v1:", "similar:", "bldg-info:", "timber:est:"}
 
 func isRAMKey(k string) bool {
 	for _, p := range ramPrefixes {

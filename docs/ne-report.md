@@ -25,9 +25,10 @@ tools/ne-report/ne-report.service, ne-report.timer   daily 01:00 Europe/Vienna (
                                 CPUQuota=100%, idle IO, Requires/After bevdirect-serve.service, Persistent=true
 data/ne-reports/KG.<date>.json        the report as POSTed (gitignored)
 data/ne-reports/KG.<date>.meta.json   build summary, umfeld head numbers, cells fetched, POST answer
-data/ne-reports/nec/KG.<epoch>.nec    the NEC1 container we built (for `ne_cells dump/compare`); pruned > 24 h by run.sh
-data/ne-reports/work/KG/cell_i_j.json fetched bevdirect cells (only with --keep-cells); pruned > 24 h by run.sh
-                                (both are kataster-derived — policy is moving them to tmpfs, see providers.md § hygiene)
+data/ne-reports/nec/KG.<epoch>.nec    the NEC1 container we built — derived statistics, fine on disk; pruned > 24 h by run.sh
+                                (only needed for `ne_cells dump/compare`)
+data/ne-reports/work/KG/cell_i_j.json raw bevdirect cells — scratch, wiped after each KG (kept only with --keep-cells,
+                                then pruned > 24 h by run.sh); never commit, never copy elsewhere
 ```
 
 ## How to run
