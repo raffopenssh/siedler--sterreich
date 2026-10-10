@@ -55,4 +55,4 @@ dictionary changes.
 ## Screenshots
 
 `docs/screenshot-recipes.md`; hi-res via browser `emulate_custom` DPR 2 or `emulate_device`. Glitch log
-`docs/glitches.md` (append, mark ✅ when fixed).
+`docs/glitches.md` (open cosmetic issues only; delete an entry when fixed, put the rule in lessons.md if one emerged).
