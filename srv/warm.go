@@ -229,9 +229,10 @@ func (s *Server) warmKG(kg, reason string) {
 		rebuild := false
 		if _, err := s.Q.GetCachedData(context.Background(), key); err == nil {
 			// contrib: a cached cell whose raw bevdirect document is missing from the
-			// RAM stash (built before the plan knew the KG, or lost in a restart) is
-			// rebuilt so the night run never has to ask bevdirect (contrib_stash.go).
-			if reason != "contrib" || contribStashHas(c) {
+			// RAM stash (built before the plan knew the KG, lost in a restart, or
+			// expiring before the night run reads it) is rebuilt so the night run
+			// never has to ask bevdirect (contrib_stash.go).
+			if reason != "contrib" || contribStashHasUntil(c, contribStashNeedUntil()) {
 				continue
 			}
 			rebuild = true

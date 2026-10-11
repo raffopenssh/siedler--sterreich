@@ -140,16 +140,31 @@ func (s *Server) contribStashPut(c cellID, kgs map[string]*vpKG, raw []byte, ttl
 // contribStashHas reports whether cell c was considered for the stash (document or
 // negative marker) and is unexpired.
 func contribStashHas(c cellID) bool {
+	return contribStashHasUntil(c, time.Now())
+}
+
+// contribStashHasUntil: stashed and still valid at t. The prewarm uses
+// t = end of the coming night run (contribStashNeedUntil): an entry put by
+// the previous evening's prewarm (24 h TTL) is alive at 22:00 but gone by the
+// time ne-report reads it at 01:00–06:00 — on 2026-10-11 that cost 2 616 of
+// 5 565 cells (47 %) a live bevdirect assembly, 28 of 35 in KG 01657.
+func contribStashHasUntil(c cellID, t time.Time) bool {
 	contribStash.mu.Lock()
 	defer contribStash.mu.Unlock()
 	e := contribStash.cells[c]
-	return e != nil && time.Now().Before(e.exp)
+	return e != nil && t.Before(e.exp)
 }
 
-// contribStashComplete: every cell of the list is stashed.
+// contribStashNeedUntil: when the coming night run is surely finished.
+func contribStashNeedUntil() time.Time {
+	return nextContribNight(time.Now()).Add(6 * time.Hour)
+}
+
+// contribStashComplete: every cell of the list is stashed through the night run.
 func contribStashComplete(cells []cellID) bool {
+	until := contribStashNeedUntil()
 	for _, c := range cells {
-		if !contribStashHas(c) {
+		if !contribStashHasUntil(c, until) {
 			return false
 		}
 	}
