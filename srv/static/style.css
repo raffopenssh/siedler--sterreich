@@ -52,7 +52,13 @@
 *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
 html, body { width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); }
 
-#app { width:100vw; height:100vh; position:relative; }
+/* Mobile browsers: 100vh is the *large* viewport (address bar hidden), so anything
+   anchored to the bottom would sit under the bar. --app-h = dynamic viewport height
+   (dvh; older browsers: visualViewport via JS in index.html). --sab = home-indicator
+   inset (viewport-fit=cover). */
+:root { --app-h:100vh; --sab:env(safe-area-inset-bottom, 0px); --sat:env(safe-area-inset-top, 0px); --sal:env(safe-area-inset-left, 0px); --sar:env(safe-area-inset-right, 0px); }
+@supports (height:100dvh) { :root { --app-h:100dvh; } }
+#app { width:100vw; height:100vh; height:var(--app-h); position:relative; }
 .screen { display:none; position:absolute; inset:0; }
 .screen.active { display:flex; }
 
@@ -490,7 +496,7 @@ input[type=text]:focus { border-color:var(--gold); }
 @keyframes popIn  { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:none; } }
 @keyframes popOut { from { opacity:1; transform:none; } to { opacity:0; transform:translateY(12px) scale(.97); } }
 @media (prefers-reduced-motion: reduce) { .popup.open, .popup.open.closing { animation-duration:.01s; } }
-.popup { max-height:calc(100vh - 120px); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.popup { max-height:calc(var(--app-h) - 120px); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
 /* desktop: panels anchor to a corner; .flip mirrors them to the other side so
    they never sit on the thing that was tapped (placePopupClear) */
 .popup.flip#parcel-popup, .popup.flip#tree-popup { left:auto; right:60px; } /* 60 = clear of the zoom column */
@@ -565,7 +571,7 @@ input[type=text]:focus { border-color:var(--gold); }
 .pp-offer-form .pp-offer-in { display:flex; gap:6px; align-items:stretch; }
 .pp-offer-form input { flex:1; min-width:0; width:80px; padding:6px 8px; font:20px var(--font-game); background:var(--bg); color:var(--text-bright); border:2px solid var(--panel-border); }
 #ez-popup { bottom:16px; right:60px; }
-#kg-popup { top:56px; right:60px; bottom:auto; max-height:calc(100vh - 120px); overflow-y:auto; }
+#kg-popup { top:56px; right:60px; bottom:auto; max-height:calc(var(--app-h) - 120px); overflow-y:auto; }
 .kg-popup h3 { color:var(--gold); }
 .kg-body .kg-loading { font:20px var(--font-game); color:var(--text-dim); }
 .kg-body .kg-dim { color:var(--text-dim); font-style:normal; font-size:16px; }
@@ -773,7 +779,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .pick-header { flex-wrap:wrap; gap:8px; padding:8px 10px; }
   .pick-header h2 { font-size:9px; }
   .pick-search { max-width:100%; flex-basis:100%; order:3; }   /* own full-width row under the title */
-  .search-dropdown { max-height:50vh; }
+  .search-dropdown { max-height:calc(var(--app-h) * .5); }
   .search-item small { font-size:15px; }
   .search-item { padding:12px; min-height:48px; font-size:18px; }
 
@@ -792,15 +798,18 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   #game-main { width:100%; height:100%; }
   #sidebar {
     position:fixed; bottom:0; left:0; right:0; z-index:200;
-    width:100%; height:65vh;
+    width:100%; height:calc(var(--app-h) * .65);
     border-right:none; border-top:4px solid var(--panel-border);
-    transform:translateY(calc(100% - 52px));
+    padding-bottom:var(--sab); /* home indicator never covers the chat input */
+    transform:translateY(calc(100% - 52px - var(--sab)));
     transition:transform .3s ease;
     overflow-y:auto;
     background-image:none;
   }
   #sidebar.expanded { transform:translateY(0); }
-  .sb-toggle { display:flex; }
+  .sb-toggle { display:flex; transition:flex-basis .3s ease, padding-bottom .3s ease; }
+  /* parked: the bar grows by the home-indicator inset so the tap target stays clear of it */
+  #sidebar:not(.expanded) .sb-toggle { flex-basis:calc(52px + var(--sab)); height:auto; padding-bottom:var(--sab); }
   .sb-header { padding:8px 10px; }
   .sb-section { padding:8px 10px; }
 
@@ -817,14 +826,14 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   /* In-game search */
   /* phones: everything in the top HUD is centred on the area left of the
      button column (72 px): search bar, badge row and the Natura chip */
-  .game-search { width:240px; max-width:calc(100% - 96px); top:8px; left:calc((100% - 72px) / 2); }
+  .game-search { width:240px; max-width:calc(100% - 96px); top:calc(8px + var(--sat)); left:calc((100% - 72px) / 2); }
   .game-search-inner { padding:2px 8px; }
   #game-search-input { font-size:16px; padding:8px 4px; }
-  #game-search-results { max-height:40vh; }
-  .muni-toast { top:104px; font-size:16px; padding:6px 12px; }
+  #game-search-results { max-height:calc(var(--app-h) * .4); }
+  .muni-toast { top:calc(104px + var(--sat)); font-size:16px; padding:6px 12px; }
 
   /* Zoom controls */
-  .zoom-controls { top:8px; right:8px; }
+  .zoom-controls { top:calc(8px + var(--sat)); right:max(8px, var(--sar)); }
   .zoom-controls { gap:3px; }
   .zoom-controls .btn { width:42px; height:42px; font-size:18px; }
   .zoom-controls .btn svg { width:28px; height:28px; }
@@ -838,14 +847,14 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   /* bottom/top sheets: grabber bar; swipe the header away → peek (title only),
      swipe again → close; tap the peeked header → expand (initPopupSheets) */
   .popup::before { content:''; display:block; width:44px; height:4px; margin:-6px auto 8px; background:var(--panel-border); border-radius:2px; }
-  .popup.flip { left:8px; right:8px; }
+  .popup.flip { left:max(8px, var(--sal)); right:max(8px, var(--sar)); }
   #screen-game .popup.peek { max-height:46px; overflow:hidden; padding-top:10px; padding-bottom:6px; }
   .popup.peek::before { margin:-2px auto 6px; }
   .popup.peek > *:not(h3):not(.popup-close):not(.popup-drag-handle):not(.pp-head) { visibility:hidden; }
   .popup.peek h3 { margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:28px; }
   #parcel-popup {
-    left:8px; right:8px; bottom:60px;
-    max-height:calc(58vh - 60px); /* fit above 52px bottom bar with room */
+    left:max(8px, var(--sal)); right:max(8px, var(--sar)); bottom:calc(60px + var(--sab));
+    max-height:calc(var(--app-h) * .58 - 60px - var(--sab)); /* fit above 52px bottom bar with room */
   }
   #parcel-popup.open { padding:0; }
   #parcel-popup .pp-head { padding:10px 14px 6px; }
@@ -858,16 +867,16 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .pp-act-main .btn { padding:11px 10px; }
   .pp-act-row .btn { padding:9px 6px; }
   #ez-popup {
-    left:8px; right:8px; top:60px; bottom:auto;
-    max-height:35vh;
+    left:max(8px, var(--sal)); right:max(8px, var(--sar)); top:calc(60px + var(--sat)); bottom:auto;
+    max-height:calc(var(--app-h) * .35);
   }
   #kg-popup {
-    left:8px; right:8px; top:60px; bottom:auto;
-    max-height:calc(60vh - 60px);
+    left:max(8px, var(--sal)); right:max(8px, var(--sar)); top:calc(60px + var(--sat)); bottom:auto;
+    max-height:calc(var(--app-h) * .6 - 60px);
   }
   #tree-popup {
-    left:8px; right:8px; bottom:60px; top:auto;
-    max-height:calc(60vh - 60px);
+    left:max(8px, var(--sal)); right:max(8px, var(--sar)); bottom:calc(60px + var(--sab)); top:auto;
+    max-height:calc(var(--app-h) * .6 - 60px - var(--sab));
     /* room for the histogram x-axis labels (positioned below the bars) */
     padding-bottom:28px;
   }
@@ -875,21 +884,21 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   /* Chat */
   .chat-input-row input { font-size:16px; }
   /* sidebar is itself the scroll container on mobile, so flex:1 collapses — give the log real room */
-  .chat-log { min-height:160px; max-height:40vh; }
+  .chat-log { min-height:160px; max-height:calc(var(--app-h) * .4); }
   .sb-chat { flex:none; } /* otherwise flex:1 shrinks it to zero inside the scrolling sheet */
   .chat-quick { max-height:120px; }
   .game-search-kbd { display:none; }
 
   /* Toast */
   /* Push toasts below the centered enhanced badge so it stays visible/tappable */
-  #toast-container { left:8px; right:8px; top:92px; text-align:center; }
+  #toast-container { left:8px; right:8px; top:calc(92px + var(--sat)); text-align:center; }
   .toast { font-size:16px; }
 }
 
 /* ============ LOADING SCREEN ============ */
 .loading-wrap {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  height: 100vh; width: 100vw; gap: 12px; padding: 20px; box-sizing: border-box;
+  height: var(--app-h); width: 100vw; gap: 12px; padding: 20px; box-sizing: border-box;
   background: radial-gradient(ellipse at center, #2a2010 0%, #1a1408 100%);
   text-align: center;
   overflow-y: auto;
@@ -1157,7 +1166,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 @media (max-width:768px) {
   .enhanced-badge { top:52px; font-size:7px; padding:5px 8px; }
   /* Bottom sheet toggle (52px) covers the map's bottom edge — lift the chip above it */
-  .map-attrib { bottom:60px; right:8px; }
+  .map-attrib { bottom:calc(60px + var(--sab)); right:max(8px, var(--sar)); }
   .map-attrib-toggle { padding:7px 9px; }
   .map-attrib-body { font-size:16px; }
   .welcome-legal .legal-attrib { font-size:13px; }
@@ -1213,7 +1222,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .chat-quick button:active { transform:translate(1px,1px); }
 .chat-off-note { font:16px var(--font-game); color:var(--text-dim); padding:8px 10px; border-top:2px solid var(--panel-border); }
 .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:2000; display:flex; align-items:center; justify-content:center; padding:16px; }
-.modal { max-width:460px; width:100%; padding:18px; background:var(--panel); border:3px solid var(--gold); color:var(--text); box-shadow:4px 4px 0 #000; max-height:calc(100vh - 32px); overflow-y:auto; }
+.modal { max-width:460px; width:100%; padding:18px; background:var(--panel); border:3px solid var(--gold); color:var(--text); box-shadow:4px 4px 0 #000; max-height:calc(var(--app-h) - 32px); overflow-y:auto; }
 .modal h3 { font:11px var(--font-pixel); color:var(--gold); margin-bottom:12px; }
 .rules-list { font:18px var(--font-game); padding-left:22px; margin:0 0 10px; line-height:1.3; }
 .rules-small { font:15px var(--font-game); color:var(--text-dim); margin:8px 0; line-height:1.3; }
@@ -1274,7 +1283,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .herald.compact .herald-foot { margin-top:2px; min-height:8px; }
 .herald.compact .herald-next { display:none; }
 @media (max-width:768px) {
-  .herald { bottom:62px; padding:8px 30px 6px 8px; gap:8px; width:calc(100% - 16px); min-height:0; }
+  .herald { bottom:calc(62px + var(--sab)); padding:8px 30px 6px 8px; gap:8px; width:calc(100% - 16px); min-height:0; }
   .herald.compact { width:calc(100% - 16px); }
   .herald.compact .herald-text { font-size:17px; }
   .herald-avatar { flex-basis:38px; height:38px; font-size:22px; }
@@ -1346,7 +1355,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
 .sb-chronik b.st-normal { color:#8ee89a; } .sb-chronik b.st-low { color:#ffcf70; } .sb-chronik b.st-very_low { color:#ff8a78; } .sb-chronik b.st-high { color:#8ac8ff; }
 
 /* Chronik panel */
-#dossier-popup { top:56px; right:60px; bottom:auto; width:380px; max-height:calc(100vh - 110px); }
+#dossier-popup { top:56px; right:60px; bottom:auto; width:380px; max-height:calc(var(--app-h) - 110px); }
 #station-popup { top:56px; right:60px; bottom:auto; width:360px; }
 .station-popup h3 { color:#8ac8ff; }
 .dossier-tabs { display:flex; gap:4px; margin:-2px 0 10px; }
@@ -1402,7 +1411,7 @@ html { scrollbar-width:thin; scrollbar-color:#6b5530 #1a1408; }
   .enhanced-badge.min:hover .eb-txt { max-width:0; opacity:0; }
   .water-chip { font-size:7px; padding:5px 7px; }
   .water-chip .wc-sub { display:none; }
-  #dossier-popup, #station-popup { left:8px; right:8px; top:60px; bottom:auto; width:auto; max-height:calc(70vh - 60px); }
+  #dossier-popup, #station-popup { left:max(8px, var(--sal)); right:max(8px, var(--sar)); top:calc(60px + var(--sat)); bottom:auto; width:auto; max-height:calc(var(--app-h) * .7 - 60px); }
   .dossier-tabs button { font-size:7px; }
   .flow-chip { font-size:7px; padding:6px 8px; }
 }

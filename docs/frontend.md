@@ -88,6 +88,12 @@ Drills: `python3 tools/perf_wheel.py <cdp-port> <cpu-throttle> [lon lat zoom] [a
   steered around open popups (`_hudObstacles`). Desktop popups are corner-anchored, `placePopupClear(id,lon,lat)`
   toggles `.flip`; right-anchored panels use `right:60px`. Phones: every popup is a sheet (grabber, swipe →
   `.peek` → close; `initPopupSheets`). Call `invalidateHudInsets()` after moving a popup programmatically.
+- **Mobile viewport.** Never size anything with `vh`: on phones `100vh` is the *large* viewport (address bar
+  hidden), so bottom-anchored sheets and the claim buttons end up under the bar. `#app` and every sheet use
+  `var(--app-h)` (`100dvh`; browsers without dvh get it from `visualViewport` in index.html) and the
+  `viewport-fit=cover` insets `--sab/--sat/--sal/--sar` (parked `.sb-toggle` grows by `--sab`, bottom sheets sit
+  at `60px + --sab`, top sheets at `60px + --sat`). `interactive-widget=resizes-content` shrinks the layout for the
+  keyboard so the chat/search input stays visible. Scenes `sheet`, `sheet-popup`, `popup-actions` (form=mobile).
 - **Attention budget** — the player's attention is a budget; nothing unsolicited spends it while he is busy:
   - **Herald**: unsolicited speech (`hint`, fresh-player `quest`, `completed`) goes through
     `Herald.enqueue({key, lines, mode, autoHide, compact, prio, expires, onShow})` and appears only when
