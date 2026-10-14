@@ -529,6 +529,14 @@ def main(argv=None):
         except Exception as e:  # one KG failing must not stop the run
             log(f"{kg}: FAILED: {e}")
             results[kg] = "failed"
+        if results[kg] not in ("ok", "skipped"):
+            # Marker (no cadastre content) so the contrib plan defers the KG for a week instead of
+            # re-planning it every night (srv/contrib.go contribSkippedRecently).
+            try:
+                with open(os.path.join(a.out, f"{kg}.{dt.date.today().isoformat()}.skip"), "w") as f:
+                    f.write(results[kg] + "\n")
+            except OSError:
+                pass
         if n + 1 < len(a.kgs) and results[kg] == "ok":
             time.sleep(a.pause)
     log("done: " + " ".join(f"{k}={v}" for k, v in results.items()))

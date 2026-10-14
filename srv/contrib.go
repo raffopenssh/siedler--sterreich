@@ -95,7 +95,7 @@ type contribPlan struct {
 	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
 	Overdue     int      `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
 	Rolling     int      `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
-	Small       int      `json:"small"`      // always 0 since 2026-10-14 (ne_report --min-full-cells 0: every KG is reported); kept for API shape
+	Small       int      `json:"small"`      // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
 	NightMin    int      `json:"night_min"`
 	NightMax    int      `json:"night_max"`
 	LeftQ       int      `json:"left_quarter"`     // v2.4 KGs without a report this quarter
@@ -147,8 +147,9 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// 2026-10-14 ne_report runs with --min-full-cells 0: every KG is reportable
 	// (whole aligned cells are built either way), nothing is left out as small.
 	warmed := s.recentlyWarmedKGs(contribWarmWindow)
+	skipped := contribSkippedRecently(now)
 	for _, kg := range uni {
-		if reported[kg] {
+		if reported[kg] || skipped[kg] {
 			continue
 		}
 		d := contribDayOf(label, kg, days)
@@ -183,6 +184,10 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 			continue
 		}
 		p.LeftQ++
+		if skipped[kg] {
+			p.Small++
+			continue
+		}
 		if in[kg] {
 			continue
 		}
@@ -284,6 +289,26 @@ func contribLastReport() map[string]string {
 		parts := strings.Split(strings.TrimSuffix(name, ".json"), ".")
 		if len(parts) == 2 && len(parts[0]) == 5 && parts[1] > out[parts[0]] {
 			out[parts[0]] = parts[1]
+		}
+	}
+	return out
+}
+
+// contribSkippedRecently: KGs ne_report could not report (not_built, no_bbox,
+// too_big, failed — KG.<date>.skip markers) within contribRollMinAge: the plan
+// leaves them out so a permanently unreportable KG does not hold a slot every
+// night (before the markers, 128 of 177 fill slots on 2026-10-10 were such KGs).
+func contribSkippedRecently(now time.Time) map[string]bool {
+	out := map[string]bool{}
+	ents, err := os.ReadDir(contribReportDir)
+	if err != nil {
+		return out
+	}
+	cut := now.Add(-contribRollMinAge).Format("2006-01-02")
+	for _, e := range ents {
+		parts := strings.Split(e.Name(), ".")
+		if len(parts) == 3 && parts[2] == "skip" && len(parts[0]) == 5 && parts[1] > cut {
+			out[parts[0]] = true
 		}
 	}
 	return out

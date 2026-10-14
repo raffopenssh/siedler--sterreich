@@ -38,7 +38,10 @@ left_quarter, catch_up_days, source}`.
 - **No KG is skipped as small or big.** `ne_report.py --min-full-cells 0` (default) reports a KG even when
   umfeld's viewport holds no whole aligned cell (the build input is whole aligned cells either way, so the digest
   is as comparable as any other); `--max-cells 600` is a sanity guard only (largest KG 345). `small` in the plan is
-  always 0 now. Before 2026-10-14 ~30 % of the universe was left out as `viewport_too_small`.
+  the number of KGs *deferred*: ne_report writes `KG.<date>.skip` (outcome only, no cadastre content) when it cannot
+  report a KG (`not_built`, `no_bbox`, `no_cells`, `too_big`, `failed`) and the plan leaves such a KG out for 7 d
+  (`contribSkippedRecently`), so an unreportable KG never holds a slot night after night. Before 2026-10-14 ~30 %
+  of the universe was left out as `viewport_too_small`.
 - Contrib jobs warm the cells of **umfeld's declared viewport** (`/ne/{kg}/head` `input_bbox`,
   `contribKGCells`), wider than the admin bbox — exactly what the report reads. Cached cells missing from the
   stash are rebuilt (`enqueueWarmOpt` force skips the freshness guard).
