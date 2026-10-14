@@ -4,9 +4,10 @@ package srv
 // (tools/ne-report, → umfeld /contrib/api/v1/ne/{kg}/report) should build today.
 //
 // Goal: cover the whole of Austria — every KG of the admin table (7 850; umfeld
-// has built an lu digest for all of them, enhanced or not) — at least once per
-// quarter, so umfeld sees a fresh bevdirect digest for every KG about four
-// times a year. That cadence is what makes the change
+// has built an lu digest for all of them, enhanced or not) — at least once a
+// month (night_min 200 of *reportable* KGs → the ~5 500 in ~4 weeks; the rolling
+// sweep then re-reports oldest first), so umfeld sees a fresh bevdirect digest
+// for every KG about once a month. That cadence is what makes the change
 // protocol (vtcseamless-py 0.2.0, tools/ne-report) effective: the first report
 // of a KG baselines all its chunks, every later one uploads only the changed
 // chunks — a KG that is never reported has no baseline and its changes are
@@ -44,10 +45,10 @@ import (
 
 const (
 	contribCatchUpDays = 3                  // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 200                // floor: fill every night to this many KGs — what the 00:00–05:00 window holds (prewarm ~90 min, report ~90 min); ≈ 0.45 GB tiles
+	contribNightMin    = 200                // floor: fill every night to this many *reportable* KGs (unreported, not small) — ~5 500 reportable KGs → whole of Austria in ~4 weeks; prewarm ~85 min, report 200 × ~31 s ≈ 1.7 h; ≈ 0.45 GB tiles
 	contribNightMargin = 1.5                // night_min = max(floor, margin × universe/days)
 	contribNightMax    = 200                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
-	contribWarmCap     = 200                // KGs of tonight's plan the prewarmer builds at midnight (warmContribRun) — the whole night
+	contribWarmCap     = 200                // KGs of tonight's plan the prewarmer builds at 22:00 (warmContribRun) — the whole night
 	contribRollMinAge  = 7 * 24 * time.Hour // rolling sweep: once the quarter's unreported KGs are done, re-report the least recently reported (ne_report skips < 7 d anyway)
 	// Night schedule, Europe/Vienna wall clock (DST-safe): the prewarm (bevdirect assembly, paced
 	// 1.5 s/cell, ~3 s per cell → ~85 min for a 200-KG night) starts at 22:00, the python report run at 01:00
@@ -55,7 +56,7 @@ const (
 	// 05:30), no CPU spike during the day. Measured 2026-10-10: 267 reports, 13 915 s build + 2 359 s fetch
 	// at 60 % quota = 5.3 h, because the fill ignored the prewarmed KGs (see contribPlanNow).
 	contribWarmHour   = 22             // Vienna hour the contrib prewarm fires (cells → RAM stash, 24 h); ~200 KGs × 25 s ≈ 85 min
-	contribNightHour  = 1              // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer); ~225 KGs × 45 s ≈ 2.8 h at CPUQuota 100 % → settled before 04:30
+	contribNightHour  = 1              // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer); ~200 KGs × ~31 s ≈ 1.7 h at CPUQuota 100 % → settled before 03:00
 	contribWarmWindow = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
 	contribReportDir  = "data/ne-reports"
 )
@@ -94,7 +95,7 @@ type contribPlan struct {
 	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
 	Overdue     int      `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
 	Rolling     int      `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
-	Small       int      `json:"small"`      // unreported KGs left out: their declared umfeld viewport holds no whole aligned cell (ne_report --min-full-cells 1 skips them as viewport_too_small) or /head is 404 — known from the cached head only
+	Small       int      `json:"small"`      // always 0 since 2026-10-14 (ne_report --min-full-cells 0: every KG is reported); kept for API shape
 	NightMin    int      `json:"night_min"`
 	NightMax    int      `json:"night_max"`
 	LeftQ       int      `json:"left_quarter"`     // v2.4 KGs without a report this quarter
@@ -139,12 +140,22 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		}
 	}
 	p.ReportedQ = len(reported)
+	// Scheduled part: today's hash day + the missed nights before it — only KGs
+	// that are still unreported this quarter. Before 2026-10-14 today's KGs went
+	// in regardless: the fill had usually reported them weeks ahead of their
+	// hash day, so ~100 of 200 slots a night ended as "skipped". Since
+	// 2026-10-14 ne_report runs with --min-full-cells 0: every KG is reportable
+	// (whole aligned cells are built either way), nothing is left out as small.
+	warmed := s.recentlyWarmedKGs(contribWarmWindow)
 	for _, kg := range uni {
+		if reported[kg] {
+			continue
+		}
 		d := contribDayOf(label, kg, days)
 		if d == day {
 			p.Today = append(p.Today, kg)
 			p.KGs = append(p.KGs, kg)
-		} else if d < day && d > day-contribCatchUpDays && !reported[kg] {
+		} else if d < day && d > day-contribCatchUpDays {
 			p.KGs = append(p.KGs, kg) // missed night, still unreported
 		}
 	}
@@ -162,11 +173,6 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// Tier 1 — KGs the prewarmer built in the last 24 h: their BEV tiles are
 	// still on bevdirect's disk, so the report costs CPU only (~30 s/KG) —
 	// all of them, no cap. Tier 2 — the rest in due order, up to night_min.
-	// KGs the report would skip anyway (viewport_too_small / not built) are
-	// left out so they neither occupy fill slots forever (128 of the 177 fill
-	// slots on 2026-10-10 were such KGs) nor cost the prewarm tiles.
-	warmed := s.recentlyWarmedKGs(contribWarmWindow)
-	small := s.contribSmallKGs()
 	in := map[string]bool{}
 	for _, kg := range p.KGs {
 		in[kg] = true
@@ -174,10 +180,6 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	var cheap, later []string
 	for _, kg := range uni {
 		if reported[kg] {
-			continue
-		}
-		if small[kg] {
-			p.Small++
 			continue
 		}
 		p.LeftQ++
@@ -375,7 +377,7 @@ func (s *Server) warmContribRun() int {
 	for _, kg := range p.Cheap {
 		cheap[kg] = true
 	}
-	n, fresh, stashed, small := 0, 0, 0, 0
+	n, fresh, stashed := 0, 0, 0
 	for _, kg := range p.KGs {
 		if admin().KGs[kg] == nil {
 			continue
@@ -383,10 +385,6 @@ func (s *Server) warmContribRun() int {
 		cells := s.contribKGCells(kg)
 		if contribStashComplete(cells) {
 			stashed++
-			continue
-		}
-		if s.contribKGSmall(kg) { // fresh head says: no whole aligned cell → ne_report skips it, no tiles needed
-			small++
 			continue
 		}
 		if cheap[kg] { // cells cached, stash missing (restart / built before the plan): CPU-only rebuilds, uncapped
@@ -405,7 +403,7 @@ func (s *Server) warmContribRun() int {
 	}
 	contribWarmLast.Store(time.Now().UTC().Format(time.RFC3339))
 	contribWarmQueued.Store(int64(n))
-	slog.Info("warm: contrib plan queued", "kgs", n, "fresh", fresh, "stashed", stashed, "small", small, "tonight", len(p.KGs), "cheap", len(p.Cheap), "night_min", p.NightMin, "overdue", p.Overdue)
+	slog.Info("warm: contrib plan queued", "kgs", n, "fresh", fresh, "stashed", stashed, "tonight", len(p.KGs), "cheap", len(p.Cheap), "night_min", p.NightMin, "overdue", p.Overdue)
 	return n
 }
 

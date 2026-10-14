@@ -60,9 +60,9 @@ stable bbox per cell block and the operator's coverage rule can compare it: iden
 `cells_n` wins (`coverage{bbox, cells_n, best_cells_n, status:"best"|…}`); a lossy build is flagged
 `change_suspect:"coverage_lossy"` and its diffs are ignored. `ne_report.py` logs `coverage` /
 `change_suspect` and surfaces change (`meta.change.surfaced:true`) only when the answer has no
-`change_suspect` and is not `unchanged:true`. A KG whose viewport contains no whole aligned cell is
-skipped (`viewport_too_small`, `--min-full-cells 1`; ~55 % of the KGs reported so far — pass `0` to
-report every KG): one single-cell report is worth more to the change signal than many partial ones.
+`change_suspect` and is not `unchanged:true`. Every KG is reported, whatever its viewport
+(`--min-full-cells 0` is the default since 2026-10-14; `1` would skip KGs whose viewport holds no whole
+aligned cell as `viewport_too_small` — the build input is whole aligned cells either way).
 Historic reports are not touched — the operator re-classifies them on read. Meta files now carry
 `viewport_bbox` (umfeld's), `input_bbox` (the union), `full_cells`, `fetched[].incomplete`, `change{}`.
 

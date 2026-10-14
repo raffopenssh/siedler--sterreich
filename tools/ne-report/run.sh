@@ -24,7 +24,7 @@ if [ $# -gt 0 ]; then
   KGS="$*"
 else
   # Today's contrib rotation (srv/contrib.go): every Austrian KG (7 850) is assigned one day of
-  # the quarter by hash, so the whole country is reported once a quarter at ~200 KGs a night
+  # the quarter by hash, so the whole country is reported about once a month at ~200 reportable KGs a night
   # (today + catch-up + the KGs the 22:00 prewarm stashed); the list includes the two previous
   # nights for catch-up (ne_report.py skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
   # The plan is empty (source:"none") for a few seconds while the srtm KG registry does a

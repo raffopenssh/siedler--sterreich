@@ -35,10 +35,10 @@ left_quarter, catch_up_days, source}`.
   night that follows), then unreported KGs in due order (`fill[]`, overdue first); once the quarter's
   unreported KGs are exhausted the **rolling sweep** re-reports the least recently reported KGs ≥ 7 d old.
   `night_max` 200 caps only KGs needing fresh tiles (≈ 0.45 GB/night).
-- **Small KGs** (`small`): a KG whose umfeld viewport holds no whole aligned cell (or whose `/head` is 404) is
-  what `ne_report.py --min-full-cells 1` skips as `viewport_too_small` (~30 %). `contribBBoxSmall` mirrors the
-  rule on the cached head (`ne-head:v1:`, 7 d), the plan leaves them out (`contribSmallKGs`, one api_cache
-  query) and the prewarm skips them on first contact (`contribKGSmall`).
+- **No KG is skipped as small or big.** `ne_report.py --min-full-cells 0` (default) reports a KG even when
+  umfeld's viewport holds no whole aligned cell (the build input is whole aligned cells either way, so the digest
+  is as comparable as any other); `--max-cells 600` is a sanity guard only (largest KG 345). `small` in the plan is
+  always 0 now. Before 2026-10-14 ~30 % of the universe was left out as `viewport_too_small`.
 - Contrib jobs warm the cells of **umfeld's declared viewport** (`/ne/{kg}/head` `input_bbox`,
   `contribKGCells`), wider than the admin bbox — exactly what the report reads. Cached cells missing from the
   stash are rebuilt (`enqueueWarmOpt` force skips the freshness guard).
@@ -60,7 +60,7 @@ only** — gzip, ≤ 768 MB LRU, expires with the cell ≤ 24 h, lost on restart
 - **Aligned cells only**, `--input-bbox` = union of those cells (stable bbox per cell block → umfeld's coverage
   rule `coverage{bbox, cells_n, best_cells_n, status}` can compare builds; `change_suspect:"coverage_lossy"` =
   lossy build, its diffs are never surfaced — `meta.change.surfaced`).
-- `--min-full-cells 1`: KGs whose domain contains no whole aligned cell are skipped (`0` = report every KG).
+- `--min-full-cells 0`: every KG is reported, whatever its viewport (whole aligned cells are built either way).
 - Never build on `ready:false` or `truncated:true`.
 - **Never feed `v24_kgs` or the whole universe to run.sh** — the plan is the only KG source.
 - Same-pass guard: one POST per build; a digest reported < 20 h ago is not re-posted (`--repost` overrides).
@@ -69,7 +69,7 @@ only** — gzip, ≤ 768 MB LRU, expires with the cell ≤ 24 h, lost on restart
 
 ```bash
 journalctl -u ne-report --since <date>      # every cell "(stash)", "fetched … N from the game server's stash" = N,
-                                            # the "done:" line without viewport_too_small
+                                            # the "done:" line all ok
 systemctl show ne-report -p CPUUsageNSec -p ExecMainStartTimestamp -p ExecMainExitTimestamp
 curl -s localhost:8000/api/warm/status | jq .contrib
 curl -s 'localhost:8000/api/contrib/plan?night=1' | jq '{night_min,kgs:(.kgs|length),cheap:(.cheap|length),small}'

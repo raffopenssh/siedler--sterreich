@@ -504,9 +504,9 @@ def main(argv=None):
     ap.add_argument("--token-file", default=os.path.join(REPO, "ne-peer.key"))
     ap.add_argument("--inflight", type=int, default=2, help="concurrent bevdirect requests (default 2 — it serves the live game)")
     ap.add_argument("--max-cells", type=int, default=600, help="sanity guard only: refuse KGs needing more bevdirect cells than this (largest KG in the admin table needs 345, with the 0.004° pad; every KG must be reportable)")
-    ap.add_argument("--min-full-cells", type=int, default=1,
+    ap.add_argument("--min-full-cells", type=int, default=0,
                     help="skip a KG whose viewport (umfeld input_bbox) contains fewer fully covered aligned cells than this; "
-                         "0 = any viewport (the build input is always whole aligned cells, see docstring)")
+                         "0 (default since 2026-10-14: every KG of Austria is reported) = any viewport (the build input is always whole aligned cells, see docstring)")
     ap.add_argument("--max-age-days", type=float, default=7, help="skip a KG with a report younger than this")
     ap.add_argument("--force", action="store_true",
                     help="ignore --max-age-days (rebuild); the POST is still skipped when the same digest was posted < 20 h ago")
