@@ -285,8 +285,8 @@ func (s *Server) warmKG(kg, reason string) {
 			}
 		}
 		s.warm.cells.Add(1)
-		if reason == "contrib" {
-			time.Sleep(warmContribPause)
+		if reason == "contrib" { // ±40 % jitter: not a metronome on bevdirect/BEV
+			time.Sleep(warmContribPause * time.Duration(60+rand.Intn(81)) / 100)
 		} else {
 			time.Sleep(warmCellPause)
 		}

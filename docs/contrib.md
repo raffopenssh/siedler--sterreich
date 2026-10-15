@@ -9,11 +9,15 @@ chunk. Pipeline runbook: [ne-report.md](ne-report.md). Public counter: `GET /api
 ## The loop (Europe/Vienna wall clock, `contribLoc`, DST-safe)
 
 ```
-22:00  warmContribRun (srv/contrib.go)   → builds tonight's cells into api_cache + RAM stash (≤ 300 KGs × ~25 s ≈ 2 h)
+~22:00 warmContribRun (srv/contrib.go)   → builds tonight's cells into api_cache + RAM stash (≤ 300 KGs × ~25 s ≈ 2 h)
 01:00  ne-report.timer → run.sh          → GET /api/contrib/plan?night=1 → ne_report.py per KG, cells from the stash
 ≤ 04:30 done (goal 05:30; 2026-10-15: 217 KGs in 2 h 08 → 300 ≈ 3 h).               Nothing contrib-related runs by day.
 ```
 
+- **Wave** (`contribWave`): start time (22:00 ± 25 min) and volume (240–300 KGs) drift per night — two
+  incommensurate sines over the night number + a per-date hash jitter, deterministic per night so plan, prewarm
+  and report agree (`night_min`/`night_max` = tonight's volume; `/api/warm/status` → `contrib.wave{night, volume,
+  shift_min, prewarm_at}`). The per-cell pause is jittered ±40 % too. Mean ≈ 270/night → universe in ~29 nights.
 - `contribWarmHour` 22, `contribNightHour` 1 (keep in sync with `tools/ne-report/ne-report.timer`). A restart
   between 22:00 and 01:00 re-runs the prewarm after 90 s (`contribPrewarmPending`). Prewarm is independent of
   the warm activity tier, cap 300, reason `contrib`, prio 2, paced `warmContribPause` 1.5 s/cell (≈ ½ duty on

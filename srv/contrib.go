@@ -34,7 +34,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"hash/fnv"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -124,8 +126,9 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		}
 	}
 	sort.Strings(uni)
+	volume, _ := contribWave(now)
 	p := contribPlan{Quarter: label, Day: day, Days: days, Universe: len(uni), CatchUpDays: contribCatchUpDays,
-		NightMin: contribNightMinFor(len(uni), days), NightMax: contribNightMax, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Source: "registry"}
+		NightMin: min(contribNightMinFor(len(uni), days), volume), NightMax: volume, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Source: "registry"}
 	if len(uni) == 0 {
 		p.Source = "none"
 		return p
@@ -201,8 +204,8 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	sort.SliceStable(later, func(i, j int) bool {
 		return contribDayOf(label, later[i], days) < contribDayOf(label, later[j], days)
 	})
-	if len(p.KGs) > contribNightMax {
-		p.KGs = p.KGs[:contribNightMax] // only the scheduled/catch-up part needs fresh tiles
+	if len(p.KGs) > p.NightMax {
+		p.KGs = p.KGs[:p.NightMax] // only the scheduled/catch-up part needs fresh tiles
 	}
 	// Cheap ones first and uncapped: everything warm and unreported is reported
 	// tonight while the tiles are still there — and they count toward
@@ -348,7 +351,7 @@ func (s *Server) contribStatusMap() map[string]any {
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
 		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
-		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
+		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "wave": contribWaveStatus(time.Now()), "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
 }
 
 var (
@@ -376,6 +379,62 @@ func nextAt(now time.Time, hour int) time.Time {
 		t = t.AddDate(0, 0, 1)
 	}
 	return t
+}
+
+// Nightly wave — the prewarm's start time and volume drift night by night so
+// our BEV traffic does not look like a metronome: two incommensurate sines
+// over the night number plus a small per-date hash jitter. Deterministic per
+// night, so the plan (`?night=1`), the 22:00 prewarm and the 01:00 report all
+// see the same volume. Bounds: volume contribWaveVolMin..contribNightMax,
+// start 22:00 ± contribWaveShift (the prewarm still ends well before 01:00).
+const (
+	contribWaveVolMin = 240              // quietest night; loudest = contribNightMax
+	contribWaveShift  = 25 * time.Minute // max start offset either way
+)
+
+// contribWaveAt returns the wave value in [-1, 1] for the night that ends
+// (01:00 Vienna) on the local date of `night`.
+func contribWaveAt(night time.Time) float64 {
+	v := night.In(contribLoc)
+	d := float64(v.Year()*366 + v.YearDay())
+	h := fnv.New32a()
+	h.Write([]byte(v.Format("2006-01-02")))
+	jitter := (float64(h.Sum32()%1000)/1000 - 0.5) * 0.3
+	w := 0.55*math.Sin(2*math.Pi*d/7.3) + 0.3*math.Sin(2*math.Pi*d/11.9+1.1) + jitter
+	return max(-1, min(1, w))
+}
+
+// contribWave: tonight's volume (KGs) and prewarm start offset for the
+// night whose report runs at `night` (any time on that local date).
+func contribWave(night time.Time) (volume int, shift time.Duration) {
+	w := contribWaveAt(night)
+	mid := float64(contribWaveVolMin+contribNightMax) / 2
+	volume = int(mid + w*float64(contribNightMax-contribWaveVolMin)/2 + 0.5)
+	// the start uses a phase-shifted reading so a quiet night is not always an early one
+	shift = time.Duration(contribWaveAt(night.AddDate(0, 0, 3)) * float64(contribWaveShift))
+	return
+}
+
+// nextContribWarm: the next prewarm start strictly after now — the Vienna
+// contribWarmHour slot of today or tomorrow, shifted by the wave of the night
+// that follows it.
+func nextContribWarm(now time.Time) time.Time {
+	v := now.In(contribLoc)
+	for d := 0; d < 3; d++ {
+		slot := time.Date(v.Year(), v.Month(), v.Day()+d, contribWarmHour, 0, 0, 0, contribLoc)
+		_, shift := contribWave(nextContribNight(slot))
+		if t := slot.Add(shift); t.After(now) {
+			return t
+		}
+	}
+	return nextAt(now, contribWarmHour)
+}
+
+func contribWaveStatus(now time.Time) map[string]any {
+	night := nextContribNight(now)
+	vol, shift := contribWave(night)
+	return map[string]any{"night": night.In(contribLoc).Format("2006-01-02"), "volume": vol, "shift_min": int(shift.Minutes()),
+		"prewarm_at": nextContribWarm(now).UTC().Format(time.RFC3339), "vol_min": contribWaveVolMin, "vol_max": contribNightMax}
 }
 
 // contribPrewarmPending: true between the prewarm slot and the night run that
@@ -418,7 +477,7 @@ func (s *Server) warmContribRun() int {
 			}
 			continue
 		}
-		if fresh >= contribWarmCap {
+		if fresh >= p.NightMax {
 			continue
 		}
 		if s.enqueueWarmOpt(kg, "contrib", 2, true) {
@@ -441,7 +500,7 @@ func (s *Server) warmContribLoop() {
 		s.warmContribRun()
 	}
 	for {
-		time.Sleep(time.Until(nextAt(time.Now(), contribWarmHour)))
+		time.Sleep(time.Until(nextContribWarm(time.Now())))
 		s.warmContribRun()
 	}
 }
