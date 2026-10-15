@@ -71,6 +71,7 @@ only** — gzip, ≤ 768 MB LRU, expires with the cell ≤ 24 h, lost on restart
 - Never build on `ready:false` or `truncated:true`.
 - **Never feed `v24_kgs` or the whole universe to run.sh** — the plan is the only KG source.
 - Same-pass guard: one POST per build; a digest reported < 20 h ago is not re-posted (`--repost` overrides).
+- **QC provenance** (`tiles{}`/`chunks_tiles{}` from the documents' `tiles[]`, bevdirect ≥ v0.3.4): see [ne-report.md](ne-report.md) § Quality control. Stash docs without `tiles[]` are not used.
 
 ## Checking a night
 

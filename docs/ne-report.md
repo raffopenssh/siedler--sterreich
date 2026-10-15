@@ -2,7 +2,7 @@
 
 umfeld-at.exe.xyz publishes "NE cells" (declared land-use statistics per H3 res-12 cell,
 derived from the BEV cadastre; contract: umfeld's `docs/ne-cells.md`). We run our own
-bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.3**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
+bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.4**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
 **observer**: rebuild the same cells from our bevdirect output with the frozen python reference
 package `ne_cells` (algo `ne-cells-2`, shapely 2.1.2 + h3 4.5.0) and POST an **epoch report**
 (digests only — whole build + one per res-10 chunk, no geometry) to
@@ -12,8 +12,8 @@ per chunk.
 ## Files
 
 ```
-tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (0.2.0, commit 0ccea07,
-                                bevdirect client `cells_for`/`BevDirect.cell`) + ./ne_cells with pins;
+tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.3.0: bevdirect client
+                                `cells_for`/`BevDirect.cell`, QC `observe.tile_provenance`) + ./ne_cells with pins;
                                 INSTALL_UNITS=1 also installs+enables the systemd units (sudo)
 tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless-py 0.2.0's copy; algo/pack byte-identical
                                 to umfeld commit 3f26b3b, 2026-10-04) + change.py (NOT frozen: ap digests,
@@ -112,6 +112,33 @@ Same token, same report POST; two additions in `ne_report.py`:
 
 Verify after a run: `meta.post.answer.want_chunks` present, `meta.chunks.stored > 0` on the first (baseline) pass,
 `unchanged:true` + `header_only:true` (no chunk list sent) on an unchanged re-run.
+
+## Quality control (umfeld ne-change.md §5a, vtcseamless-py 0.3.0 + bevdirect-serve v0.3.4, 2026-10-15)
+
+We are one of umfeld's two independent observer streams; nothing in the algorithm changed, only provenance:
+
+- Every full report carries `tiles{expected, fetched, hash}` and `chunks_tiles{chunk: sha256[:16]}`, computed by
+  `vtcseamless.observe.tile_provenance` from the `tiles[{z,x,y,sha256}]` arrays + `stats.tiles_expected/fetched` of the
+  cell documents (bevdirect-serve ≥ v0.3.4). Only hashes and counts leave us; the step-0 header omits
+  `chunks_tiles` like the other chunk maps. `meta.qc{tiles, chunks_tiles, tiles_incomplete_cells}`.
+- `stash_cell` refuses a stash document without `tiles[]` or with `tiles_fetched < tiles_expected` (falls back to a
+  fresh bevdirect assembly); if a fetched cell is still incomplete the KG is posted as is (umfeld answers
+  `change_suspect:"tiles_incomplete"`, never counted as change) and logged `WARNING incomplete tile fetch`.
+- Alignment matters twice now: an unaligned build is `coverage_lossy` *and* fails the tile-completeness check —
+  `grid_cells`/`cells_union` stay the only bbox source.
+- Delta `status` can be `candidate | confirmed | pipeline | jitter`; `meta.chunks.deltas_by_status` counts them,
+  `pipeline` logs a WARNING. The game reads none of umfeld's change series today; if it ever does: only
+  `confirmed` is change, `jitter`/`pipeline` are shown nowhere, and `/api/v1/ne/stats?kg=` → `change.qc.cluster_share`
+  (≈ 1 = contiguous sites) may be shown as a confidence hint next to the figure.
+- **`qc_same_input > 0` in a report answer** (log `WARNING qc_same_input=… OPEN AN ISSUE`, `meta.change.qc_same_input`):
+  two builds from identical tiles produced different rows → open an issue on `github.com/raffopenssh/vtcseamless`
+  with the KG and `meta.input_bbox`. `tiles_attached:n` = umfeld attached our hash to a baseline held without one
+  (expected once per KG after 2026-10-15).
+
+```bash
+journalctl -u ne-report --since <date> | grep -E "qc_same_input|pipeline|incomplete tile|no tiles"   # should be empty
+jq '.qc, .change.qc_same_input' data/ne-reports/<KG>.<date>.meta.json
+```
 
 ## Validation 2026-10-04 (bevdirect-serve v0.2.1, epoch 2026-10)
 

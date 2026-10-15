@@ -45,6 +45,7 @@ import urllib.parse
 import urllib.request
 
 from vtcseamless.bevdirect import BevDirect, PendingError, ServerError, cell_bbox, cells_for
+from vtcseamless.observe import incomplete_cells, tile_provenance   # QC provenance (vtcseamless-py ≥ 0.3.0)
 from ne_cells.change import chunk_rows, epoch_report_ap, pack_chunk_rows
 from ne_cells.pack import MAGIC_LU, unpack_sections
 
@@ -134,6 +135,9 @@ def stash_cell(siedler, i, j):
         return None
     if not doc.get("ready") or doc.get("pending") or doc.get("truncated"):
         return None
+    st = doc.get("stats") or {}
+    if not isinstance(doc.get("tiles"), list) or int(st.get("tiles_expected") or 0) > int(st.get("tiles_fetched") or 0):
+        return None   # pre-v0.3.4 doc or incomplete tile fetch: let bevdirect assemble it afresh (QC provenance)
     for layer in ("parcels", "footprints", "landuse"):
         if doc.get(layer) is None:
             doc[layer] = []
@@ -265,7 +269,7 @@ def send_wanted_chunks(a, kg, section, want, token):
     missing = sorted(set(want) - set(rows))
     if missing:
         log(f"{kg}: want_chunks lists {len(missing)} chunks we have no rows for (ignored): {missing[:5]}")
-    tot = dict(wanted=len(want), posted=len(rows), bodies=0, stored=0, seen=0, rejected=0, deltas=0, http=[])
+    tot = dict(wanted=len(want), posted=len(rows), bodies=0, stored=0, seen=0, rejected=0, deltas=0, http=[], deltas_by_status={})
     for part in split_chunk_bodies(rows):
         st, body = post_chunks(a.umfeld, kg, a.observer, pack_chunk_rows(part), token, a.contrib_prefix)
         tot["bodies"] += 1
@@ -279,9 +283,15 @@ def send_wanted_chunks(a, kg, section, want, token):
             continue
         for k in ("stored", "seen", "rejected"):
             tot[k] += int(ans.get(k) or 0)
-        tot["deltas"] += len(ans.get("deltas") or [])
+        for d in ans.get("deltas") or []:
+            tot["deltas"] += 1
+            st = str(d.get("status") or "candidate")   # candidate | confirmed | pipeline | jitter (§5a)
+            tot["deltas_by_status"][st] = tot["deltas_by_status"].get(st, 0) + 1
     log(f"{kg}: chunks wanted={tot['wanted']} posted={tot['posted']} in {tot['bodies']} bodies → "
-        f"stored={tot['stored']} seen={tot['seen']} rejected={tot['rejected']} deltas={tot['deltas']}")
+        f"stored={tot['stored']} seen={tot['seen']} rejected={tot['rejected']} deltas={tot['deltas']} {tot['deltas_by_status']}")
+    if tot["deltas_by_status"].get("pipeline"):
+        log(f"{kg}: WARNING {tot['deltas_by_status']['pipeline']} delta(s) status=pipeline — same source tiles, different rows; "
+            "not change (server excludes them)")
     return tot
 
 
@@ -296,6 +306,15 @@ def classify_change(kg, ans):
     since_changed = since.get("changed") if isinstance(since, dict) else None
     cov = ans.get("coverage")
     suspect = ans.get("change_suspect")
+    qc_same = int(ans.get("qc_same_input") or 0)
+    if qc_same:
+        # §5a tile provenance: a chunk's digest_ap moved while its tile hash did not. Not land change —
+        # a nondeterministic build (or a stale stash doc mixed with a fresh one). Open an issue on
+        # github.com/raffopenssh/vtcseamless with the KG and bbox (ne-report.md § QC).
+        log(f"{kg}: WARNING qc_same_input={qc_same} — identical source tiles, different rows: OPEN AN ISSUE on vtcseamless "
+            f"(KG {kg}, input_bbox {ans.get('coverage', {}).get('bbox') if isinstance(ans.get('coverage'), dict) else '?'})")
+    if ans.get("tiles_attached"):
+        log(f"{kg}: tiles_attached={ans['tiles_attached']} (tile hash attached to the held baseline version)")
     log(f"{kg}: POST 200: baseline={ans.get('baseline')} identical_source={ans.get('identical_source')} compared={ans.get('compared')} "
         f"chunks_same={ans.get('chunks_same')} chunks_changed={len(changed)} since_last_changed={len(since_changed) if isinstance(since_changed, list) else since_changed} "
         f"chunks_unknown_to_us={len(ans.get('chunks_unknown_to_us') or [])} our_digest={ans.get('our_digest')}")
@@ -303,7 +322,7 @@ def classify_change(kg, ans):
     if suspect:
         log(f"{kg}: change NOT surfaced — report flagged change_suspect={json.dumps(suspect)} "
             f"({len(changed)} chunks_changed / {len(since_changed) if isinstance(since_changed, list) else 0} since_last ignored)")
-        return dict(surfaced=False, reason=suspect, coverage=cov, ignored_chunks=len(changed))
+        return dict(surfaced=False, reason=suspect, coverage=cov, ignored_chunks=len(changed), qc_same_input=qc_same)
     if ans.get("unchanged") is True:
         # The operator's verdict: nothing moved since the last report of this source/bbox. chunks_changed
         # then lists diffs against first-seen digests of other reports (other bbox/source) — not change.
@@ -312,8 +331,8 @@ def classify_change(kg, ans):
     if changed or (isinstance(since_changed, list) and since_changed):
         log(f"{kg}: CHANGE: {len(changed)} chunks vs baseline, {len(since_changed) if isinstance(since_changed, list) else 0} since last report "
             f"(coverage={json.dumps(cov, sort_keys=True) if cov is not None else 'n/a'})")
-        return dict(surfaced=True, chunks_changed=changed, since_last_changed=since_changed, coverage=cov)
-    return dict(surfaced=False, reason="no change", coverage=cov)
+        return dict(surfaced=True, chunks_changed=changed, since_last_changed=since_changed, coverage=cov, qc_same_input=qc_same)
+    return dict(surfaced=False, reason="no change", coverage=cov, qc_same_input=qc_same)
 
 
 # ---------------------------------------------------------------- driver
@@ -415,6 +434,24 @@ def process_kg(a, kg):
     with open(nec, "rb") as f:
         section = [sec for sec in unpack_sections(f.read()) if sec.magic == MAGIC_LU][0]
     report = epoch_report_ap(section, a.observer)   # `ne_cells report` + chunks_ap / ap_version
+    # QC provenance (§5a): tiles{} + chunks_tiles{} from the raw cell documents (RAM-only, read back from the work dir).
+    docs = {}
+    for i, j in cells:
+        with open(os.path.join(work, f"cell_{i}_{j}.json"), encoding="utf-8") as f:
+            docs[(i, j)] = json.load(f)
+    tiles, chunks_tiles = tile_provenance(docs, report.get("chunks") or {})
+    tiles_bad = []
+    if tiles is not None:
+        report["tiles"], report["chunks_tiles"] = tiles, chunks_tiles
+        tiles_bad = [list(c) for c in incomplete_cells(docs)]
+        if tiles_bad:
+            log(f"{kg}: WARNING incomplete tile fetch ({tiles['fetched']}/{tiles['expected']} tiles) in cells {tiles_bad} "
+                "— posted as is (umfeld: change_suspect tiles_incomplete), never counted as change")
+        else:
+            log(f"{kg}: tile provenance: {tiles['fetched']}/{tiles['expected']} tiles hash={tiles['hash']} chunks_tiles={len(chunks_tiles)}")
+    else:
+        log(f"{kg}: WARNING documents carry no tiles[] (bevdirect-serve < v0.3.4 or stale stash) — no QC provenance sent")
+    del docs
     report_s = json.dumps(report, separators=(",", ":"))
     report_path = os.path.join(a.out, f"{kg}.{today}.json")
     with open(report_path + ".tmp", "w") as f:
@@ -425,7 +462,8 @@ def process_kg(a, kg):
                 build=summary, umfeld=dict(lu_cells_n=umfeld_lu_n, lu_digest=umfeld_lu_digest, lu_source=hdr.get("source"),
                                            bev_cells_n=bev_hdr.get("cells_n"), bev_digest=bev_hdr.get("digest"), bev_source=bev_hdr.get("source")),
                 report=dict(digest=report["digest"], cells_n=report["cells_n"], chunks=len(report["chunks"]), chunks_total=report["chunks_total"],
-                            chunks_ap=len(report.get("chunks_ap") or {}), ap_version=report.get("ap_version")))
+                            chunks_ap=len(report.get("chunks_ap") or {}), ap_version=report.get("ap_version")),
+                qc=dict(tiles=tiles, chunks_tiles=len(chunks_tiles or {}), tiles_incomplete_cells=tiles_bad))
     log(f"{kg}: report → {report_path}: digest={report['digest']} cells_n={report['cells_n']} chunks={len(report['chunks'])}/{report['chunks_total']} "
         f"chunks_ap={len(report.get('chunks_ap') or {})}")
 
@@ -449,7 +487,7 @@ def process_kg(a, kg):
         # deduped on token + source class + algo + digest + epoch, bbox-independent. `unchanged:true` =
         # our last report of this KG had the same digest → the chunk list (≈ 40–400 KB) is not sent at
         # all. Any other answer (changed, first report, old server → 4xx) falls through to the full POST.
-        head = {k: v for k, v in report.items() if k not in ("chunks", "chunks_ap")}
+        head = {k: v for k, v in report.items() if k not in ("chunks", "chunks_ap", "chunks_tiles")}
         st, body = post_report(a.umfeld, kg, json.dumps(head, separators=(",", ":")).encode(), token, a.contrib_prefix)
         try:
             ans = json.loads(body)
