@@ -70,6 +70,9 @@ only** — gzip, ≤ 768 MB LRU, expires with the cell ≤ 24 h, lost on restart
 - `--min-full-cells 0`: every KG is reported, whatever its viewport (whole aligned cells are built either way).
 - Never build on `ready:false` or `truncated:true`.
 - **Never feed `v24_kgs` or the whole universe to run.sh** — the plan is the only KG source.
+- **Unchanged tiles → no build** ([ne-report.md](ne-report.md) § Unchanged tiles): `tiles.hash` of tonight's stash
+  docs equal to our previous report's → that report is re-sent (epoch updated) without `ne_cells build`; a full
+  build at least every 28 d per KG. `--no-skip` for QA.
 - Same-pass guard: one POST per build; a digest reported < 20 h ago is not re-posted (`--repost` overrides).
 - **QC provenance** (`tiles{}`/`chunks_tiles{}` from the documents' `tiles[]`, bevdirect ≥ v0.3.4): see [ne-report.md](ne-report.md) § Quality control. Stash docs without `tiles[]` are not used.
 

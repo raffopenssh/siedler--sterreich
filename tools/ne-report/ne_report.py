@@ -27,6 +27,13 @@ Pipeline (contract: docs/ne-report.md, umfeld's docs/ne-cells.md):
      by the same observer confirms nothing) nothing is sent at all — not even the header (--repost overrides). The answer's coverage{} / change_suspect is logged and stored; chunks_changed from an
      answer that carries change_suspect is never surfaced as change (`change` in the meta is then null).
 
+  Unchanged tiles (2026-10-18): the report is a pure function of the cell documents, and tiles.hash (sha256 over
+     every source tile of the build) is computed from them BEFORE the build. When our newest previous report of the
+     KG carries the same tiles.hash (complete tile fetch, same bevdirect version, same algo/ap_version/h3_res/
+     chunk_res/input_bbox, younger than FORCE_REBUILD_DAYS) the build is skipped and that report is re-used
+     (epoch = current month) through the very same send path; the chunk rows, should umfeld want any, come from
+     the KG's .nec on disk or from a build done only then. --no-skip forces the build (QA: diff the two reports).
+
 Run through the venv: tools/ne-report/.venv/bin/python tools/ne-report/ne_report.py 05007
 """
 import argparse
@@ -47,7 +54,9 @@ import urllib.request
 from vtcseamless.bevdirect import BevDirect, PendingError, ServerError, cell_bbox, cells_for
 from vtcseamless.observe import incomplete_cells, tile_provenance   # QC provenance (vtcseamless-py ≥ 0.3.0)
 from ne_cells.change import chunk_rows, epoch_report_ap, pack_chunk_rows
-from ne_cells.pack import MAGIC_LU, unpack_sections
+from ne_cells.pack import CHUNK_RES, MAGIC_LU, unpack_sections
+from ne_cells.algo import ALGO, H3_RES
+from ne_cells.change import AP_VERSION
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -342,6 +351,7 @@ def latest_report(outdir, kg):
     return files[-1] if files else None
 
 
+FORCE_REBUILD_DAYS = 28   # a KG with unchanged tiles is still fully rebuilt once per quarter-ish (one fresh build per plan cycle)
 SAME_PASS_H = 20   # umfeld neSamePassWindow: a re-post by the same observer < 20 h later is not a sighting
 
 
@@ -362,6 +372,109 @@ def last_post(outdir, kg):
         if post.get("status") == 200 and (m.get("report") or {}).get("digest"):
             return m["report"]["digest"], float(post.get("posted_at") or os.path.getmtime(f))
     return None
+
+
+def last_full_build_age_d(outdir, kg):
+    """Days since our newest *full* build of this KG (meta files, newest first; a reused report has
+    build.skipped:true and does not count), None when no full build is on record."""
+    for f in sorted(glob.glob(os.path.join(outdir, f"{kg}.????-??-??.meta.json")), reverse=True):
+        try:
+            with open(f) as fh:
+                b = (json.load(fh).get("build") or {})
+        except Exception:
+            continue
+        if b.get("digest") and not b.get("skipped"):
+            return (time.time() - os.path.getmtime(f)) / 86400
+    return None
+
+
+def load_docs(work, cells):
+    docs = {}
+    for i, j in cells:
+        with open(os.path.join(work, f"cell_{i}_{j}.json"), encoding="utf-8") as f:
+            docs[(i, j)] = json.load(f)
+    return docs
+
+
+def reusable_report(a, kg, prev_path, tiles_now, bev_versions, ubox):
+    """The previous report dict when a build from tonight's documents would reproduce it exactly, else None
+    (with the reason logged). Every condition is a pure comparison of inputs; any doubt → full build."""
+    if a.no_skip:
+        return None
+    if not prev_path:
+        log(f"{kg}: no previous report — full build")
+        return None
+    base = os.path.basename(prev_path)
+    if tiles_now is None:
+        log(f"{kg}: documents carry no tiles[] — full build")
+        return None
+    if tiles_now["fetched"] != tiles_now["expected"] or tiles_now["expected"] <= 0:
+        log(f"{kg}: tile fetch incomplete ({tiles_now['fetched']}/{tiles_now['expected']}) — full build")
+        return None
+    try:
+        with open(prev_path, encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception as e:
+        log(f"{kg}: previous report {base} unreadable ({e}) — full build")
+        return None
+    age_d = last_full_build_age_d(a.out, kg)
+    if age_d is None or age_d >= a.force_rebuild_days:
+        log(f"{kg}: last full build {'unknown' if age_d is None else f'{age_d:.0f} d ago'} (limit {a.force_rebuild_days} d) — full build")
+        return None
+    pt = prev.get("tiles") if isinstance(prev.get("tiles"), dict) else None
+    if not pt or pt.get("hash") != tiles_now["hash"]:
+        log(f"{kg}: tiles changed (hash {pt.get('hash') if pt else None} → {tiles_now['hash']}, prev={base}) — full build")
+        return None
+    if not (pt.get("fetched") == pt.get("expected") == tiles_now["expected"]):
+        log(f"{kg}: previous tile count {pt.get('fetched')}/{pt.get('expected')} ≠ {tiles_now['expected']} — full build")
+        return None
+    if len(bev_versions) != 1 or prev.get("source") != f"bevdirect@{bev_versions[0]}":
+        log(f"{kg}: source {prev.get('source')} ≠ bevdirect@{bev_versions} — full build")
+        return None
+    want = dict(kg=kg, algo=ALGO, ap_version=AP_VERSION, h3_res=H3_RES, chunk_res=CHUNK_RES, observer=a.observer,
+                input_bbox=list(ubox))
+    for k, v in want.items():
+        if prev.get(k) != v:
+            log(f"{kg}: previous report {k}={prev.get(k)!r} ≠ {v!r} — full build")
+            return None
+    if not (prev.get("digest") and isinstance(prev.get("chunks"), dict) and isinstance(prev.get("chunks_ap"), dict)
+            and isinstance(prev.get("chunks_tiles"), dict) and prev.get("cells_n")):
+        log(f"{kg}: previous report {base} incomplete (no digest/chunks/chunks_ap/chunks_tiles) — full build")
+        return None
+    log(f"{kg}: unchanged tiles (hash={tiles_now['hash']}, prev={base[6:16]}) — reusing report, build skipped")
+    return prev
+
+
+def lu_section(nec):
+    with open(nec, "rb") as f:
+        return [sec for sec in unpack_sections(f.read()) if sec.magic == MAGIC_LU][0]
+
+
+def find_nec(outdir, kg, digest):
+    """A NEC1 container of this KG on disk whose LU digest is `digest` (run.sh prunes them after 24 h), else None."""
+    for nec in sorted(glob.glob(os.path.join(outdir, "nec", f"{kg}.*.nec")), reverse=True):
+        try:
+            sec = lu_section(nec)
+        except Exception:
+            continue
+        if sec.header.get("digest") == digest:
+            return sec
+    return None
+
+
+def build_kg(a, kg, cells, work, bbox_s, umfeld_lu_n):
+    """ne_cells build → (summary, LU section). The only CPU-heavy step of the pipeline."""
+    nec = os.path.join(a.out, "nec", f"{kg}.{a.epoch}.nec")
+    os.makedirs(os.path.dirname(nec), exist_ok=True)
+    build_args = ["build", "--kg", kg, "--epoch", a.epoch, "--input-bbox", bbox_s, "-o", nec]
+    for i, j in cells:
+        build_args += ["--bevdirect", os.path.join(work, f"cell_{i}_{j}.json")]
+    t0 = time.time()
+    build_out = run_ne_cells(build_args)
+    summary = json.loads(build_out.strip().splitlines()[-1])
+    log(f"{kg}: build ok in {time.time() - t0:.0f}s: source={summary['source']} cells={summary['cells']} kcells={summary['kcells']} "
+        f"digest={summary['digest']} (umfeld lu cells_n={umfeld_lu_n}, Δ={summary['cells'] - umfeld_lu_n if umfeld_lu_n is not None else '?'})")
+    return summary, lu_section(nec)
 
 
 def process_kg(a, kg):
@@ -412,6 +525,15 @@ def process_kg(a, kg):
     work = os.path.join(a.work, kg)
     if os.path.isdir(work):
         shutil.rmtree(work)
+    try:
+        return _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, bev_hdr, umfeld_lu_n, umfeld_lu_digest, work)
+    finally:
+        # Cadastre hygiene: the raw /viewport documents never outlive the KG's run, success or failure.
+        if not a.keep_cells:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, bev_hdr, umfeld_lu_n, umfeld_lu_digest, work):
     t0 = time.time()
     fetched = fetch_cells(a.bevc, cells, work, inflight=a.inflight, siedler=a.siedler or None)
     if len(fetched) != len(cells):                       # belt and braces: fetch_cells raises on any failed cell
@@ -420,38 +542,51 @@ def process_kg(a, kg):
         f"(bevdirect {sorted({r['bevdirect_version'] for r in fetched})}, {sum(r['incomplete'] for r in fetched)} parcel copies truncated at the pad, "
         f"{sum(1 for r in fetched if r['src'] == 'stash')} from the game server's stash)")
 
-    nec = os.path.join(a.out, "nec", f"{kg}.{a.epoch}.nec")
-    os.makedirs(os.path.dirname(nec), exist_ok=True)
-    build_args = ["build", "--kg", kg, "--epoch", a.epoch, "--input-bbox", bbox_s, "-o", nec]
-    for i, j in cells:
-        build_args += ["--bevdirect", os.path.join(work, f"cell_{i}_{j}.json")]
-    t0 = time.time()
-    build_out = run_ne_cells(build_args)
-    summary = json.loads(build_out.strip().splitlines()[-1])
-    log(f"{kg}: build ok in {time.time() - t0:.0f}s: source={summary['source']} cells={summary['cells']} kcells={summary['kcells']} "
-        f"digest={summary['digest']} (umfeld lu cells_n={umfeld_lu_n}, Δ={summary['cells'] - umfeld_lu_n if umfeld_lu_n is not None else '?'})")
-
-    with open(nec, "rb") as f:
-        section = [sec for sec in unpack_sections(f.read()) if sec.magic == MAGIC_LU][0]
-    report = epoch_report_ap(section, a.observer)   # `ne_cells report` + chunks_ap / ap_version
-    # QC provenance (§5a): tiles{} + chunks_tiles{} from the raw cell documents (RAM-only, read back from the work dir).
-    docs = {}
-    for i, j in cells:
-        with open(os.path.join(work, f"cell_{i}_{j}.json"), encoding="utf-8") as f:
-            docs[(i, j)] = json.load(f)
-    tiles, chunks_tiles = tile_provenance(docs, report.get("chunks") or {})
-    tiles_bad = []
-    if tiles is not None:
-        report["tiles"], report["chunks_tiles"] = tiles, chunks_tiles
-        tiles_bad = [list(c) for c in incomplete_cells(docs)]
-        if tiles_bad:
-            log(f"{kg}: WARNING incomplete tile fetch ({tiles['fetched']}/{tiles['expected']} tiles) in cells {tiles_bad} "
-                "— posted as is (umfeld: change_suspect tiles_incomplete), never counted as change")
-        else:
-            log(f"{kg}: tile provenance: {tiles['fetched']}/{tiles['expected']} tiles hash={tiles['hash']} chunks_tiles={len(chunks_tiles)}")
+    # QC provenance first (§5a): tiles{} is a pure function of the raw cell documents, so it decides BEFORE the
+    # build whether a build could produce anything new. chunks_tiles{} needs the chunk ids → after the build.
+    docs = load_docs(work, cells)
+    tiles_now, _ = tile_provenance(docs, ())
+    bev_versions = sorted({r["bevdirect_version"] for r in fetched})
+    section = None
+    summary = None
+    report = reusable_report(a, kg, prev, tiles_now, bev_versions, ubox)
+    skipped = report is not None
+    if skipped:
+        report["epoch"] = a.epoch
+        tiles, chunks_tiles, tiles_bad = report["tiles"], report["chunks_tiles"], []
+        reused_from = os.path.basename(prev)
     else:
-        log(f"{kg}: WARNING documents carry no tiles[] (bevdirect-serve < v0.3.4 or stale stash) — no QC provenance sent")
+        summary, section = build_kg(a, kg, cells, work, bbox_s, umfeld_lu_n)
+        report = epoch_report_ap(section, a.observer)   # `ne_cells report` + chunks_ap / ap_version
+        tiles, chunks_tiles = tile_provenance(docs, report.get("chunks") or {})
+        tiles_bad = []
+        if tiles is not None:
+            report["tiles"], report["chunks_tiles"] = tiles, chunks_tiles
+            tiles_bad = [list(c) for c in incomplete_cells(docs)]
+            if tiles_bad:
+                log(f"{kg}: WARNING incomplete tile fetch ({tiles['fetched']}/{tiles['expected']} tiles) in cells {tiles_bad} "
+                    "— posted as is (umfeld: change_suspect tiles_incomplete), never counted as change")
+            else:
+                log(f"{kg}: tile provenance: {tiles['fetched']}/{tiles['expected']} tiles hash={tiles['hash']} chunks_tiles={len(chunks_tiles)}")
+        else:
+            log(f"{kg}: WARNING documents carry no tiles[] (bevdirect-serve < v0.3.4 or stale stash) — no QC provenance sent")
     del docs
+
+    def get_section():
+        """The LU section for the chunk rows: in RAM after a build, else the KG's .nec on disk with this very
+        digest, else built now (only when umfeld actually wants chunks of a reused report)."""
+        nonlocal section, summary
+        if section is None:
+            section = find_nec(a.out, kg, report["digest"])
+            if section is not None:
+                log(f"{kg}: chunk rows from the .nec on disk (digest {report['digest']})")
+        if section is None:
+            log(f"{kg}: umfeld wants chunks of the reused report — building now")
+            summary, section = build_kg(a, kg, cells, work, bbox_s, umfeld_lu_n)
+            if summary["digest"] != report["digest"]:
+                raise RuntimeError(f"{kg}: rebuild digest {summary['digest']} ≠ reused report {report['digest']} with identical "
+                                   f"tiles — nondeterministic build? OPEN AN ISSUE on vtcseamless; run with --no-skip")
+        return section
     report_s = json.dumps(report, separators=(",", ":"))
     report_path = os.path.join(a.out, f"{kg}.{today}.json")
     with open(report_path + ".tmp", "w") as f:
@@ -459,7 +594,7 @@ def process_kg(a, kg):
     os.replace(report_path + ".tmp", report_path)
     meta = dict(kg=kg, date=today, epoch=a.epoch, viewport_bbox=[float(v) for v in ibox], input_bbox=list(ubox),
                 input_rule="union-of-aligned-cells", cells=[dict(i=i, j=j) for i, j in cells], full_cells=len(full), fetched=fetched,
-                build=summary, umfeld=dict(lu_cells_n=umfeld_lu_n, lu_digest=umfeld_lu_digest, lu_source=hdr.get("source"),
+                build=summary if not skipped else dict(skipped=True, reused=reused_from, tiles_hash=tiles["hash"]), umfeld=dict(lu_cells_n=umfeld_lu_n, lu_digest=umfeld_lu_digest, lu_source=hdr.get("source"),
                                            bev_cells_n=bev_hdr.get("cells_n"), bev_digest=bev_hdr.get("digest"), bev_source=bev_hdr.get("source")),
                 report=dict(digest=report["digest"], cells_n=report["cells_n"], chunks=len(report["chunks"]), chunks_total=report["chunks_total"],
                             chunks_ap=len(report.get("chunks_ap") or {}), ap_version=report.get("ap_version")),
@@ -514,16 +649,14 @@ def process_kg(a, kg):
             meta["change"] = classify_change(kg, ans)
             want = ans.get("want_chunks") or []
             if want:
-                meta["chunks"] = send_wanted_chunks(a, kg, section, want, token)
+                meta["chunks"] = send_wanted_chunks(a, kg, get_section(), want, token)
             else:
                 log(f"{kg}: want_chunks empty — nothing to upload")
         else:
             log(f"{kg}: POST HTTP {st}: {json.dumps(ans)[:400]}")
     with open(os.path.join(a.out, f"{kg}.{today}.meta.json"), "w") as f:
         json.dump(meta, f, indent=1)
-    if not a.keep_cells:
-        shutil.rmtree(work, ignore_errors=True)
-    return "ok"
+    return "ok(skip)" if skipped else "ok"
 
 
 def main(argv=None):
@@ -550,6 +683,10 @@ def main(argv=None):
                     help="ignore --max-age-days (rebuild); the POST is still skipped when the same digest was posted < 20 h ago")
     ap.add_argument("--repost", action="store_true",
                     help="POST even if we reported this very digest < 20 h ago (umfeld counts it as no sighting; protocol QA only)")
+    ap.add_argument("--no-skip", action="store_true",
+                    help="always build, even when the source tiles are unchanged since our previous report (QA)")
+    ap.add_argument("--force-rebuild-days", type=float, default=FORCE_REBUILD_DAYS,
+                    help=f"rebuild a KG with unchanged tiles anyway when our previous report is older than this (default {FORCE_REBUILD_DAYS})")
     ap.add_argument("--keep-cells", action="store_true", help="keep the fetched cell_*.json under --work")
     ap.add_argument("--pause", type=float, default=5, help="seconds between KGs")
     a = ap.parse_args(argv)
@@ -567,7 +704,7 @@ def main(argv=None):
         except Exception as e:  # one KG failing must not stop the run
             log(f"{kg}: FAILED: {e}")
             results[kg] = "failed"
-        if results[kg] not in ("ok", "skipped"):
+        if results[kg] not in ("ok", "ok(skip)", "skipped"):
             # Marker (no cadastre content) so the contrib plan defers the KG for a week instead of
             # re-planning it every night (srv/contrib.go contribSkippedRecently).
             try:
@@ -575,9 +712,10 @@ def main(argv=None):
                     f.write(results[kg] + "\n")
             except OSError:
                 pass
-        if n + 1 < len(a.kgs) and results[kg] == "ok":
+        if n + 1 < len(a.kgs) and results[kg].startswith("ok"):
             time.sleep(a.pause)
-    log("done: " + " ".join(f"{k}={v}" for k, v in results.items()))
+    n_ok, n_skip = sum(1 for v in results.values() if v == "ok"), sum(1 for v in results.values() if v == "ok(skip)")
+    log(f"done: built={n_ok} skipped={n_skip} " + " ".join(f"{k}={v}" for k, v in results.items()))
     return 1 if any(v == "failed" for v in results.values()) else 0
 
 

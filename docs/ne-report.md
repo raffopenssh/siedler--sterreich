@@ -113,6 +113,27 @@ Same token, same report POST; two additions in `ne_report.py`:
 Verify after a run: `meta.post.answer.want_chunks` present, `meta.chunks.stored > 0` on the first (baseline) pass,
 `unchanged:true` + `header_only:true` (no chunk list sent) on an unchanged re-run.
 
+## Unchanged tiles → build skipped (2026-10-18)
+
+The report is a pure function of the raw cell documents, and `tiles.hash` (sha256[:16] over every source tile of
+the build) is computed from them *before* the build. `process_kg` reuses our newest previous report of the KG
+(`<KG>.<date>.json`, newest date) instead of building when **all** of these hold: same `tiles.hash`; tile fetch
+complete now and then (`fetched == expected`, same count); `source == bevdirect@<version of tonight's docs>`;
+`algo`/`ap_version`/`h3_res`/`chunk_res`/`observer`/`input_bbox` equal to tonight's constants; our last *full* build
+of the KG (newest meta whose `build` is a real summary) is younger than `FORCE_REBUILD_DAYS` (28, `--force-rebuild-days`)
+— so every KG still gets one fresh build per plan cycle. Any doubt (no/unreadable report, hash mismatch, incomplete
+tiles, other version) → full build, exactly as before.
+
+On a skip the previous report dict is re-used with `epoch` = current month and written as today's file; the send
+path is unchanged (header-only first, full report on 202, `want_chunks` honoured). Chunk rows, should umfeld want
+any, come from a `.nec` of this KG on disk with the same digest, else from a build done only then (digest must match,
+else the KG fails with a vtcseamless issue hint). Log line `unchanged tiles (hash=…, prev=<date>) — reusing report,
+build skipped`; meta `build:{skipped:true, reused, tiles_hash}`; `done: built=N skipped=M …` with `kg=ok(skip)`.
+`--no-skip` forces the build (QA: the report must be identical to the reused one bar the file name). Observed
+2026-10-18: 273/273 KGs built with `chunks_changed=0` everywhere (≈ 3 h CPU); a skip costs the stash fetch only
+(2–7 s per KG). The raw documents are still fetched (they are the input to the hash) and wiped with the work dir in a
+`finally`, success or failure.
+
 ## Quality control (umfeld ne-change.md §5a, vtcseamless-py 0.3.0 + bevdirect-serve v0.3.4, 2026-10-15)
 
 We are one of umfeld's two independent observer streams; nothing in the algorithm changed, only provenance:
