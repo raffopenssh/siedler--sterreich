@@ -27,8 +27,9 @@ data/ne-reports/KG.<date>.json        the report as POSTed (gitignored)
 data/ne-reports/KG.<date>.meta.json   build summary, umfeld head numbers, cells fetched, POST answer
 data/ne-reports/nec/KG.<epoch>.nec    the NEC1 container we built — derived statistics, fine on disk; pruned > 24 h by run.sh
                                 (only needed for `ne_cells dump/compare`)
-data/ne-reports/work/KG/cell_i_j.json raw bevdirect cells — scratch, wiped after each KG (kept only with --keep-cells,
-                                then pruned > 24 h by run.sh); never commit, never copy elsewhere
+(raw bevdirect cells)             RAM only — fetched into a dict, built in-process (`ne_cells.build_from_docs`), gone
+                                with the KG; `--keep-cells` (QA only) also writes them to data/ne-reports/work/KG/,
+                                which run.sh removes on its next start. Never commit, never copy elsewhere
 ```
 
 ## How to run
@@ -46,9 +47,9 @@ Per KG the pipeline: `GET umfeld /api/v1/ne/{kg}/head` → `lu.header.input_bbox
 (404 = not built yet → skip) → the **aligned** 0.02° cells covering it (`vtcseamless.bevdirect.cells_for`,
 `ix=floor(lon/0.02)`), one `GET /viewport?west=ix*0.02&south=iy*0.02&east=+0.02&north=+0.02` per cell
 (`BevDirect.cell`, ≤ 2 in flight, `pending` → wait `retry_after_s` and re-GET, never builds on
-`ready:false`/`truncated`) → `python -m ne_cells build --kg KG --epoch YYYY-MM --bevdirect cell_*.json
---input-bbox <union of the aligned cells>` (source derived from the documents' `bevdirect_version`;
-`--source` is never passed) → `python -m ne_cells report --observer siedler-oesterreich` → file → POST.
+`ready:false`/`truncated`) → `ne_cells.build_from_docs(…)` in-process (≡ `python -m ne_cells build --kg KG --epoch YYYY-MM --bevdirect cell_*.json
+--input-bbox <union of the aligned cells>`; source derived from the documents' `bevdirect_version`;
+`--source` is never passed) → `ne_cells report --observer siedler-oesterreich` → file → POST.
 
 **Why aligned cells and the cell union (2026-10-08).** Every "changed" chunk we had produced before
 (678 `since_last` diffs, e.g. 67407, 65509, 51222, 51240) was an artefact: a later, wider viewport
@@ -131,8 +132,7 @@ else the KG fails with a vtcseamless issue hint). Log line `unchanged tiles (has
 build skipped`; meta `build:{skipped:true, reused, tiles_hash}`; `done: built=N skipped=M …` with `kg=ok(skip)`.
 `--no-skip` forces the build (QA: the report must be identical to the reused one bar the file name). Observed
 2026-10-18: 273/273 KGs built with `chunks_changed=0` everywhere (≈ 3 h CPU); a skip costs the stash fetch only
-(2–7 s per KG). The raw documents are still fetched (they are the input to the hash) and wiped with the work dir in a
-`finally`, success or failure.
+(2–7 s per KG). The raw documents are still fetched (they are the input to the hash) but stay in RAM.
 
 ## Quality control (umfeld ne-change.md §5a, vtcseamless-py 0.3.0 + bevdirect-serve v0.3.4, 2026-10-15)
 

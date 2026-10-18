@@ -49,11 +49,11 @@ keep code and pages true to each other:
 |---|---|---|---|
 | **raw** | BEV `.pbf` tiles; raw bevdirect `/viewport` documents kept for the night report | **RAM only** (bevdirect LRU; `contrib_stash`) | ≤ 24 h, lost on restart |
 | **assembled / quoting** | `vp:v1` cells, `parcel:v1`, `ez:v1` look-ups, and answers quoting parcel ids or land use from cells: `similar:`, `bldg-info:`, `timber:est:` (`ramPrefixes`) | **RAM only** — `srv/ramcache.go` (`cadastreRAM`, ≤ 1.4 GB gzipped, oldest-fetch eviction); `Store` routes these key prefixes there, SQLite never sees them; boot purges strays + clears/re-queues `kg_warm` | ≤ 24 h hard cap, lost on restart |
-| **raw scratch** | `ne-report` work cells `data/ne-reports/work/KG/cell_i_j.json` | disk, per-KG scratch | wiped after each KG (`--keep-cells` excepted); `run.sh` prunes > 24 h |
+| **raw (ne-report)** | the `/viewport` documents of the KG being reported | **RAM only** — a dict in `ne_report.py`, built in-process (`ne_cells.build_from_docs`) | one KG; `--keep-cells` (QA) is the only way to get a `data/ne-reports/work/` file, and `run.sh` removes that dir on start |
 | **derived NE statistics** | NEC1 `.nec` containers (per-H3-cell statistics, no ids/geometry), digest reports `KG.<date>.json`/`.meta.json`, hash-keyed `pctx` (umfeld) | **disk is fine** — this is what NE is for | `.nec` pruned > 24 h by `run.sh` (only kept for `ne_cells dump/compare`); reports stay |
 
 Any `/parcel`, `/ez`, `/viewport` dump is tier "assembled": never on disk, never in SQLite (new cache keys that quote cells → `ramPrefixes`). Nothing else: no parcel database, no cadastre ids in the DB (hashes only), nothing findable by GNR/EZ without a
-location. `run.sh` prunes `data/ne-reports/work/` and `data/ne-reports/nec/*.nec` (> 24 h) on every run; the
+location. `run.sh` removes `data/ne-reports/work/` and prunes `data/ne-reports/nec/*.nec` (> 24 h) on every run; the
 digest-only reports `KG.<date>.json`/`.meta.json` carry no cadastre content and stay. When you dump a
 `/viewport`, `/parcel` or `/ez` response for debugging (curl → `/tmp/*.json`, `--keep-cells`, test fixtures),
 **delete it before you finish the task** — never commit one.

@@ -8,7 +8,8 @@ Pipeline (contract: docs/ne-report.md, umfeld's docs/ne-cells.md):
      pending/retry_after_s honoured, never a truncated/non-ready document). Never a free or multi-cell
      viewport: bevdirect-serve's compose keeps ONE truncated copy of a parcel wider than cell + pad, so a
      stitched viewport is never equal to the operator's aligned-cell build (vtcseamless DEPLOY.md v0.3.3).
-  3. python -m ne_cells build --kg KG --epoch E --bevdirect cell_*.json --input-bbox <UNION OF THE CELLS> -o KG.nec
+  3. ne_cells.build_from_docs(KG, E, [(cell_i_j.json, doc)…], KG.nec, input_bbox=<UNION OF THE CELLS>) — in-process from the
+     RAM documents (= `python -m ne_cells build --bevdirect cell_*.json`; the raw documents never touch disk).
      The input bbox is the union of the aligned cells, not the raw viewport: the report then has a stable
      bbox per cell block, which is what the operator's coverage rule compares (identical bbox → most
      cells_n wins; a lossy build is flagged change_suspect:"coverage_lossy" and its diffs are ignored).
@@ -43,8 +44,6 @@ import glob
 import gzip
 import json
 import os
-import shutil
-import subprocess
 import sys
 import time
 import urllib.error
@@ -54,6 +53,7 @@ import urllib.request
 from vtcseamless.bevdirect import BevDirect, PendingError, ServerError, cell_bbox, cells_for
 from vtcseamless.observe import incomplete_cells, tile_provenance   # QC provenance (vtcseamless-py ≥ 0.3.0)
 from ne_cells.change import chunk_rows, epoch_report_ap, pack_chunk_rows
+from ne_cells.__main__ import build_from_docs
 from ne_cells.pack import CHUNK_RES, MAGIC_LU, unpack_sections
 from ne_cells.algo import ALGO, H3_RES
 from ne_cells.change import AP_VERSION
@@ -153,10 +153,11 @@ def stash_cell(siedler, i, j):
     return doc
 
 
-def fetch_cell(bev, i, j, path, max_total_s=900, siedler=None):
+def fetch_cell(bev, i, j, max_total_s=900, siedler=None):
     """GET one aligned cell — the game server's RAM stash first (stash_cell), else through
     vtcseamless' BevDirect.cell (loops on ready:false/pending with retry_after_s, normalises null
-    layers to [] for bevdirect < v0.3.3). Never writes a non-ready or truncated document."""
+    layers to [] for bevdirect < v0.3.3). Returns (info, doc); the document stays in RAM only.
+    Never returns a non-ready or truncated document."""
     t0 = time.time()
     errors = 0
     doc = stash_cell(siedler, i, j)
@@ -178,37 +179,36 @@ def fetch_cell(bev, i, j, path, max_total_s=900, siedler=None):
     if not doc.get("ready") or doc.get("pending"):
         raise RuntimeError(f"cell {i}_{j}: not ready — not a valid NE input")
     W, S, E, N = cell_bbox(i, j)
-    with open(path + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(doc, f, separators=(",", ":"), ensure_ascii=False)
-    os.replace(path + ".tmp", path)
-    return dict(i=i, j=j, bbox=[W, S, E, N], parcels=len(doc.get("parcels") or []), footprints=len(doc.get("footprints") or []),
+    info = dict(i=i, j=j, bbox=[W, S, E, N], parcels=len(doc.get("parcels") or []), footprints=len(doc.get("footprints") or []),
                 landuse=len(doc.get("landuse") or []), incomplete=sum(1 for p in doc.get("parcels") or [] if p.get("complete") is False),
                 bevdirect_version=doc.get("bevdirect_version"), coord_decimals=doc.get("coord_decimals"),
                 ms=doc.get("query_time_ms"), s=round(time.time() - t0, 1), src=src)
+    return info, doc
 
 
-def fetch_cells(bev, cells, workdir, inflight=2, siedler=None):
-    os.makedirs(workdir, exist_ok=True)
-    out = []
+def fetch_cells(bev, cells, inflight=2, siedler=None):
+    """→ (infos sorted by (j, i), {(i, j): doc}). Cadastre hygiene: the documents live only in this dict."""
+    out, docs = [], {}
     with cf.ThreadPoolExecutor(max_workers=inflight) as ex:
-        futs = {ex.submit(fetch_cell, bev, i, j, os.path.join(workdir, f"cell_{i}_{j}.json"), 900, siedler): (i, j) for i, j in cells}
+        futs = {ex.submit(fetch_cell, bev, i, j, 900, siedler): (i, j) for i, j in cells}
         for fut in cf.as_completed(futs):
-            r = fut.result()          # raises on a failed cell → whole KG aborts (never build on a partial set)
+            r, doc = fut.result()     # raises on a failed cell → whole KG aborts (never build on a partial set)
+            docs[(r["i"], r["j"])] = doc
             log(f"  cell {r['i']}_{r['j']}: parcels={r['parcels']} (truncated at pad {r['incomplete']}) footprints={r['footprints']} "
                 f"landuse={r['landuse']} bevdirect={r['bevdirect_version']} ({r['s']}s, {r['src']})")
             out.append(r)
-    return sorted(out, key=lambda r: (r["j"], r["i"]))
+    return sorted(out, key=lambda r: (r["j"], r["i"])), docs
+
+
+def keep_cells(workdir, docs):
+    """--keep-cells (QA only): write the raw documents under --work/KG. Never used by the timer."""
+    os.makedirs(workdir, exist_ok=True)
+    for (i, j), doc in docs.items():
+        with open(os.path.join(workdir, f"cell_{i}_{j}.json"), "w", encoding="utf-8") as f:
+            json.dump(doc, f, separators=(",", ":"), ensure_ascii=False)
 
 
 # ---------------------------------------------------------------- 3/4. ne_cells build + report
-
-def run_ne_cells(args, capture_stdout=False):
-    cmd = [sys.executable, "-m", "ne_cells", *args]
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        raise RuntimeError(f"ne_cells {args[0]} failed ({p.returncode}): {p.stderr.strip()[-2000:]}")
-    return p.stdout if capture_stdout else p.stderr
-
 
 # ---------------------------------------------------------------- 5. POST
 
@@ -388,14 +388,6 @@ def last_full_build_age_d(outdir, kg):
     return None
 
 
-def load_docs(work, cells):
-    docs = {}
-    for i, j in cells:
-        with open(os.path.join(work, f"cell_{i}_{j}.json"), encoding="utf-8") as f:
-            docs[(i, j)] = json.load(f)
-    return docs
-
-
 def reusable_report(a, kg, prev_path, tiles_now, bev_versions, ubox):
     """The previous report dict when a build from tonight's documents would reproduce it exactly, else None
     (with the reason logged). Every condition is a pure comparison of inputs; any doubt → full build."""
@@ -462,16 +454,14 @@ def find_nec(outdir, kg, digest):
     return None
 
 
-def build_kg(a, kg, cells, work, bbox_s, umfeld_lu_n):
-    """ne_cells build → (summary, LU section). The only CPU-heavy step of the pipeline."""
+def build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n):
+    """ne_cells build (in-process, from the RAM documents) → (summary, LU section). The only CPU-heavy
+    step of the pipeline. Only the derived .nec reaches disk."""
     nec = os.path.join(a.out, "nec", f"{kg}.{a.epoch}.nec")
     os.makedirs(os.path.dirname(nec), exist_ok=True)
-    build_args = ["build", "--kg", kg, "--epoch", a.epoch, "--input-bbox", bbox_s, "-o", nec]
-    for i, j in cells:
-        build_args += ["--bevdirect", os.path.join(work, f"cell_{i}_{j}.json")]
     t0 = time.time()
-    build_out = run_ne_cells(build_args)
-    summary = json.loads(build_out.strip().splitlines()[-1])
+    ibox = tuple(map(float, bbox_s.split(",")))
+    summary = build_from_docs(kg, a.epoch, [(f"cell_{i}_{j}.json", docs[(i, j)]) for i, j in cells], nec, input_bbox=ibox)
     log(f"{kg}: build ok in {time.time() - t0:.0f}s: source={summary['source']} cells={summary['cells']} kcells={summary['kcells']} "
         f"digest={summary['digest']} (umfeld lu cells_n={umfeld_lu_n}, Δ={summary['cells'] - umfeld_lu_n if umfeld_lu_n is not None else '?'})")
     return summary, lu_section(nec)
@@ -522,20 +512,15 @@ def process_kg(a, kg):
         log(f"{kg}: skip — {len(cells)} cells exceeds --max-cells {a.max_cells}")
         return "too_big"
 
-    work = os.path.join(a.work, kg)
-    if os.path.isdir(work):
-        shutil.rmtree(work)
-    try:
-        return _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, bev_hdr, umfeld_lu_n, umfeld_lu_digest, work)
-    finally:
-        # Cadastre hygiene: the raw /viewport documents never outlive the KG's run, success or failure.
-        if not a.keep_cells:
-            shutil.rmtree(work, ignore_errors=True)
+    # Cadastre hygiene: the raw /viewport documents live in `docs` (RAM) for this KG only — never on disk.
+    return _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, bev_hdr, umfeld_lu_n, umfeld_lu_digest)
 
 
-def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, bev_hdr, umfeld_lu_n, umfeld_lu_digest, work):
+def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, bev_hdr, umfeld_lu_n, umfeld_lu_digest):
     t0 = time.time()
-    fetched = fetch_cells(a.bevc, cells, work, inflight=a.inflight, siedler=a.siedler or None)
+    fetched, docs = fetch_cells(a.bevc, cells, inflight=a.inflight, siedler=a.siedler or None)
+    if a.keep_cells:
+        keep_cells(os.path.join(a.work, kg), docs)
     if len(fetched) != len(cells):                       # belt and braces: fetch_cells raises on any failed cell
         raise RuntimeError(f"{kg}: {len(fetched)} of {len(cells)} aligned cells fetched — refusing a partial build")
     log(f"{kg}: fetched {len(fetched)} cells in {time.time() - t0:.0f}s "
@@ -544,7 +529,6 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
 
     # QC provenance first (§5a): tiles{} is a pure function of the raw cell documents, so it decides BEFORE the
     # build whether a build could produce anything new. chunks_tiles{} needs the chunk ids → after the build.
-    docs = load_docs(work, cells)
     tiles_now, _ = tile_provenance(docs, ())
     bev_versions = sorted({r["bevdirect_version"] for r in fetched})
     section = None
@@ -556,7 +540,7 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
         tiles, chunks_tiles, tiles_bad = report["tiles"], report["chunks_tiles"], []
         reused_from = os.path.basename(prev)
     else:
-        summary, section = build_kg(a, kg, cells, work, bbox_s, umfeld_lu_n)
+        summary, section = build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n)
         report = epoch_report_ap(section, a.observer)   # `ne_cells report` + chunks_ap / ap_version
         tiles, chunks_tiles = tile_provenance(docs, report.get("chunks") or {})
         tiles_bad = []
@@ -570,7 +554,6 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
                 log(f"{kg}: tile provenance: {tiles['fetched']}/{tiles['expected']} tiles hash={tiles['hash']} chunks_tiles={len(chunks_tiles)}")
         else:
             log(f"{kg}: WARNING documents carry no tiles[] (bevdirect-serve < v0.3.4 or stale stash) — no QC provenance sent")
-    del docs
 
     def get_section():
         """The LU section for the chunk rows: in RAM after a build, else the KG's .nec on disk with this very
@@ -582,7 +565,7 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
                 log(f"{kg}: chunk rows from the .nec on disk (digest {report['digest']})")
         if section is None:
             log(f"{kg}: umfeld wants chunks of the reused report — building now")
-            summary, section = build_kg(a, kg, cells, work, bbox_s, umfeld_lu_n)
+            summary, section = build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n)
             if summary["digest"] != report["digest"]:
                 raise RuntimeError(f"{kg}: rebuild digest {summary['digest']} ≠ reused report {report['digest']} with identical "
                                    f"tiles — nondeterministic build? OPEN AN ISSUE on vtcseamless; run with --no-skip")
@@ -687,10 +670,10 @@ def main(argv=None):
                     help="always build, even when the source tiles are unchanged since our previous report (QA)")
     ap.add_argument("--force-rebuild-days", type=float, default=FORCE_REBUILD_DAYS,
                     help=f"rebuild a KG with unchanged tiles anyway when our previous report is older than this (default {FORCE_REBUILD_DAYS})")
-    ap.add_argument("--keep-cells", action="store_true", help="keep the fetched cell_*.json under --work")
+    ap.add_argument("--keep-cells", action="store_true", help="QA only: ALSO write the fetched cell_*.json under --work/KG (cadastre on disk — delete afterwards)")
     ap.add_argument("--pause", type=float, default=5, help="seconds between KGs")
     a = ap.parse_args(argv)
-    # No disk cache in the client: the fetched documents live only under --work (pruned ≤ 24 h by run.sh).
+    # No disk cache in the client: the fetched documents live only in RAM for the duration of one KG.
     a.bevc = BevDirect(a.bev, cache_dir=None, deadline_s=900, log=log)
     try:
         log(f"bevdirect-serve {a.bev}: {a.bevc.version}")

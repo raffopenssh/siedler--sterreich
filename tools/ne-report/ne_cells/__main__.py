@@ -49,7 +49,20 @@ def file_prov(path, rows_key=None, doc=None):
         b = f.read()
     if doc is None:
         doc = json.loads(b)
-    d = dict(file=os.path.basename(path), sha256=content_sha256(doc), file_sha256=hashlib.sha256(b).hexdigest()[:16],
+    return doc_prov(os.path.basename(path), doc, b, rows_key)
+
+
+def doc_bytes(doc) -> bytes:
+    """The canonical compact serialisation (what ne-report used to write as cell_i_j.json) — only
+    for the informative file_sha256/bytes provenance; the document itself never touches disk."""
+    return json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def doc_prov(name, doc, b=None, rows_key=None):
+    """Provenance entry for an in-memory document (`name` is a label, e.g. cell_i_j.json)."""
+    if b is None:
+        b = doc_bytes(doc)
+    d = dict(file=name, sha256=content_sha256(doc), file_sha256=hashlib.sha256(b).hexdigest()[:16],
              bytes=len(b), hash_rule="content-sorted-rows-1")
     if isinstance(doc, dict):
         for k in ("ready", "truncated", "source", "bevdirect_version", "fetched_at", "bbox", "strict", "endpoint"):
@@ -66,13 +79,19 @@ def file_prov(path, rows_key=None, doc=None):
 def build_from_bevdirect(kg, epoch, paths, output, source=None, bbox=None, input_bbox=None):
     """Build one NEC1 file from bevdirect-serve viewport documents. Returns the summary dict
     (also what the CLI prints). Refuses documents with ready:false."""
+    return build_from_docs(kg, epoch, [(os.path.basename(x), _load(x)) for x in paths], output, source, bbox, input_bbox)
+
+
+def build_from_docs(kg, epoch, named_docs, output, source=None, bbox=None, input_bbox=None):
+    """Build one NEC1 file from in-memory bevdirect-serve viewport documents [(name, doc), …] — the
+    cadastre content stays in RAM; only the derived .nec is written. Refuses ready:false documents."""
     t0 = time.time()
-    docs = [_load(x) for x in paths]
-    prov = []
-    for x, d in zip(paths, docs):
+    docs, prov = [], []
+    for name, d in named_docs:
         if not d.get("ready", True):
-            raise SystemExit(f"{x}: ready:false — refusing to build on a partial fetch")
-        prov.append(file_prov(x, None, d))
+            raise SystemExit(f"{name}: ready:false — refusing to build on a partial fetch")
+        docs.append(d)
+        prov.append(doc_prov(name, d))
     P, F, L = canon.from_bevdirect(docs)
     source = source or canon.bevdirect_source(docs)
     if not source.startswith("bevdirect@"):
