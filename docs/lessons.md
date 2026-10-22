@@ -58,3 +58,12 @@ this file is where the "why" lives.
   re-queues previously warm KGs. Lesson: a TTL is not a storage tier — route by key prefix at the store, not
   by discipline at each call site. Second pass the same day found `similar:v7` (77 rows with parcel ids),
   `bldg-info:v2` and `timber:<hash>` (parcel_id in the body) on the same path → added to `ramPrefixes`.
+
+## 2026-10-22 — eMudhra intermediate CA compromise audit
+Advisory: https://emudhra.we-have-a-problem.com/. All custom clients on the VM (siedler Go server,
+bevdirect-serve, ne-report python venv, xbrowser node) verify TLS against the Ubuntu system store
+(`ca-certificates 20260816ubuntu0.24.04.1`, both affected roots distrusted); no code uses custom `RootCAs`
+or certifi. Verified empirically: curl, Go, python (system + venv), node all reject the four test hosts
+incl. the no-CT chains. Only stale bundle was the venv's vendored pip certifi → pip upgraded to 26.2.2.
+Rule: never add a private CA bundle (certifi/`RootCAs`) to an upstream client — the system store is the
+single place that gets patched.
