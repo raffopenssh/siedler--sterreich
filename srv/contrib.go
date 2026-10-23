@@ -94,6 +94,9 @@ type contribPlan struct {
 	Today       []string `json:"today"`
 	Fill        []string `json:"fill"`       // not-yet-reported KGs pulled forward to reach night_min
 	Cheap       []string `json:"cheap"`      // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
+	Revisit     []string `json:"revisit"`    // head of the night: umfeld's revisit hints (pending oldest first, then stale), ≤ 20 % of night_min — re-reported regardless of age (run.sh passes them as --revisit)
+	RevisitPend int      `json:"revisit_pending"`
+	RevisitStal int      `json:"revisit_stale"`
 	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
 	Overdue     int      `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
 	Rolling     int      `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
@@ -128,7 +131,7 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	sort.Strings(uni)
 	volume, _ := contribWave(now)
 	p := contribPlan{Quarter: label, Day: day, Days: days, Universe: len(uni), CatchUpDays: contribCatchUpDays,
-		NightMin: min(contribNightMinFor(len(uni), days), volume), NightMax: volume, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Source: "registry"}
+		NightMin: min(contribNightMinFor(len(uni), days), volume), NightMax: volume, KGs: []string{}, Today: []string{}, Fill: []string{}, Cheap: []string{}, Revisit: []string{}, Source: "registry"}
 	if len(uni) == 0 {
 		p.Source = "none"
 		return p
@@ -151,22 +154,47 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// (whole aligned cells are built either way), nothing is left out as small.
 	warmed := s.recentlyWarmedKGs(contribWarmWindow)
 	skipped := contribSkippedRecently(now)
+	// Head of the night: umfeld's revisit hints (contrib_revisit.go) — pending
+	// KGs first (a second sighting confirms a change), then baseline-only stale
+	// ones — at most contribRevisitShare of night_min, within the budget, not on
+	// top of it. Reported-this-quarter does not exclude them (that is the point);
+	// a KG already reported tonight or deferred as unreportable is left out.
+	tonight := now.Format("2006-01-02")
+	rev := map[string]bool{}
+	budget := int(float64(p.NightMin) * contribRevisitShare)
+	for _, r := range contribRevisit(now) {
+		if len(p.Revisit) >= budget {
+			break
+		}
+		if rev[r.KG] || skipped[r.KG] || admin().KGs[r.KG] == nil || lastReport[r.KG] >= tonight {
+			continue
+		}
+		rev[r.KG] = true
+		p.Revisit = append(p.Revisit, r.KG)
+		if r.Kind == "pending" {
+			p.RevisitPend++
+		} else {
+			p.RevisitStal++
+		}
+	}
+	var sched []string
 	for _, kg := range uni {
-		if reported[kg] || skipped[kg] {
+		if reported[kg] || skipped[kg] || rev[kg] {
 			continue
 		}
 		d := contribDayOf(label, kg, days)
 		if d == day {
 			p.Today = append(p.Today, kg)
-			p.KGs = append(p.KGs, kg)
+			sched = append(sched, kg)
 		} else if d < day && d > day-contribCatchUpDays {
-			p.KGs = append(p.KGs, kg) // missed night, still unreported
+			sched = append(sched, kg) // missed night, still unreported
 		}
 	}
 	// Today's first, then the catch-up days (oldest last — they are mostly skipped anyway).
-	sort.SliceStable(p.KGs, func(i, j int) bool {
-		return contribDayOf(label, p.KGs[i], days) > contribDayOf(label, p.KGs[j], days)
+	sort.SliceStable(sched, func(i, j int) bool {
+		return contribDayOf(label, sched[i], days) > contribDayOf(label, sched[j], days)
 	})
+	p.KGs = append(append(p.KGs, p.Revisit...), sched...)
 	// Ahead of schedule: when the hash schedule gives fewer than night_min
 	// KGs, pull forward the unreported KGs in due order — overdue ones first
 	// (a KG promoted to v2.4 mid-quarter whose hash day already passed would
@@ -191,7 +219,7 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 			p.Small++
 			continue
 		}
-		if in[kg] {
+		if in[kg] || rev[kg] {
 			continue
 		}
 		if _, ok := warmed[kg]; ok {
@@ -349,7 +377,7 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
-		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
+		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
 		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "wave": contribWaveStatus(time.Now()), "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
 }

@@ -473,7 +473,9 @@ def process_kg(a, kg):
     os.makedirs(a.out, exist_ok=True)
 
     prev = latest_report(a.out, kg)
-    if prev and not a.force:
+    if kg in a.revisit:
+        log(f"{kg}: revisit (umfeld hint) — reported regardless of report age")
+    if prev and not a.force and kg not in a.revisit:
         age = (time.time() - os.path.getmtime(prev)) / 86400
         if age < a.max_age_days:
             log(f"{kg}: skip — report {os.path.basename(prev)} is {age:.1f} d old (< {a.max_age_days} d)")
@@ -664,6 +666,8 @@ def main(argv=None):
     ap.add_argument("--max-age-days", type=float, default=7, help="skip a KG with a report younger than this")
     ap.add_argument("--force", action="store_true",
                     help="ignore --max-age-days (rebuild); the POST is still skipped when the same digest was posted < 20 h ago")
+    ap.add_argument("--revisit", default="",
+                    help="comma-separated KGs from umfeld's revisit hints (contrib plan revisit[]): reported regardless of --max-age-days")
     ap.add_argument("--repost", action="store_true",
                     help="POST even if we reported this very digest < 20 h ago (umfeld counts it as no sighting; protocol QA only)")
     ap.add_argument("--no-skip", action="store_true",
@@ -673,6 +677,7 @@ def main(argv=None):
     ap.add_argument("--keep-cells", action="store_true", help="QA only: ALSO write the fetched cell_*.json under --work/KG (cadastre on disk — delete afterwards)")
     ap.add_argument("--pause", type=float, default=5, help="seconds between KGs")
     a = ap.parse_args(argv)
+    a.revisit = {k.strip().zfill(5) for k in a.revisit.split(",") if k.strip()}
     # No disk cache in the client: the fetched documents live only in RAM for the duration of one KG.
     a.bevc = BevDirect(a.bev, cache_dir=None, deadline_s=900, log=log)
     try:

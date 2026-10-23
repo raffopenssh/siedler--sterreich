@@ -20,6 +20,7 @@ fi
 # Fallback (only when the game API is unreachable): a tiny v2.4 sample, never the whole universe.
 FALLBACK_KGS="05007 06030 63330"
 
+REVISIT=""
 if [ $# -gt 0 ]; then
   KGS="$*"
 else
@@ -44,13 +45,19 @@ except Exception as e:
 v = d.get("kgs")
 if isinstance(v, list) and v:
     print(" ".join(str(k).zfill(5) for k in v))
-    print("ne-report: contrib plan %s day %s/%s: %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
-          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("today") or []), len(d.get("cheap") or []),
+    print(",".join(str(k).zfill(5) for k in (d.get("revisit") or [])))
+    print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
+          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"),
+             len(d.get("today") or []), len(d.get("cheap") or []),
              len(v), d.get("universe"), d.get("reported_quarter")), file=sys.stderr)
 ' 2>/tmp/ne-report-plan.err)
   [ -s /tmp/ne-report-plan.err ] && cat /tmp/ne-report-plan.err >&2
+  # Line 1 = tonight's KGs (revisit hints first), line 2 = the revisit subset (reported regardless of age).
+  REVISIT=$(printf '%s\n' "$KGS" | sed -n 2p)
+  KGS=$(printf '%s\n' "$KGS" | sed -n 1p)
   if [ -n "$KGS" ]; then
     echo "ne-report: KGs from /api/contrib/plan: $KGS" >&2
+    [ -n "$REVISIT" ] && echo "ne-report: umfeld revisit hints (head of the night): $REVISIT" >&2
   else
     KGS="$FALLBACK_KGS"
     echo "ne-report: /api/contrib/plan unavailable — using the small fallback sample" >&2
@@ -69,5 +76,6 @@ find "$HERE/../../data/ne-reports/nec" -name "*.nec" -mmin +1440 -delete 2>/dev/
 # "POST skipped — no peer token" line when neither exists.
 EXTRA=()
 [ "${FORCE:-0}" = "1" ] && EXTRA+=(--force)
+[ -n "${REVISIT:-}" ] && EXTRA+=(--revisit "$REVISIT")
 # shellcheck disable=SC2086
 exec "$PY" "$HERE/ne_report.py" "${EXTRA[@]}" $KGS
