@@ -21,7 +21,7 @@ import (
 // bevdirectVersion is the vtcseamless release installed in /opt/bevdirect (see
 // /opt/bevdirect/SOURCE.txt); bump together with the upgrade. /api/metrics
 // reports the live value from bevdirect /health.
-const bevdirectVersion = "v0.3.4"
+const bevdirectVersion = "v0.3.5"
 
 type licenseSource struct {
 	ID          string   `json:"id"`

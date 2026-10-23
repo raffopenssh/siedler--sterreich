@@ -16,7 +16,7 @@ zero; compare with `unpadKG` (umfeld `/lookup` returns `3301`, cells carry `0330
 
 ## bevdirect-serve (our cadastre assembler)
 
-Public repo `github.com/raffopenssh/vtcseamless` (MIT, preset `bevdirect/`), running **v0.3.4** (release binary,
+Public repo `github.com/raffopenssh/vtcseamless` (MIT, preset `bevdirect/`), running **v0.3.5** (release binary, 2026-10-23: ships the GEANT TLS RSA 1 intermediate + AIA fallback after BEV dropped it from its chain; `-ca-bundle`/`BEVDIRECT_CA_BUNDLE` for extras; `/health.upstream{state unknown|ok|degraded|down,tls_errors,http_5xx,last_error}`, same object on 502/pending bodies — `pending`+`ok` = keep polling, `down` = BEV unreachable, stop polling. v0.3.4:
 2026-10-15; `/viewport` carries `tiles[{z,x,y,sha256}]` + `stats.tiles_expected/fetched` for umfeld's NE QC). Cell output unchanged since v0.2.1 → registered as `bev_equivalent_tags` on the NE server, so
 upgrades inside that class need no re-baselining. Library import path `github.com/raffopenssh/vtcseamless/bevdirect`
 (not embedded yet).

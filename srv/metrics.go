@@ -275,6 +275,13 @@ func (m *metricsRegistry) bevHealth() map[string]any {
 				out["expected_version"] = bevdirectVersion
 				slog.Warn("bevdirect version drift", "running", v, "declared", bevdirectVersion)
 			}
+			// v0.3.5+: upstream{state unknown|ok|degraded|down, tls_errors, http_5xx, last_error}.
+			// "down" = BEV itself unreachable (pending cells will never arrive) — log loudly.
+			if up, _ := h["upstream"].(map[string]any); up != nil {
+				if st, _ := up["state"].(string); st == "down" || st == "degraded" {
+					slog.Warn("bevdirect upstream "+st, "tls_errors", up["tls_errors"], "http_5xx", up["http_5xx"], "last_error", up["last_error"])
+				}
+			}
 		} else {
 			out["error"] = fmt.Sprintf("status %d", resp.StatusCode)
 		}
