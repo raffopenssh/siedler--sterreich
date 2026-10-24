@@ -15,19 +15,21 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/pip install --quiet --upgrade pip
 # vtcseamless-py (MIT) — the bevdirect-serve client on the 0.02° grid (`cells_for`, `BevDirect.cell`);
-# pinned to tag v0.3.1 (pins bevdirect@v0.3.5; UpstreamDownError on upstream.state=="down") (QC provenance: `observe.tile_provenance` builds tiles{}/chunks_tiles{} from the
+# pinned to tag v0.3.2 (pins bevdirect@v0.3.6; client-side `cell_of` epsilon matching the server's cellOf fix; UpstreamDownError on upstream.state=="down") (QC provenance: `observe.tile_provenance` builds tiles{}/chunks_tiles{} from the
 # documents' tiles[] — needs bevdirect-serve ≥ v0.3.4). ne_cells/change.py (not frozen) is vendored from the
 # same tag. It ships its own copy of ne_cells (algo/pack byte-identical to ours), which the
 # vendored package below overwrites so the frozen reference in ./ne_cells stays authoritative.
-.venv/bin/pip install --quiet --no-deps "git+https://github.com/raffopenssh/vtcseamless-py@${VTCSEAMLESS_PY_TAG:-v0.3.1}"
+.venv/bin/pip install --quiet --no-deps "git+https://github.com/raffopenssh/vtcseamless-py@${VTCSEAMLESS_PY_TAG:-v0.3.2}"
 # `pip install .` honours the pins in pyproject.toml (shapely==2.1.2, h3==4.5.0).
 .venv/bin/pip install --quiet "$HERE"
 .venv/bin/python - <<'EOF'
 import shapely, h3, ne_cells, vtcseamless
 from vtcseamless.bevdirect import cells_for, BevDirect
 from vtcseamless.observe import tile_provenance, incomplete_cells
-assert vtcseamless.__version__ >= "0.3.1", vtcseamless.__version__
+assert vtcseamless.__version__ >= "0.3.2", vtcseamless.__version__
 assert cells_for(13.001, 47.001, 13.019, 47.019) == [(650, 2350)]
+# v0.3.2 cell_of epsilon: 15.54/0.02 = 776.999… must land in column 777, not 776 (bevdirect v0.3.6 cellOf fix)
+assert cells_for(15.54, 47.0, 15.56, 47.02) == [(777, 2350)], cells_for(15.54, 47.0, 15.56, 47.02)
 assert shapely.__version__ == "2.1.2", shapely.__version__
 assert h3.__version__ == "4.5.0", h3.__version__
 print(f"ok: ne_cells {ne_cells.ALGO}, vtcseamless-py {getattr(vtcseamless, '__version__', '?')}, shapely {shapely.__version__} (GEOS {shapely.geos_version_string}), h3 {h3.__version__}")

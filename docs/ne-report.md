@@ -12,7 +12,7 @@ per chunk.
 ## Files
 
 ```
-tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.3.1, pins bevdirect@v0.3.6, raises UpstreamDownError when /health.upstream.state=="down": bevdirect client
+tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.3.2, pins bevdirect@v0.3.6, client `cell_of` carries the same epsilon as the v0.3.6 server `cellOf` fix, raises UpstreamDownError when /health.upstream.state=="down": bevdirect client
                                 `cells_for`/`BevDirect.cell`, QC `observe.tile_provenance`) + ./ne_cells with pins;
                                 INSTALL_UNITS=1 also installs+enables the systemd units (sudo)
 tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless-py 0.2.0's copy; algo/pack byte-identical
