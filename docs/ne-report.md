@@ -2,7 +2,7 @@
 
 umfeld-at.exe.xyz publishes "NE cells" (declared land-use statistics per H3 res-12 cell,
 derived from the BEV cadastre; contract: umfeld's `docs/ne-cells.md`). We run our own
-bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.5**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
+bevdirect-serve (`http://127.0.0.1:8787`, public `vtcseamless` **v0.3.6**, output ≡ v0.2.1 ≡ pinned baseline v0.2.0), so we act as an
 **observer**: rebuild the same cells from our bevdirect output with the frozen python reference
 package `ne_cells` (algo `ne-cells-2`, shapely 2.1.2 + h3 4.5.0) and POST an **epoch report**
 (digests only — whole build + one per res-10 chunk, no geometry) to
@@ -12,7 +12,7 @@ per chunk.
 ## Files
 
 ```
-tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.3.1, pins bevdirect@v0.3.5, raises UpstreamDownError when /health.upstream.state=="down": bevdirect client
+tools/ne-report/setup.sh        venv at tools/ne-report/.venv (gitignored), pip installs vtcseamless-py (tag v0.3.1, pins bevdirect@v0.3.6, raises UpstreamDownError when /health.upstream.state=="down": bevdirect client
                                 `cells_for`/`BevDirect.cell`, QC `observe.tile_provenance`) + ./ne_cells with pins;
                                 INSTALL_UNITS=1 also installs+enables the systemd units (sudo)
 tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless-py 0.2.0's copy; algo/pack byte-identical
