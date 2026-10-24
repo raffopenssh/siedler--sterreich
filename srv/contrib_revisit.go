@@ -33,6 +33,13 @@ type contribRevisitKG struct {
 	KG    string `json:"kg"`
 	Kind  string `json:"kind"`  // pending | stale
 	Since string `json:"since"` // pending: oldest_since; stale: baseline_at
+	// BBox "w,s,e,n": the exact input bbox the pending/stale chunk versions were
+	// built with (the peer's layout). A revisit MUST be built with this very bbox
+	// — a different request layout moves chunk digests and umfeld answers
+	// change_suspect:"layout_change", issues no want_chunks and confirms nothing
+	// (2026-10-23: 84014/85205 with our wider head-derived bbox confirmed 0;
+	// 73510 with the peer's bbox confirmed all 98). Empty when umfeld sent none.
+	BBox string `json:"bbox,omitempty"`
 }
 
 var contribRevisitCache struct {
@@ -91,10 +98,12 @@ func contribRevisit(now time.Time) []contribRevisitKG {
 		Pending []struct {
 			KG    string `json:"kg"`
 			Since string `json:"oldest_since"`
+			BBox  string `json:"bbox"`
 		} `json:"pending"`
 		Stale []struct {
 			KG    string `json:"kg"`
 			Since string `json:"baseline_at"`
+			BBox  string `json:"bbox"`
 		} `json:"stale"`
 	}
 	if err := json.Unmarshal(body, &d); err != nil {
@@ -109,7 +118,7 @@ func contribRevisit(now time.Time) []contribRevisitKG {
 		kg := padKGCode(p.KG)
 		if len(kg) == 5 && !seen[kg] {
 			seen[kg] = true
-			list = append(list, contribRevisitKG{kg, "pending", p.Since})
+			list = append(list, contribRevisitKG{kg, "pending", p.Since, parseRevisitBBox(p.BBox)})
 		}
 	}
 	stale := d.Stale
@@ -118,9 +127,51 @@ func contribRevisit(now time.Time) []contribRevisitKG {
 		kg := padKGCode(p.KG)
 		if len(kg) == 5 && !seen[kg] {
 			seen[kg] = true
-			list = append(list, contribRevisitKG{kg, "stale", p.Since})
+			list = append(list, contribRevisitKG{kg, "stale", p.Since, parseRevisitBBox(p.BBox)})
 		}
 	}
 	c.err, c.list = "", list
 	return list
+}
+
+// parseRevisitBBox validates umfeld's "w,s,e,n" (4 finite numbers, w<e, s<n,
+// ≤ 1° a side) and returns it verbatim, else "".
+func parseRevisitBBox(s string) string {
+	s = strings.TrimSpace(s)
+	if _, ok := revisitBBoxFloats(s); !ok {
+		return ""
+	}
+	return s
+}
+
+func revisitBBoxFloats(s string) ([]float64, bool) {
+	parts := strings.Split(s, ",")
+	if len(parts) != 4 {
+		return nil, false
+	}
+	bb := make([]float64, 4)
+	for i, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return nil, false
+		}
+		bb[i] = v
+	}
+	if !(bb[2] > bb[0] && bb[3] > bb[1] && bb[2]-bb[0] <= 1 && bb[3]-bb[1] <= 1) {
+		return nil, false
+	}
+	return bb, true
+}
+
+// contribRevisitBBox: the exact bbox umfeld wants a revisit of kg built with
+// (cached list, no fetch unless the 10-min TTL is over); nil when kg is not a
+// revisit hint or carries no bbox.
+func contribRevisitBBox(kg string) []float64 {
+	for _, r := range contribRevisit(time.Now()) {
+		if r.KG == kg && r.BBox != "" {
+			bb, _ := revisitBBoxFloats(r.BBox)
+			return bb
+		}
+	}
+	return nil
 }

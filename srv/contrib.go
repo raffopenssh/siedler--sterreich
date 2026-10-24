@@ -87,29 +87,30 @@ func contribDayOf(quarter, kg string, days int) int {
 }
 
 type contribPlan struct {
-	Quarter     string   `json:"quarter"`
-	Day         int      `json:"day"`  // 0-based day of the quarter
-	Days        int      `json:"days"` // length of the quarter
-	KGs         []string `json:"kgs"`  // tonight's list: today + catch-up + fill (ahead of schedule)
-	Today       []string `json:"today"`
-	Fill        []string `json:"fill"`       // not-yet-reported KGs pulled forward to reach night_min
-	Cheap       []string `json:"cheap"`      // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
-	Revisit     []string `json:"revisit"`    // head of the night: umfeld's revisit hints (pending oldest first, then stale), ≤ 20 % of night_min — re-reported regardless of age (run.sh passes them as --revisit)
-	RevisitPend int      `json:"revisit_pending"`
-	RevisitStal int      `json:"revisit_stale"`
-	AheadDays   int      `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
-	Overdue     int      `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
-	Rolling     int      `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
-	Small       int      `json:"small"`      // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
-	NightMin    int      `json:"night_min"`
-	NightMax    int      `json:"night_max"`
-	LeftQ       int      `json:"left_quarter"`     // v2.4 KGs without a report this quarter
-	Universe    int      `json:"universe"`         // v2.4 KGs known
-	PerDayAvg   float64  `json:"per_day_avg"`      // universe / days
-	ReportedQ   int      `json:"reported_quarter"` // report files written this quarter
-	CatchUpDays int      `json:"catch_up_days"`
-	Source      string   `json:"source"` // "registry" | "none"
-	NextForKG   string   `json:"next_for_kg,omitempty"`
+	Quarter     string            `json:"quarter"`
+	Day         int               `json:"day"`  // 0-based day of the quarter
+	Days        int               `json:"days"` // length of the quarter
+	KGs         []string          `json:"kgs"`  // tonight's list: today + catch-up + fill (ahead of schedule)
+	Today       []string          `json:"today"`
+	Fill        []string          `json:"fill"`                   // not-yet-reported KGs pulled forward to reach night_min
+	Cheap       []string          `json:"cheap"`                  // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
+	Revisit     []string          `json:"revisit"`                // head of the night: umfeld's revisit hints (pending oldest first, then stale), ≤ 20 % of night_min — re-reported regardless of age (run.sh passes them as --revisit)
+	RevisitBBox map[string]string `json:"revisit_bbox,omitempty"` // kg → "w,s,e,n": the exact bbox umfeld wants the revisit built with (run.sh passes it as --revisit KG=w:s:e:n)
+	RevisitPend int               `json:"revisit_pending"`
+	RevisitStal int               `json:"revisit_stale"`
+	AheadDays   int               `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
+	Overdue     int               `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
+	Rolling     int               `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
+	Small       int               `json:"small"`      // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
+	NightMin    int               `json:"night_min"`
+	NightMax    int               `json:"night_max"`
+	LeftQ       int               `json:"left_quarter"`     // v2.4 KGs without a report this quarter
+	Universe    int               `json:"universe"`         // v2.4 KGs known
+	PerDayAvg   float64           `json:"per_day_avg"`      // universe / days
+	ReportedQ   int               `json:"reported_quarter"` // report files written this quarter
+	CatchUpDays int               `json:"catch_up_days"`
+	Source      string            `json:"source"` // "registry" | "none"
+	NextForKG   string            `json:"next_for_kg,omitempty"`
 }
 
 // contribPlanNow builds today's contrib rotation from the v2.4 registry.
@@ -171,6 +172,12 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		}
 		rev[r.KG] = true
 		p.Revisit = append(p.Revisit, r.KG)
+		if r.BBox != "" {
+			if p.RevisitBBox == nil {
+				p.RevisitBBox = map[string]string{}
+			}
+			p.RevisitBBox[r.KG] = r.BBox
+		}
 		if r.Kind == "pending" {
 			p.RevisitPend++
 		} else {

@@ -146,7 +146,10 @@ We are one of umfeld's two independent observer streams; nothing in the algorith
   fresh bevdirect assembly); if a fetched cell is still incomplete the KG is posted as is (umfeld answers
   `change_suspect:"tiles_incomplete"`, never counted as change) and logged `WARNING incomplete tile fetch`.
 - Alignment matters twice now: an unaligned build is `coverage_lossy` *and* fails the tile-completeness check —
-  `grid_cells`/`cells_union` stay the only bbox source.
+  `grid_cells`/`cells_union` stay the only bbox source for KGs we pick ourselves. **Revisit KGs** (§5b,
+  `--revisit KG=w:s:e:n` from the plan's `revisit_bbox`) are built with exactly umfeld's bbox — the layout the
+  pending chunk versions came from; a different layout is `change_suspect:"layout_change"` (no `want_chunks`,
+  nothing confirmed). See [contrib.md](contrib.md) § Plan.
 - Delta `status` can be `candidate | confirmed | pipeline | jitter`; `meta.chunks.deltas_by_status` counts them,
   `pipeline` logs a WARNING. The game reads none of umfeld's change series today; if it ever does: only
   `confirmed` is change, `jitter`/`pipeline` are shown nowhere, and `/api/v1/ne/stats?kg=` → `change.qc.cluster_share`

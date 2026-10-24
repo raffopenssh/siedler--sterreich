@@ -49,6 +49,17 @@ left_quarter, catch_up_days, source}`.
 - Contrib jobs warm the cells of **umfeld's declared viewport** (`/ne/{kg}/head` `input_bbox`,
   `contribKGCells`), wider than the admin bbox — exactly what the report reads. Cached cells missing from the
   stash are rebuilt (`enqueueWarmOpt` force skips the freshness guard).
+- **Revisit hints** (`srv/contrib_revisit.go`, umfeld `GET /contrib/api/v1/ne/revisit?observer=…`, peer token,
+  fetched ≤ 1×/10 min): `pending[]` (chunk versions sighted once — our sighting confirms) then `stale[]`
+  (baseline only) go to the **head of the night**, ≤ 20 % of `night_min`, re-reported regardless of age
+  (`revisit[]`, `revisit_pending`, `revisit_stale`; run.sh → `--revisit`). Every entry carries a `bbox`
+  (`"w,s,e,n"`, the layout the pending chunk versions were built with); the plan passes it as
+  `revisit_bbox{kg: bbox}`, run.sh as `--revisit KG=w:s:e:n`, and the KG is then **built with exactly that
+  bbox** — `contribKGCells` warms its cells and `ne_report.py` uses it as `input_bbox` instead of the
+  head-viewport cell union (`meta.input_rule:"umfeld-revisit-bbox"`). Any other layout moves chunk digests:
+  umfeld answers `change_suspect:"layout_change"`, issues no `want_chunks` and confirms nothing (2026-10-23:
+  84014/85205 with our wider bbox → 0 confirmed; 73510 with the peer's bbox → 98/98). KGs we pick ourselves
+  keep the cell-union rule (umfeld `docs/ne-change.md` §5b).
 - `reported_quarter`/`left_quarter` come from `data/ne-reports/KG.<date>.json` (`contribLastReport`). The plan
   answers `source:"none"` for seconds during an srtm registry full refresh; run.sh retries 4× 30 s before using
   the fallback sample. The prewarm writes `kg_warm` rows → `/api/lucky` sees contrib KGs as warm.

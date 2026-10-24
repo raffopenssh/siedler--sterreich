@@ -467,14 +467,37 @@ def build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n):
     return summary, lu_section(nec)
 
 
+def parse_revisit(spec):
+    """'84014=10.42:47.10:10.50:47.18,85205' → {'84014': (10.42, 47.10, 10.50, 47.18), '85205': None}."""
+    out = {}
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        kg, _, bb = tok.partition("=")
+        box = None
+        if bb:
+            try:
+                box = tuple(float(v) for v in bb.split(":"))
+                if len(box) != 4 or not (box[2] > box[0] and box[3] > box[1]):
+                    raise ValueError(bb)
+            except ValueError:
+                log(f"{kg}: ignoring malformed revisit bbox {bb!r}")
+                box = None
+        out[kg.strip().zfill(5)] = box
+    return out
+
+
 def process_kg(a, kg):
     kg = str(kg).zfill(5)
     today = dt.date.today().isoformat()
     os.makedirs(a.out, exist_ok=True)
 
     prev = latest_report(a.out, kg)
+    rbox = a.revisit.get(kg)
     if kg in a.revisit:
-        log(f"{kg}: revisit (umfeld hint) — reported regardless of report age")
+        log(f"{kg}: revisit (umfeld hint) — reported regardless of report age"
+            + (f"; built with umfeld's bbox {','.join(f'{v:.4f}' for v in rbox)}" if rbox else "; no bbox in the hint — head viewport"))
     if prev and not a.force and kg not in a.revisit:
         age = (time.time() - os.path.getmtime(prev)) / 86400
         if age < a.max_age_days:
@@ -482,26 +505,36 @@ def process_kg(a, kg):
             return "skipped"
 
     head = umfeld_head(a.umfeld, kg)
-    if head is None:
+    if head is None and not rbox:
         log(f"{kg}: skip — umfeld /head 404 (KG not built yet)")
         return "not_built"
-    lu = head.get("lu") or {}
+    lu = (head or {}).get("lu") or {}
     hdr = lu.get("header") or {}
     ibox = hdr.get("input_bbox")
+    if rbox:
+        ibox = list(rbox)
     if not ibox or len(ibox) != 4:
         log(f"{kg}: skip — /head has no lu.header.input_bbox")
         return "no_bbox"
     umfeld_lu_n, umfeld_lu_digest = hdr.get("cells_n"), hdr.get("digest")
-    bev = head.get("bev") or {}
+    bev = (head or {}).get("bev") or {}
     bev_hdr = bev.get("header") or {}
     # Viewport → aligned cells → the union of those cells is the build's input bbox (stable per cell block).
     cells = grid_cells(ibox)
     if not cells:
         log(f"{kg}: skip — viewport {ibox} covers no aligned cell")
         return "no_cells"
-    ubox = cells_union(cells)
-    bbox_s = ",".join(f"{v:.2f}" for v in ubox)
-    full = full_cells_in(ibox, cells)
+    if rbox:
+        # Revisit (docs/ne-change.md §5b): the build bbox is EXACTLY umfeld's — the layout the pending
+        # chunk versions were built with. Our own union-of-cells rule would move chunk digests and the
+        # answer is change_suspect:"layout_change" with no want_chunks and nothing confirmed.
+        ubox = tuple(float(v) for v in rbox)
+        bbox_s = ",".join(f"{v:.4f}" for v in ubox)
+        full = cells
+    else:
+        ubox = cells_union(cells)
+        bbox_s = ",".join(f"{v:.2f}" for v in ubox)
+        full = full_cells_in(ibox, cells)
     log(f"{kg}: viewport={[float(v) for v in ibox]} → {len(cells)} aligned cells "
         f"(i {cells[0][0]}..{cells[-1][0]}, j {cells[0][1]}..{cells[-1][1]}; {len(full)} fully inside the viewport) "
         f"input_bbox={bbox_s}; umfeld lu cells_n={umfeld_lu_n} digest={umfeld_lu_digest}"
@@ -578,7 +611,7 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
         f.write(report_s)
     os.replace(report_path + ".tmp", report_path)
     meta = dict(kg=kg, date=today, epoch=a.epoch, viewport_bbox=[float(v) for v in ibox], input_bbox=list(ubox),
-                input_rule="union-of-aligned-cells", cells=[dict(i=i, j=j) for i, j in cells], full_cells=len(full), fetched=fetched,
+                input_rule="umfeld-revisit-bbox" if a.revisit.get(kg) else "union-of-aligned-cells", cells=[dict(i=i, j=j) for i, j in cells], full_cells=len(full), fetched=fetched,
                 build=summary if not skipped else dict(skipped=True, reused=reused_from, tiles_hash=tiles["hash"]), umfeld=dict(lu_cells_n=umfeld_lu_n, lu_digest=umfeld_lu_digest, lu_source=hdr.get("source"),
                                            bev_cells_n=bev_hdr.get("cells_n"), bev_digest=bev_hdr.get("digest"), bev_source=bev_hdr.get("source")),
                 report=dict(digest=report["digest"], cells_n=report["cells_n"], chunks=len(report["chunks"]), chunks_total=report["chunks_total"],
@@ -667,7 +700,9 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true",
                     help="ignore --max-age-days (rebuild); the POST is still skipped when the same digest was posted < 20 h ago")
     ap.add_argument("--revisit", default="",
-                    help="comma-separated KGs from umfeld's revisit hints (contrib plan revisit[]): reported regardless of --max-age-days")
+                    help="comma-separated KGs from umfeld's revisit hints (contrib plan revisit[]), each KG or KG=w:s:e:n: "
+                         "reported regardless of --max-age-days and, with a bbox, built with EXACTLY that bbox (the pending "
+                         "chunk versions' layout; any other layout → change_suspect layout_change, nothing confirmed)")
     ap.add_argument("--repost", action="store_true",
                     help="POST even if we reported this very digest < 20 h ago (umfeld counts it as no sighting; protocol QA only)")
     ap.add_argument("--no-skip", action="store_true",
@@ -677,7 +712,7 @@ def main(argv=None):
     ap.add_argument("--keep-cells", action="store_true", help="QA only: ALSO write the fetched cell_*.json under --work/KG (cadastre on disk — delete afterwards)")
     ap.add_argument("--pause", type=float, default=5, help="seconds between KGs")
     a = ap.parse_args(argv)
-    a.revisit = {k.strip().zfill(5) for k in a.revisit.split(",") if k.strip()}
+    a.revisit = parse_revisit(a.revisit)
     # No disk cache in the client: the fetched documents live only in RAM for the duration of one KG.
     a.bevc = BevDirect(a.bev, cache_dir=None, deadline_s=900, log=log)
     try:

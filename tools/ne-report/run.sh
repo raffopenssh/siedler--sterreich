@@ -45,14 +45,18 @@ except Exception as e:
 v = d.get("kgs")
 if isinstance(v, list) and v:
     print(" ".join(str(k).zfill(5) for k in v))
-    print(",".join(str(k).zfill(5) for k in (d.get("revisit") or [])))
+    bb = d.get("revisit_bbox") or {}
+    # KG or KG=w:s:e:n — the exact bbox umfeld wants the revisit built with (docs/contrib.md § revisit)
+    print(",".join(str(k).zfill(5) + ("=" + bb[str(k).zfill(5)].replace(",", ":") if bb.get(str(k).zfill(5)) else "")
+                   for k in (d.get("revisit") or [])))
     print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
           % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"),
              len(d.get("today") or []), len(d.get("cheap") or []),
              len(v), d.get("universe"), d.get("reported_quarter")), file=sys.stderr)
 ' 2>/tmp/ne-report-plan.err)
   [ -s /tmp/ne-report-plan.err ] && cat /tmp/ne-report-plan.err >&2
-  # Line 1 = tonight's KGs (revisit hints first), line 2 = the revisit subset (reported regardless of age).
+  # Line 1 = tonight's KGs (revisit hints first), line 2 = the revisit subset (reported regardless of age,
+  # KG=w:s:e:n = built with exactly umfeld's bbox).
   REVISIT=$(printf '%s\n' "$KGS" | sed -n 2p)
   KGS=$(printf '%s\n' "$KGS" | sed -n 1p)
   if [ -n "$KGS" ]; then

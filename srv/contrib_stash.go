@@ -231,13 +231,18 @@ func contribStashStatus() map[string]any {
 // rule as ne_report.py / vtcseamless cells_for), which is wider than the
 // generalised admin bbox (03012: 15 cells vs 9). The head is a bbox + epoch,
 // not cadastre data: cached 7 d (`ne-head:v1:<kg>`). Falls back to the admin
-// bbox when umfeld has no head (KG not built) or is unreachable.
+// bbox when umfeld has no head (KG not built) or is unreachable. A KG on
+// umfeld's revisit list uses the exact bbox of that hint instead (the layout
+// the pending chunk versions were built with, contrib_revisit.go).
 func (s *Server) contribKGCells(kg string) []cellID {
 	k := admin().KGs[kg]
 	if k == nil {
 		return nil
 	}
-	bb, _ := s.contribHeadBBox(kg)
+	bb := contribRevisitBBox(kg)
+	if len(bb) != 4 {
+		bb, _ = s.contribHeadBBox(kg)
+	}
 	if len(bb) != 4 || bb[2] <= bb[0] || bb[3] <= bb[1] || bb[2]-bb[0] > 1 || bb[3]-bb[1] > 1 {
 		return k.cells()
 	}
@@ -279,4 +284,3 @@ func (s *Server) contribHeadBBox(kg string) (bb []float64, known bool) {
 	}
 	return nil, false
 }
-
