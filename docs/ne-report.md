@@ -188,3 +188,15 @@ python (11–44 s). bevdirect's cell cache went 2 → 37 cells over the three KG
    `/api/contrib/plan` (quarterly rotation) instead, never the whole list.
 3. `ne_cells build` only checks `ready`, not `truncated`, on bevdirect documents — we check both.
 4. The timer runs on the **Europe/Vienna** wall clock (01:00); the host clock is UTC — `journalctl` shows UTC.
+
+## QC: border rows / KG attribution (2026-10-24)
+
+umfeld's peer note of 2026-10-24 reported border rows with `kg_share=255` and whole chunks outside the KG
+under our observer (80004, 12117). It does not reproduce: the frozen `ne_cells` already tags every parcel with
+bevdirect's `kg_code` (`canon.py`), `own`/`kg_share` only count parcels of the reported KG, `land` is the union
+over all KGs (the contract: border cells identical across KGs except `kg_share`), and chunks exist only where
+cells intersect own parcels. `tools/ne-report/ne_qc_border.py <kg>` rebuilds a KG exactly like the pipeline
+(RAM only) and compares it with umfeld's live container — 80004: 2238/2238 chunks identical set, 0 rows outside
+umfeld's viewport, 0 rows with 255 vs < 200; 12117: 352/352, 0, 2 (register drift since index-2026-03). Run it
+before answering any boundary-chunk complaint; the 114 "wanted" chunks of 80004 were umfeld's missing
+digest_ap statistics, not geography.
