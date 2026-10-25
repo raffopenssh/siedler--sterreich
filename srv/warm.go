@@ -306,7 +306,7 @@ func (s *Server) warmPlanner() {
 	// registry is loaded before the first plan of the day is made.
 	s.enhancedKGsRaw()
 	go s.warmSpreadLoop()  // far destinations ≥ 30 km apart (warmspread.go)
-	go s.warmContribLoop() // tonight's NE-report KGs, every day at 23:00 Vienna (contrib.go)
+	go s.warmContribLoop() // tonight's NE-report KGs, every day at 21:00 Vienna (contrib.go)
 	// Keep-warm (active tier only): the v2.4 KGs of Gemeinden played in the
 	// last week, capped (warmactivity.go). Never the whole v2.4 universe —
 	// that is 1 300+ KGs and would re-download gigabytes a day with no player.

@@ -86,9 +86,9 @@ node tools/i18n/audit.js srv/static/game.js; tools/xb.sh --quick # UI checks (do
   apex and every structure; the game shows discrepancies (verdict, heat overlay, Spurenleser XP). Registry
   (`srv/kgregistry.go`) + universe check (`srv/kguniverse.go`) decide which KGs are v2.4; adoption purges and
   re-warms them.
-- **Contrib (nightly, Vienna time).** 22:00 the server prewarms tonight's ~200 KGs (plan from
+- **Contrib (nightly, Vienna time).** 21:00 the server prewarms tonight's ~200 KGs (plan from
   `/api/contrib/plan`, whole 7 850-KG universe over a quarter, small KGs skipped) and keeps the *raw* bevdirect
-  docs in a RAM stash; 01:00 `ne-report.timer` rebuilds the declared cells with the frozen `ne_cells` package from
+  docs in a RAM stash; 00:00 `ne-report.timer` rebuilds the declared cells with the frozen `ne_cells` package from
   the stash and POSTs digests + changed chunk statistics to umfeld. Nothing contrib-related runs by day.
 - **Resilience.** Per-host circuit breaker (`srv/breaker.go`) answers synthetic 503 `status:"down"` in ~0 ms;
   `status:"busy"` for rate limits; client layers reschedule, only a cadastre outage toasts.
@@ -108,7 +108,7 @@ srv/upstreams.go          provider URLs, 0.02° grid, admin table     srv/breake
 srv/warm*.go              warming (plan, tiers, boost, spread)       srv/lucky*.go, neobserved.go  spawn picking
 srv/necells.go            NE cells fetch/enrich, /api/ne, trees/buildings from NE
 srv/landscape.go          srtm public-tier adapters, enhanced-kgs    srv/kgregistry.go, kguniverse.go
-srv/contrib.go            nightly plan + 22:00 prewarm               srv/contrib_stash.go, contrib_stats.go
+srv/contrib.go            nightly plan + 21:00 prewarm               srv/contrib_stash.go, contrib_stats.go
 srv/siblings.go           farm/holz/gw proxies, hostSlots            srv/water.go, dossier.go, timber.go
 srv/harveststate.go       regrowth value                             srv/treasures.go, smash.go, similar.go
 srv/agent*.go, discover.go, llmahead.go, leaderboard.go   agent surface
