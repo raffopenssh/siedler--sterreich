@@ -87,30 +87,31 @@ func contribDayOf(quarter, kg string, days int) int {
 }
 
 type contribPlan struct {
-	Quarter     string            `json:"quarter"`
-	Day         int               `json:"day"`  // 0-based day of the quarter
-	Days        int               `json:"days"` // length of the quarter
-	KGs         []string          `json:"kgs"`  // tonight's list: today + catch-up + fill (ahead of schedule)
-	Today       []string          `json:"today"`
-	Fill        []string          `json:"fill"`                   // not-yet-reported KGs pulled forward to reach night_min
-	Cheap       []string          `json:"cheap"`                  // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
-	Revisit     []string          `json:"revisit"`                // head of the night: umfeld's revisit hints (pending oldest first, then stale), ≤ 20 % of night_min — re-reported regardless of age (run.sh passes them as --revisit)
-	RevisitBBox map[string]string `json:"revisit_bbox,omitempty"` // kg → "w,s,e,n": the exact bbox umfeld wants the revisit built with (run.sh passes it as --revisit KG=w:s:e:n)
-	RevisitPend int               `json:"revisit_pending"`
-	RevisitStal int               `json:"revisit_stale"`
-	AheadDays   int               `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
-	Overdue     int               `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
-	Rolling     int               `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
-	Small       int               `json:"small"`      // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
-	NightMin    int               `json:"night_min"`
-	NightMax    int               `json:"night_max"`
-	LeftQ       int               `json:"left_quarter"`     // v2.4 KGs without a report this quarter
-	Universe    int               `json:"universe"`         // v2.4 KGs known
-	PerDayAvg   float64           `json:"per_day_avg"`      // universe / days
-	ReportedQ   int               `json:"reported_quarter"` // report files written this quarter
-	CatchUpDays int               `json:"catch_up_days"`
-	Source      string            `json:"source"` // "registry" | "none"
-	NextForKG   string            `json:"next_for_kg,omitempty"`
+	Quarter      string            `json:"quarter"`
+	Day          int               `json:"day"`  // 0-based day of the quarter
+	Days         int               `json:"days"` // length of the quarter
+	KGs          []string          `json:"kgs"`  // tonight's list: today + catch-up + fill (ahead of schedule)
+	Today        []string          `json:"today"`
+	Fill         []string          `json:"fill"`                   // not-yet-reported KGs pulled forward to reach night_min
+	Cheap        []string          `json:"cheap"`                  // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
+	Revisit      []string          `json:"revisit"`                // head of the night: umfeld's revisit hints (pending oldest first, then stale, then no_log), ≤ ⅓ of night_min — re-reported regardless of age (run.sh passes them as --revisit)
+	RevisitBBox  map[string]string `json:"revisit_bbox,omitempty"` // kg → "w,s,e,n": the exact bbox umfeld wants the revisit built with (run.sh passes it as --revisit KG=w:s:e:n)
+	RevisitPend  int               `json:"revisit_pending"`
+	RevisitStal  int               `json:"revisit_stale"`
+	RevisitNoLog int               `json:"revisit_no_log"`
+	AheadDays    int               `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
+	Overdue      int               `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
+	Rolling      int               `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
+	Small        int               `json:"small"`      // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
+	NightMin     int               `json:"night_min"`
+	NightMax     int               `json:"night_max"`
+	LeftQ        int               `json:"left_quarter"`     // v2.4 KGs without a report this quarter
+	Universe     int               `json:"universe"`         // v2.4 KGs known
+	PerDayAvg    float64           `json:"per_day_avg"`      // universe / days
+	ReportedQ    int               `json:"reported_quarter"` // report files written this quarter
+	CatchUpDays  int               `json:"catch_up_days"`
+	Source       string            `json:"source"` // "registry" | "none"
+	NextForKG    string            `json:"next_for_kg,omitempty"`
 }
 
 // contribPlanNow builds today's contrib rotation from the v2.4 registry.
@@ -178,10 +179,13 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 			}
 			p.RevisitBBox[r.KG] = r.BBox
 		}
-		if r.Kind == "pending" {
+		switch r.Kind {
+		case "pending":
 			p.RevisitPend++
-		} else {
+		case "stale":
 			p.RevisitStal++
+		default:
+			p.RevisitNoLog++
 		}
 	}
 	var sched []string
@@ -384,7 +388,7 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
-		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
+		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "revisit_no_log": p.RevisitNoLog, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
 		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "wave": contribWaveStatus(time.Now()), "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
 }

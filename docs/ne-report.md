@@ -110,6 +110,12 @@ Same token, same report POST; two additions in `ne_report.py`:
    is then not sent at all (`meta.post.header_only:true`, log "header-only report: unchanged"). Any other answer
    (changed digest, first report, old server → 4xx) is followed by the full report as before. `meta.post_head{}`
    keeps the step-0 answer. Full reports with `chunks{}` behave unchanged. Protocol: umfeld `/api/v1/docs/ne-change.md`.
+   **Step 0 is skipped** (`meta.step0_skipped`, log "step 0 skipped (…) — sending the full report with chunks_ap") for
+   every `--revisit` KG and for a KG none of whose accepted POSTs ever carried the chunk list (`chunk_list_sent`: a
+   meta with a chunk-protocol answer `want_ap`/`chunks_held`/`chunks_reported`). Reason (2026-10-27): a header
+   answered `unchanged:true` is a *sighting* but not a *chunk-bearing report* — a KG baselined before 2026-10-08 was
+   answered `unchanged` night after night and never got a chunk log (umfeld `revisit.no_log`, 2 035 KGs, its declared
+   layer still the March index), and a `stale` revisit stayed stale (01205 re-reported 10-24/25/26 for nothing).
 
 Verify after a run: `meta.post.answer.want_chunks` present, `meta.chunks.stored > 0` on the first (baseline) pass,
 `unchanged:true` + `header_only:true` (no chunk list sent) on an unchanged re-run.

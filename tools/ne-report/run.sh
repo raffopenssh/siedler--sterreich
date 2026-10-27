@@ -49,8 +49,8 @@ if isinstance(v, list) and v:
     # KG or KG=w:s:e:n — the exact bbox umfeld wants the revisit built with (docs/contrib.md § revisit)
     print(",".join(str(k).zfill(5) + ("=" + bb[str(k).zfill(5)].replace(",", ":") if bb.get(str(k).zfill(5)) else "")
                    for k in (d.get("revisit") or [])))
-    print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
-          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"),
+    print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale, %s no_log), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
+          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"), d.get("revisit_no_log"),
              len(d.get("today") or []), len(d.get("cheap") or []),
              len(v), d.get("universe"), d.get("reported_quarter")), file=sys.stderr)
 ' 2>/tmp/ne-report-plan.err)

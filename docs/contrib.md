@@ -51,8 +51,17 @@ left_quarter, catch_up_days, source}`.
   stash are rebuilt (`enqueueWarmOpt` force skips the freshness guard).
 - **Revisit hints** (`srv/contrib_revisit.go`, umfeld `GET /contrib/api/v1/ne/revisit?observer=…`, peer token,
   fetched ≤ 1×/10 min): `pending[]` (chunk versions sighted once — our sighting confirms) then `stale[]`
-  (baseline only) go to the **head of the night**, ≤ 20 % of `night_min`, re-reported regardless of age
-  (`revisit[]`, `revisit_pending`, `revisit_stale`; run.sh → `--revisit`). Every entry carries a `bbox`
+  (baseline only), then **`no_log[]`** (KGs without any chunk log — their declared layer on umfeld is still the March index; one
+  chunk-bearing report covering the KG's universe bbox gives a baseline and makes its chunks authoritative, umfeld
+  `ne-change.md` §4b) go to the **head of the night**, ≤ ⅓ of `night_min` (umfeld caps each list at 50),
+  re-reported regardless of age (`revisit[]`, `revisit_pending`, `revisit_stale`, `revisit_no_log`; run.sh →
+  `--revisit`). `obs_on_index[]` is for NEO1 observers, not us. Every revisit KG is POSTed as a **full report**
+  (no header-only step 0, [ne-report.md](ne-report.md) § step 0): a header answered `unchanged` confirms but does
+  not count as a chunk-bearing report, so a `stale`/`no_log` KG would stay on the list forever.
+  Umfeld (2026-10-27, §4b) treats every logged chunk as authoritative for its cell set: index cells our build no
+  longer holds are served from the neighbour KG's rows or, orphaned, as `flags.superseded` fallbacks (bit 7 —
+  ignore when diffing against our build; `header.view.hidden` counts them). Reporting both sides of a moved
+  boundary clears them on its own — nothing to flag or delete. Every entry carries a `bbox`
   (`"w,s,e,n"`, the layout the pending chunk versions were built with); the plan passes it as
   `revisit_bbox{kg: bbox}`, run.sh as `--revisit KG=w:s:e:n`, and the KG is then **built with exactly that
   bbox** — `contribKGCells` warms its cells and `ne_report.py` uses it as `input_bbox` instead of the

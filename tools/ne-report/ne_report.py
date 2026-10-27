@@ -374,6 +374,25 @@ def last_post(outdir, kg):
     return None
 
 
+def chunk_list_sent(outdir, kg):
+    """True when one of our accepted POSTs of this KG carried the chunk list (a chunk-protocol answer:
+    want_ap / chunks_held / chunks_reported, umfeld ≥ 2026-10-08). A KG whose only full report predates
+    the chunk protocol is answered `unchanged:true` to a header probe forever (step 0 dedupes on the
+    digest, chunk-bearing or not) and never gets a chunk log — umfeld lists it as revisit no_log."""
+    for f in sorted(glob.glob(os.path.join(outdir, f"{kg}.????-??-??.meta.json")), reverse=True):
+        try:
+            with open(f) as fh:
+                m = json.load(fh)
+        except Exception:
+            continue
+        post = m.get("post") or {}
+        ans = post.get("answer") or {}
+        if post.get("status") == 200 and not post.get("header_only") and isinstance(ans, dict) \
+                and any(k in ans for k in ("want_ap", "chunks_held", "chunks_reported")):
+            return True
+    return False
+
+
 def last_full_build_age_d(outdir, kg):
     """Days since our newest *full* build of this KG (meta files, newest first; a reused report has
     build.skipped:true and does not count), None when no full build is on record."""
@@ -640,13 +659,24 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
         # deduped on token + source class + algo + digest + epoch, bbox-independent. `unchanged:true` =
         # our last report of this KG had the same digest → the chunk list (≈ 40–400 KB) is not sent at
         # all. Any other answer (changed, first report, old server → 4xx) falls through to the full POST.
+        # Step 0 is skipped (full report with chunks_ap straight away, ≈ 40–400 KB) when umfeld asked
+        # for this KG (revisit hint: stale = one chunk-bearing report, no_log = none — a header answered
+        # unchanged:true is a sighting but not a chunk-bearing report, so the KG would stay on the
+        # list night after night: 01205 on 2026-10-24/25/26) or when none of our POSTs of this KG ever
+        # carried the chunk list (pre-2026-10-08 baseline → header probe says unchanged forever).
+        full_reason = "revisit hint" if kg in a.revisit else (None if chunk_list_sent(a.out, kg) else "no chunk list on record")
         head = {k: v for k, v in report.items() if k not in ("chunks", "chunks_ap", "chunks_tiles")}
-        st, body = post_report(a.umfeld, kg, json.dumps(head, separators=(",", ":")).encode(), token, a.contrib_prefix)
-        try:
-            ans = json.loads(body)
-        except Exception:
-            ans = dict(raw=body[:500].decode("utf-8", "replace"))
-        meta["post_head"] = dict(status=st, answer=ans)
+        if full_reason:
+            log(f"{kg}: step 0 skipped ({full_reason}) — sending the full report with chunks_ap")
+            st, ans = 0, {}
+            meta["step0_skipped"] = full_reason
+        else:
+            st, body = post_report(a.umfeld, kg, json.dumps(head, separators=(",", ":")).encode(), token, a.contrib_prefix)
+            try:
+                ans = json.loads(body)
+            except Exception:
+                ans = dict(raw=body[:500].decode("utf-8", "replace"))
+            meta["post_head"] = dict(status=st, answer=ans)
         if st == 200 and ans.get("unchanged") is True:
             log(f"{kg}: header-only report: unchanged since {ans.get('unchanged_since')} — chunk list not sent")
             meta["post"] = dict(status=st, answer=ans, token_source=token_src, header_only=True, posted_at=time.time())
@@ -656,7 +686,8 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
                 log(f"{kg}: WARNING header probe answered 202 need={ans.get('need')} for a build reported "
                     f"{(time.time() - lp[1]) / 3600:.1f} h ago — step 0 dedupe miss on umfeld's side?")
                 meta["step0_miss"] = True
-            log(f"{kg}: header-only report HTTP {st}: unchanged={ans.get('unchanged')} — sending the full report")
+            if not full_reason:
+                log(f"{kg}: header-only report HTTP {st}: unchanged={ans.get('unchanged')} — sending the full report")
             st, body = post_report(a.umfeld, kg, report_s.encode(), token, a.contrib_prefix)
             try:
                 ans = json.loads(body)

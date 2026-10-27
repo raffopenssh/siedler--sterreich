@@ -16,22 +16,27 @@ import (
 // Revisit hints — umfeld steers which KGs a contributor should observe again
 // (GET /contrib/api/v1/ne/revisit?observer=…&limit=50, Bearer token): `pending[]`
 // = KGs holding chunk versions sighted once (a second sighting ≥ same_pass_window
-// later confirms the change), `stale[]` = KGs with a single baseline-only report.
-// contribPlanNow puts them at the head of the night, capped at contribRevisitShare
-// of night_min; the rest of the night is the normal order. The answer refreshes
+// later confirms the change), `stale[]` = KGs with a single baseline-only report,
+// `no_log[]` (2026-10-27) = KGs without any chunk log (declared picture still the
+// March index; one chunk-bearing report covering `bbox` gives a baseline and makes
+// the chunks authoritative). `obs_on_index[]` is for NEO1 observers — not us.
+// contribPlanNow puts them at the head of the night in that order, capped at
+// contribRevisitShare of night_min; the rest of the night is the normal order.
+// ne_report.py sends every revisit KG as a full report (no header-only step 0):
+// a header answered unchanged:true confirms but is not a chunk-bearing report. The answer refreshes
 // every 10 min on umfeld's side, so it is fetched at most once per 10 min here
 // (one small JSON in RAM, no disk). An unreachable endpoint = no hints, never a
 // failed plan.
 const (
 	contribObserver     = "siedler-oesterreich"
-	contribRevisitShare = 0.2 // ≤ 20 % of night_min
+	contribRevisitShare = 1.0 / 3 // ≤ ⅓ of night_min (umfeld caps each list at 50; pending + stale + no_log)
 	contribRevisitLimit = 50
 	contribRevisitTTL   = 10 * time.Minute
 )
 
 type contribRevisitKG struct {
 	KG    string `json:"kg"`
-	Kind  string `json:"kind"`  // pending | stale
+	Kind  string `json:"kind"`  // pending | stale | no_log
 	Since string `json:"since"` // pending: oldest_since; stale: baseline_at
 	// BBox "w,s,e,n": the exact input bbox the pending/stale chunk versions were
 	// built with (the peer's layout). A revisit MUST be built with this very bbox
@@ -105,6 +110,12 @@ func contribRevisit(now time.Time) []contribRevisitKG {
 			Since string `json:"baseline_at"`
 			BBox  string `json:"bbox"`
 		} `json:"stale"`
+		NoLog []struct {
+			KG      string `json:"kg"`
+			HasObs  bool   `json:"has_obs"`
+			Reports int    `json:"reports"`
+			BBox    string `json:"bbox"`
+		} `json:"no_log"`
 	}
 	if err := json.Unmarshal(body, &d); err != nil {
 		c.err = "bad json"
@@ -128,6 +139,13 @@ func contribRevisit(now time.Time) []contribRevisitKG {
 		if len(kg) == 5 && !seen[kg] {
 			seen[kg] = true
 			list = append(list, contribRevisitKG{kg, "stale", p.Since, parseRevisitBBox(p.BBox)})
+		}
+	}
+	for _, p := range d.NoLog { // umfeld's order: KGs with an observed layer first
+		kg := padKGCode(p.KG)
+		if len(kg) == 5 && !seen[kg] {
+			seen[kg] = true
+			list = append(list, contribRevisitKG{kg, "no_log", "", parseRevisitBBox(p.BBox)})
 		}
 	}
 	c.err, c.list = "", list
