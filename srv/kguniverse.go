@@ -81,6 +81,7 @@ type kgUniverseDoc struct {
 	GeneratedAt  string          `json:"generated_at"`
 	KGCount      int             `json:"kg_count"`
 	UniverseHash string          `json:"universe_hash"`
+	BBoxRevision int             `json:"bbox_revision,omitempty"` // umfeld bbox layout revision (2 = VGD envelope ∪ parcel envelope); not part of the universe
 	PeerAgree    string          `json:"peer_agree,omitempty"` // X-KG-Universe-Peer-Agree ("true"/"false"/"")
 	KGs          []kgUniverseRow `json:"kgs"`
 }
@@ -193,11 +194,16 @@ func (s *Server) kgUniverseRefresh() {
 			}
 		}
 	default:
-		// A 200 while we hold a verified copy means umfeld's ETag moved:
-		// a new universe epoch. Record it (sticky) — we stop, we don't guess.
-		if prev != nil && prev.ETag != "" && (prev.ETag != doc.ETag || prev.UniverseHash != doc.UniverseHash) {
+		// A 200 while we hold a verified copy means umfeld's ETag moved. The
+		// universe (= the code set) is the hash; the ETag also carries a bbox
+		// revision suffix ("<hash>-b2") that moves when umfeld re-derives KG
+		// envelopes — same universe, no epoch. Only a hash move is sticky.
+		if prev != nil && prev.ETag != "" && prev.UniverseHash != doc.UniverseHash {
 			kgUni.epochChange = fmt.Sprintf("umfeld universe epoch changed: etag %q → %q, hash %s… → %s…",
 				prev.ETag, doc.ETag, prev.UniverseHash[:12], doc.UniverseHash[:12])
+		} else if prev != nil && prev.ETag != "" && prev.ETag != doc.ETag {
+			slog.Info("kg universe: umfeld etag moved, hash unchanged (bbox revision)",
+				"etag", doc.ETag, "bbox_revision", doc.BBoxRevision, "prev_bbox_revision", prev.BBoxRevision)
 		}
 		kgUni.doc, kgUni.source = doc, "umfeld"
 		if werr := writeKGUniverseMirror(doc); werr != nil {
@@ -236,6 +242,7 @@ func fetchKGUniverse(etag string) (*kgUniverseDoc, int, error) {
 			KGCount      int             `json:"kg_count"`
 			Contract     int             `json:"kg_count_contract"`
 			UniverseHash string          `json:"universe_hash"`
+			BBoxRevision int             `json:"bbox_revision"`
 			GeneratedAt  string          `json:"generated_at"`
 			KGs          []kgUniverseRow `json:"kgs"`
 		} `json:"data"`
@@ -261,7 +268,7 @@ func fetchKGUniverse(etag string) (*kgUniverseDoc, int, error) {
 	}
 	return &kgUniverseDoc{
 		FetchedAt: time.Now().UTC(), ETag: resp.Header.Get("ETag"), GeneratedAt: d.GeneratedAt,
-		KGCount: d.KGCount, UniverseHash: d.UniverseHash, KGs: d.KGs,
+		KGCount: d.KGCount, UniverseHash: d.UniverseHash, BBoxRevision: d.BBoxRevision, KGs: d.KGs,
 		PeerAgree: strings.ToLower(strings.TrimSpace(resp.Header.Get("X-KG-Universe-Peer-Agree"))),
 	}, 200, nil
 }
@@ -368,6 +375,9 @@ func kgUniverseStatus() map[string]any {
 		m["umfeld_hash"] = d.UniverseHash
 		m["umfeld_generated_at"] = d.GeneratedAt
 		m["umfeld_etag"] = d.ETag
+		if d.BBoxRevision != 0 {
+			m["umfeld_bbox_revision"] = d.BBoxRevision
+		}
 		m["fetched_at"] = d.FetchedAt
 		if d.PeerAgree != "" {
 			m["umfeld_peer_agree"] = d.PeerAgree
