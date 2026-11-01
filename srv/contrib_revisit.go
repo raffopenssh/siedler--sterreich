@@ -29,8 +29,8 @@ import (
 // failed plan.
 const (
 	contribObserver     = "siedler-oesterreich"
-	contribRevisitShare = 1.0 / 3 // ≤ ⅓ of night_min (umfeld caps each list at 50; pending + stale + no_log)
-	contribRevisitLimit = 50
+	contribRevisitShare = 1.0 / 3 // ≤ ⅓ of night_min (pending + stale + no_log, per-peer filtered by umfeld since 2026-11-01)
+	contribRevisitLimit = 200     // per list (umfeld allows ≤ 8000 / ?all=1 since 2026-11-01)
 	contribRevisitTTL   = 10 * time.Minute
 )
 
@@ -52,6 +52,66 @@ var contribRevisitCache struct {
 	at   time.Time
 	list []contribRevisitKG
 	err  string
+}
+
+// contribNoLogCache: umfeld's *whole* no_log list (?kind=no_log&all=1, ~1 200
+// rows 2026-11-01) kg → bbox. contribPlanNow treats these KGs as unreported this
+// quarter: a digest-only or legacy-layout report never gave them a chunk log, so
+// the landing-page "ever digested" share stayed at 96.6 % although we had
+// reported them. They re-enter the fill in due order (cheap when warm), built
+// with umfeld's bbox (run.sh passes every planned KG with a revisit_bbox as
+// --revisit). Umfeld hides KGs we reported < min_age_days (7) ago.
+var contribNoLogCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	list map[string]string
+}
+
+// contribNoLog returns kg → bbox for every KG umfeld lists without a chunk log
+// (cached contribRevisitTTL; previous list on failure, nil when unavailable).
+func contribNoLog(now time.Time) map[string]string {
+	c := &contribNoLogCache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.at.IsZero() && now.Sub(c.at) < contribRevisitTTL {
+		return c.list
+	}
+	c.at = now
+	tok := contribToken()
+	if tok == "" {
+		return nil
+	}
+	url := strings.TrimSuffix(umfeldAPI, "/api/v1") + "/contrib/api/v1/ne/revisit?observer=" + contribObserver + "&kind=no_log&all=1"
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := upstreamClient.Do(req)
+	if err != nil {
+		slog.Warn("contrib: no_log fetch failed", "err", err)
+		return c.list
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode != 200 {
+		slog.Warn("contrib: no_log fetch failed", "status", resp.StatusCode)
+		return c.list
+	}
+	var d struct {
+		NoLog []struct {
+			KG   string `json:"kg"`
+			BBox string `json:"bbox"`
+		} `json:"no_log"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		return c.list
+	}
+	m := map[string]string{}
+	for _, p := range d.NoLog {
+		if kg := padKGCode(p.KG); len(kg) == 5 {
+			m[kg] = parseRevisitBBox(p.BBox)
+		}
+	}
+	c.list = m
+	return m
 }
 
 // contribToken is the contributor (peer) token: ne-peer.key in the repo root, else

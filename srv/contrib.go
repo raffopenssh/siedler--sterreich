@@ -99,10 +99,11 @@ type contribPlan struct {
 	RevisitPend  int               `json:"revisit_pending"`
 	RevisitStal  int               `json:"revisit_stale"`
 	RevisitNoLog int               `json:"revisit_no_log"`
-	AheadDays    int               `json:"ahead_days"` // how far ahead of the hash schedule the fill reaches
-	Overdue      int               `json:"overdue"`    // fill KGs whose hash day already passed (promoted mid-quarter)
-	Rolling      int               `json:"rolling"`    // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
-	Small        int               `json:"small"`      // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
+	NoLogQ       int               `json:"no_log_requeued"` // KGs reported this quarter that umfeld still lists without a chunk log → treated as unreported (fill again, umfeld's bbox)
+	AheadDays    int               `json:"ahead_days"`      // how far ahead of the hash schedule the fill reaches
+	Overdue      int               `json:"overdue"`         // fill KGs whose hash day already passed (promoted mid-quarter)
+	Rolling      int               `json:"rolling"`         // fill KGs already reported this quarter, re-reported oldest first (continuous coverage of the whole universe)
+	Small        int               `json:"small"`           // unreported KGs deferred: ne_report could not report them < 7 d ago (KG.<date>.skip marker: not_built / too_big / failed …) — since 2026-10-14 no KG is skipped as small
 	NightMin     int               `json:"night_min"`
 	NightMax     int               `json:"night_max"`
 	LeftQ        int               `json:"left_quarter"`     // v2.4 KGs without a report this quarter
@@ -147,6 +148,17 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 			reported[kg] = true
 		}
 	}
+	// KGs umfeld still lists without a chunk log count as unreported: our earlier
+	// report (digest-only, or a legacy layout) never became a baseline there, so
+	// the fill takes them again, in due order, built with umfeld's bbox.
+	tonight := now.Format("2006-01-02")
+	nolog := contribNoLog(now)
+	for kg := range nolog {
+		if reported[kg] && lastReport[kg] < tonight {
+			delete(reported, kg)
+			p.NoLogQ++
+		}
+	}
 	p.ReportedQ = len(reported)
 	// Scheduled part: today's hash day + the missed nights before it — only KGs
 	// that are still unreported this quarter. Before 2026-10-14 today's KGs went
@@ -161,7 +173,6 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// ones — at most contribRevisitShare of night_min, within the budget, not on
 	// top of it. Reported-this-quarter does not exclude them (that is the point);
 	// a KG already reported tonight or deferred as unreportable is left out.
-	tonight := now.Format("2006-01-02")
 	rev := map[string]bool{}
 	budget := int(float64(p.NightMin) * contribRevisitShare)
 	for _, r := range contribRevisit(now) {
@@ -294,6 +305,16 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 			p.Rolling++
 		}
 	}
+	// Every planned KG without a chunk log is built with umfeld's bbox
+	// (run.sh → --revisit KG=w:s:e:n → full report, chunk rows → baseline).
+	for _, kg := range p.KGs {
+		if bb := nolog[kg]; bb != "" && (p.RevisitBBox == nil || p.RevisitBBox[kg] == "") {
+			if p.RevisitBBox == nil {
+				p.RevisitBBox = map[string]string{}
+			}
+			p.RevisitBBox[kg] = bb
+		}
+	}
 	return p
 }
 
@@ -388,7 +409,7 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
-		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "revisit_no_log": p.RevisitNoLog, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
+		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "revisit_no_log": p.RevisitNoLog, "no_log_requeued": p.NoLogQ, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
 		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "wave": contribWaveStatus(time.Now()), "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
 }

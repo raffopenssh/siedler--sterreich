@@ -46,9 +46,11 @@ v = d.get("kgs")
 if isinstance(v, list) and v:
     print(" ".join(str(k).zfill(5) for k in v))
     bb = d.get("revisit_bbox") or {}
-    # KG or KG=w:s:e:n — the exact bbox umfeld wants the revisit built with (docs/contrib.md § revisit)
-    print(",".join(str(k).zfill(5) + ("=" + bb[str(k).zfill(5)].replace(",", ":") if bb.get(str(k).zfill(5)) else "")
-                   for k in (d.get("revisit") or [])))
+    # KG or KG=w:s:e:n — the exact bbox umfeld wants the revisit built with (docs/contrib.md § revisit).
+    # Every planned KG with a revisit_bbox (no_log KGs re-queued into the fill) is a revisit too.
+    rv = [str(k).zfill(5) for k in (d.get("revisit") or [])]
+    rv += [str(k).zfill(5) for k in v if str(k).zfill(5) in bb and str(k).zfill(5) not in rv]
+    print(",".join(k + ("=" + bb[k].replace(",", ":") if bb.get(k) else "") for k in rv))
     print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale, %s no_log), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
           % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"), d.get("revisit_no_log"),
              len(d.get("today") or []), len(d.get("cheap") or []),
@@ -81,5 +83,17 @@ find "$HERE/../../data/ne-reports/nec" -name "*.nec" -mmin +1440 -delete 2>/dev/
 EXTRA=()
 [ "${FORCE:-0}" = "1" ] && EXTRA+=(--force)
 [ -n "${REVISIT:-}" ] && EXTRA+=(--revisit "$REVISIT")
-# shellcheck disable=SC2086
-exec "$PY" "$HERE/ne_report.py" "${EXTRA[@]}" $KGS
+# One python process per batch of BATCH KGs. A single process over a whole night grew ~2.7 GB RSS (heap
+# fragmentation from hundreds of large cell documents + shapely) and was OOM-killed by MemoryMax after
+# ~170–230 KGs every night 2026-10-26 … 11-01 — the fill[] tail of the plan (the KGs never reported this
+# quarter) sits at the end of the list and was never reached. A fresh process per batch keeps RSS flat.
+BATCH=${BATCH:-25}
+set -- $KGS
+rc=0; n=0; total=$#
+while [ $# -gt 0 ]; do
+  b=("${@:1:$BATCH}"); shift ${#b[@]} 2>/dev/null || set --
+  n=$((n + ${#b[@]}))
+  echo "ne-report: batch ${#b[@]} KGs ($n/$total)" >&2
+  "$PY" "$HERE/ne_report.py" "${EXTRA[@]}" "${b[@]}" || rc=1
+done
+exit $rc
