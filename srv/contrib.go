@@ -47,18 +47,18 @@ import (
 
 const (
 	contribCatchUpDays = 3                  // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 300                // floor: fill every night to this many reportable KGs — 7 850 KGs → whole of Austria in ~26 nights; prewarm ~2 h, report 300 × ~35 s ≈ 2.9 h (measured 2026-10-15: 217 KGs in 2 h 08); ≈ 0.7 GB tiles
+	contribNightMin    = 380                // floor: fill every night to this many reportable KGs — monthly sweep: 7 850 KGs / ~340 mean ≈ 23 nights (25 % margin for missed nights); prewarm ~2 h 20, report 380 × ~27 s ≈ 2.8 h (measured 2026-11-02: 293 KGs in 2 h 10); ≈ 0.9 GB tiles
 	contribNightMargin = 1.5                // night_min = max(floor, margin × universe/days)
-	contribNightMax    = 300                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
-	contribWarmCap     = 300                // KGs of tonight's plan the prewarmer builds at 21:00 (warmContribRun) — the whole night
+	contribNightMax    = 380                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
+	contribWarmCap     = 380                // KGs of tonight's plan the prewarmer builds at 21:00 (warmContribRun) — the whole night
 	contribRollMinAge  = 7 * 24 * time.Hour // rolling sweep: once the quarter's unreported KGs are done, re-report the least recently reported (ne_report skips < 7 d anyway)
 	// Night schedule, Europe/Vienna wall clock (DST-safe): the prewarm (bevdirect assembly, paced
-	// 1.5 s/cell, ~3 s per cell → ~2 h for a 300-KG night) starts at 21:00, the python report run at 00:00
-	// (CPUQuota 100 %, ~35 s per KG → ~3 h) — everything settled before 03:30 (goal
+	// 1.5 s/cell, ~22 s per KG → ~2 h 20 for a 380-KG night) starts at 20:00 (4 h before the report), the python report run at 00:00
+	// (CPUQuota 100 %, ~27 s per KG → ~2.8 h) — everything settled before 03:30 (goal
 	// 04:30), no CPU spike during the day. Measured 2026-10-10: 267 reports, 13 915 s build + 2 359 s fetch
 	// at 60 % quota = 5.3 h, because the fill ignored the prewarmed KGs (see contribPlanNow).
-	contribWarmHour   = 21             // Vienna hour the contrib prewarm fires (cells → RAM stash, 24 h); ~300 KGs × 25 s ≈ 2 h
-	contribNightHour  = 0              // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer); ~300 KGs × ~35 s ≈ 3 h at CPUQuota 100 % → settled before 03:30
+	contribWarmHour   = 20             // Vienna hour the contrib prewarm fires (cells → RAM stash, 24 h); ~380 KGs × 22 s ≈ 2 h 20
+	contribNightHour  = 0              // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer); ~380 KGs × ~27 s ≈ 2.8 h at CPUQuota 100 % → settled before 03:30
 	contribWarmWindow = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
 	contribReportDir  = "data/ne-reports"
 )
@@ -448,7 +448,7 @@ func nextAt(now time.Time, hour int) time.Time {
 // see the same volume. Bounds: volume contribWaveVolMin..contribNightMax,
 // start 21:00 ± contribWaveShift (the prewarm still ends well before 00:00).
 const (
-	contribWaveVolMin = 240              // quietest night; loudest = contribNightMax
+	contribWaveVolMin = 300              // quietest night; loudest = contribNightMax
 	contribWaveShift  = 25 * time.Minute // max start offset either way
 )
 
