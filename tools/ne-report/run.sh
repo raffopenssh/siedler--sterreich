@@ -25,7 +25,7 @@ if [ $# -gt 0 ]; then
   KGS="$*"
 else
   # Today's contrib rotation (srv/contrib.go): every Austrian KG (7 850) is assigned one day of
-  # the quarter by hash, so the whole country is reported about every 3–4 weeks at ~340 reportable KGs a night
+  # the quarter by hash, so the whole country is reported about every 3–4 weeks at ~390 reportable KGs a night
   # (today + catch-up + the KGs the 22:00 prewarm stashed); the list includes the two previous
   # nights for catch-up (ne_report.py skips reports < 7 d old). Never use v24_kgs from /api/warm/status — that is all of them.
   # The plan is empty (source:"none") for a few seconds while the srtm KG registry does a
@@ -88,9 +88,18 @@ EXTRA=()
 # ~170–230 KGs every night 2026-10-26 … 11-01 — the fill[] tail of the plan (the KGs never reported this
 # quarter) sits at the end of the list and was never reached. A fresh process per batch keeps RSS flat.
 BATCH=${BATCH:-25}
+# Hard deadline: the night must be over before 05:00 Vienna (host usage must look idle by day). A batch
+# is only started while the Vienna wall clock is before DEADLINE_H:DEADLINE_M (04:30 — a 25-KG batch takes
+# ~12 min); the remaining KGs stay unreported and the next night's fill picks them up first (overdue).
+DEADLINE_H=${DEADLINE_H:-4}; DEADLINE_M=${DEADLINE_M:-30}
 set -- $KGS
 rc=0; n=0; total=$#
 while [ $# -gt 0 ]; do
+  hm=$(TZ=Europe/Vienna date +%H%M); start_hm=$(printf '%02d%02d' "$DEADLINE_H" "$DEADLINE_M")
+  if [ "$hm" -ge "$start_hm" ] && [ "$hm" -lt 1200 ]; then
+    echo "ne-report: deadline $start_hm Vienna reached ($hm) — $# KGs left for the next night" >&2
+    break
+  fi
   b=("${@:1:$BATCH}"); shift ${#b[@]} 2>/dev/null || set --
   n=$((n + ${#b[@]}))
   echo "ne-report: batch ${#b[@]} KGs ($n/$total)" >&2

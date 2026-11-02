@@ -1,7 +1,7 @@
 # Contrib — the nightly NE epoch report (siedler → umfeld-at)
 
 We run our own cadastre assembler (bevdirect-serve), so we act as an **observer** for umfeld's NE cells: each
-night we rebuild the declared-land-use cells of ~340 KGs from our bevdirect output with the frozen python
+night we rebuild the declared-land-use cells of ~390 KGs from our bevdirect output with the frozen python
 reference `ne_cells` and POST digests (never geometry) to umfeld, which detects cadastre change per res-10
 chunk. Pipeline runbook: [ne-report.md](ne-report.md). Public counter: `GET /api/contrib/stats` → the
 „Beitrag zum Nutzungsmonitoring“ callout on impressum/imprint.
@@ -9,19 +9,18 @@ chunk. Pipeline runbook: [ne-report.md](ne-report.md). Public counter: `GET /api
 ## The loop (Europe/Vienna wall clock, `contribLoc`, DST-safe)
 
 ```
-~20:00 warmContribRun (srv/contrib.go)   → builds tonight's cells into api_cache + RAM stash (≤ 380 KGs × ~22 s ≈ 2 h 20)
+~20:00 warmContribRun (srv/contrib.go)   → builds tonight's cells into api_cache + RAM stash (≤ 440 KGs × ~18 s ≈ 2 h 15)
 23:00  ne-report.timer → run.sh          → GET /api/contrib/plan?night=1 → ne_report.py per KG, cells from the stash
-≤ 02:30 done (goal 04:30; 2026-11-02: 293 KGs in 2 h 10 → 380 ≈ 2.8 h).               Nothing contrib-related runs by day.
+≤ 02:30 done (2026-11-02: 293 KGs in 2 h 10 → 440 ≈ 3.3 h); run.sh starts no batch after 04:30 Vienna (`DEADLINE_H/M`), leftovers are next night's overdue.               Nothing contrib-related runs by day.
 ```
 
-- **Wave** (`contribWave`): start time (20:00 ± 25 min) and volume (300–380 KGs) drift per night — two
+- **Wave** (`contribWave`): start time (20:00 ± 25 min) and volume (340–440 KGs) drift per night — two
   incommensurate sines over the night number + a per-date hash jitter, deterministic per night so plan, prewarm
   and report agree (`night_min`/`night_max` = tonight's volume; `/api/warm/status` → `contrib.wave{night, volume,
-  shift_min, prewarm_at}`). The per-cell pause is jittered ±40 % too. Mean ≈ 340/night → universe in ~23 nights (monthly sweep with margin).
+  shift_min, prewarm_at}`). The per-cell pause is jittered ±40 % too. Mean ≈ 390/night → universe in ~20 nights (monthly sweep with margin).
 - `contribWarmHour` 20, `contribNightHour` 23 (keep in sync with `tools/ne-report/ne-report.timer`). A restart
   between 20:00 and 23:00 re-runs the prewarm after 90 s (`contribPrewarmPending`). `nextContribNight` has a 3 h grace: a run asking `?night=1` just after the timer fired gets the slot that just started, not tomorrow's. Prewarm is independent of
-  the warm activity tier, cap 380, reason `contrib`, prio 2, paced `warmContribPause` 1.5 s/cell (≈ ½ duty on
-  bevdirect).
+  the warm activity tier, cap 440, reason `contrib`, prio 2, paced `warmContribPause` 1 s/cell.
 - The service unit has `Nice=15`, `CPUQuota=100%` (one of the 2 cores), `CPUWeight=30`, `TimeoutStartSec=8h`;
   ~34 s CPU + ~10 s overhead per KG.
 
@@ -34,11 +33,11 @@ left_quarter, catch_up_days, source}`.
 - **Universe = the whole admin table (7 850 KGs)** — umfeld has an lu digest for every KG, enhanced or not.
 - Each KG gets a day of the quarter by `hash(quarter, kg)` (~85/day); the quarter is the **change resolution**
   of the chunk protocol (first report baselines a KG's chunks, later ones upload only changed ones).
-- A night is filled to `night_min` = **380** (`contribNightMin`): today + catch-up (`contribCatchUpDays` 3), then
+- A night is filled to `night_min` = **440** (`contribNightMin`): today + catch-up (`contribCatchUpDays` 3), then
   **every `cheap[]` KG** (warmed < 24 h, uncapped — so the KGs the 20:00 prewarm built *are* the fill of the
   night that follows), then unreported KGs in due order (`fill[]`, overdue first); once the quarter's
   unreported KGs are exhausted the **rolling sweep** re-reports the least recently reported KGs ≥ 7 d old.
-  `night_max` 380 caps only KGs needing fresh tiles (≈ 0.9 GB/night) → whole universe every ~23 nights.
+  `night_max` 440 caps only KGs needing fresh tiles (≈ 1 GB/night) → whole universe every ~20 nights.
 - **No KG is skipped as small or big.** `ne_report.py --min-full-cells 0` (default) reports a KG even when
   umfeld's viewport holds no whole aligned cell (the build input is whole aligned cells either way, so the digest
   is as comparable as any other); `--max-cells 600` is a sanity guard only (largest KG 345). `small` in the plan is

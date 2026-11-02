@@ -45,7 +45,7 @@ const (
 	warmCellPause = 800 * time.Millisecond
 	// contrib prewarm (midnight Vienna, 2 h ahead of the night run): a longer gap keeps
 	// bevdirect's assembly CPU (~1.4 cores per cell) at ~½ duty; 200 KGs × 9 cells × ~3 s ≈ 90 min.
-	warmContribPause = 1500 * time.Millisecond
+	warmContribPause = 1000 * time.Millisecond
 	warmFreshGuard   = 2 * time.Hour // don't re-warm what is still fresh for this long
 	// warmSeedMaxCells is a sanity guard only (like ne-report's --max-cells):
 	// the biggest Gemeinde in the admin table (Sölden) spans 322 cells, so

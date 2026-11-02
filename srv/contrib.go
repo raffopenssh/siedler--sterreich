@@ -47,18 +47,18 @@ import (
 
 const (
 	contribCatchUpDays = 3                  // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 380                // floor: fill every night to this many reportable KGs — monthly sweep: 7 850 KGs / ~340 mean ≈ 23 nights (25 % margin for missed nights); prewarm ~2 h 20, report 380 × ~27 s ≈ 2.8 h (measured 2026-11-02: 293 KGs in 2 h 10); ≈ 0.9 GB tiles
+	contribNightMin    = 440                // floor: fill every night to this many reportable KGs — monthly sweep: 7 850 KGs / ~390 mean ≈ 20 nights (margin for missed nights); prewarm ≤ 2 h 15 at 1 s/cell, report 440 × ~27 s ≈ 3.3 h (measured 2026-11-02: 293 KGs in 2 h 10) → done ≈ 02:30, run.sh stops at 04:30 regardless; ≈ 1 GB tiles
 	contribNightMargin = 1.5                // night_min = max(floor, margin × universe/days)
-	contribNightMax    = 380                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
-	contribWarmCap     = 380                // KGs of tonight's plan the prewarmer builds at 20:00 (warmContribRun) — the whole night
+	contribNightMax    = 440                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
+	contribWarmCap     = 440                // KGs of tonight's plan the prewarmer builds at 20:00 (warmContribRun) — the whole night
 	contribRollMinAge  = 7 * 24 * time.Hour // rolling sweep: once the quarter's unreported KGs are done, re-report the least recently reported (ne_report skips < 7 d anyway)
 	// Night schedule, Europe/Vienna wall clock (DST-safe): the prewarm (bevdirect assembly, paced
-	// 1.5 s/cell, ~22 s per KG → ~2 h 20 for a 380-KG night) starts at 20:00 (3 h before the report), the python report run at 23:00
-	// (CPUQuota 100 %, ~27 s per KG → ~2.8 h) — everything settled before 02:30 (goal
+	// 1 s/cell, ~18 s per KG → ~2 h 15 for a 440-KG night) starts at 20:00 (3 h before the report), the python report run at 23:00
+	// (CPUQuota 100 %, ~27 s per KG → ~3.3 h) — everything settled before 02:30; run.sh refuses to start a batch after 04:30 (goal
 	// 04:30), no CPU spike during the day. Measured 2026-10-10: 267 reports, 13 915 s build + 2 359 s fetch
 	// at 60 % quota = 5.3 h, because the fill ignored the prewarmed KGs (see contribPlanNow).
-	contribWarmHour   = 20             // Vienna hour the contrib prewarm fires (cells → RAM stash, 24 h); ~380 KGs × 22 s ≈ 2 h 20
-	contribNightHour  = 23             // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer); ~380 KGs × ~27 s ≈ 2.8 h at CPUQuota 100 % → settled before 02:30
+	contribWarmHour   = 20             // Vienna hour the contrib prewarm fires (cells → RAM stash, 24 h); ~440 KGs × 18 s ≈ 2 h 15
+	contribNightHour  = 23             // Vienna hour ne-report.timer fires (keep in sync with tools/ne-report/ne-report.timer); ~440 KGs × ~27 s ≈ 3.3 h at CPUQuota 100 % → settled before 02:30, hard stop 04:30
 	contribWarmWindow = 24 * time.Hour // bevdirect's in-RAM tile LRU (-tile-ttl 24h) still holds the tiles of KGs built within this window
 	contribReportDir  = "data/ne-reports"
 )
@@ -458,7 +458,7 @@ func nextAt(now time.Time, hour int) time.Time {
 // see the same volume. Bounds: volume contribWaveVolMin..contribNightMax,
 // start 20:00 ± contribWaveShift (the prewarm still ends well before 23:00).
 const (
-	contribWaveVolMin = 300              // quietest night; loudest = contribNightMax
+	contribWaveVolMin = 340              // quietest night; loudest = contribNightMax
 	contribWaveShift  = 25 * time.Minute // max start offset either way
 )
 

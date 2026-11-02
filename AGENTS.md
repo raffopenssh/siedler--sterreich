@@ -3,7 +3,7 @@
 Multiplayer browser game on real Austrian cadastre data: explore, claim parcels, convert land to nature
 reserves. Settlers IV pixel-art look. Go `net/http` + SQLite (sqlc) backend, single-file vanilla-JS canvas
 frontend, no frameworks. We also run a public-good side job: every night we report cadastre-change digests of
-~340 KGs to umfeld-at ("contrib"). Live `https://siedler-oesterreich.exe.xyz:8000/`.
+~390 KGs to umfeld-at ("contrib"). Live `https://siedler-oesterreich.exe.xyz:8000/`.
 
 This file = rules + mental model + map. Details live in `docs/` — **read the one topic file your task touches**
 (index: `docs/README.md`), not all of them.
@@ -86,7 +86,7 @@ node tools/i18n/audit.js srv/static/game.js; tools/xb.sh --quick # UI checks (do
   apex and every structure; the game shows discrepancies (verdict, heat overlay, Spurenleser XP). Registry
   (`srv/kgregistry.go`) + universe check (`srv/kguniverse.go`) decide which KGs are v2.4; adoption purges and
   re-warms them.
-- **Contrib (nightly, Vienna time).** 20:00 the server prewarms tonight's ~340 KGs (plan from
+- **Contrib (nightly, Vienna time).** 20:00 the server prewarms tonight's ~390 KGs (plan from
   `/api/contrib/plan`, whole 7 850-KG universe over a quarter, small KGs skipped) and keeps the *raw* bevdirect
   docs in a RAM stash; 23:00 `ne-report.timer` rebuilds the declared cells with the frozen `ne_cells` package from
   the stash and POSTs digests + changed chunk statistics to umfeld. Nothing contrib-related runs by day.
