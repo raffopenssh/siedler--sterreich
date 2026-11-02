@@ -21,7 +21,7 @@ tools/ne-report/ne_cells/       vendored frozen reference package (= vtcseamless
 tools/ne-report/ne_report.py    the pipeline for one or more KGs (see --help)
 tools/ne-report/run.sh          driver: KG list = today's rotation from GET /api/contrib/plan (srv/contrib.go),
                                 else a 3-KG fallback sample — never the whole v2.4 universe
-tools/ne-report/ne-report.service, ne-report.timer   daily 00:00 Europe/Vienna (+≤15 min jitter), Nice=15,
+tools/ne-report/ne-report.service, ne-report.timer   daily 23:00 Europe/Vienna (+≤15 min jitter), Nice=15,
                                 CPUQuota=100%, idle IO, Requires/After bevdirect-serve.service, Persistent=true
 data/ne-reports/KG.<date>.json        the report as POSTed (gitignored)
 data/ne-reports/KG.<date>.meta.json   build summary, umfeld head numbers, cells fetched, POST answer
@@ -73,7 +73,7 @@ Historic reports are not touched — the operator re-classifies them on read. Me
 
 ## Rotation, schedule, stash
 
-The KG list, the 21:00 prewarm → 00:00 report schedule, the RAM stash and the plan fields are documented in
+The KG list, the 20:00 prewarm → 23:00 report schedule, the RAM stash and the plan fields are documented in
 [contrib.md](contrib.md) (`srv/contrib.go`). `run.sh` only ever takes its KGs from `GET /api/contrib/plan?night=1`
 (or the command line); never the whole v2.4 universe.
 
@@ -193,7 +193,7 @@ python (11–44 s). bevdirect's cell cache went 2 → 37 cells over the three KG
 2. ~~`/api/warm/status` has no `v24_kgs` yet~~ — it has all 1 386 since 2026-10-06; `run.sh` now uses
    `/api/contrib/plan` (quarterly rotation) instead, never the whole list.
 3. `ne_cells build` only checks `ready`, not `truncated`, on bevdirect documents — we check both.
-4. The timer runs on the **Europe/Vienna** wall clock (00:00); the host clock is UTC — `journalctl` shows UTC.
+4. The timer runs on the **Europe/Vienna** wall clock (23:00); the host clock is UTC — `journalctl` shows UTC.
 
 ## QC: border rows / KG attribution (2026-10-24)
 

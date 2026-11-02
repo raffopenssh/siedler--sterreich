@@ -144,8 +144,8 @@ func contribStashHas(c cellID) bool {
 
 // contribStashHasUntil: stashed and still valid at t. The prewarm uses
 // t = end of the coming night run (contribStashNeedUntil): an entry put by
-// the previous evening's prewarm (24 h TTL) is alive at 21:00 but gone by the
-// time ne-report reads it at 00:00–05:00 — on 2026-10-11 that cost 2 616 of
+// the previous evening's prewarm (24 h TTL) is alive at 20:00 but gone by the
+// time ne-report reads it at 23:00–04:00 — on 2026-10-11 that cost 2 616 of
 // 5 565 cells (47 %) a live bevdirect assembly, 28 of 35 in KG 01657.
 func contribStashHasUntil(c cellID, t time.Time) bool {
 	contribStash.mu.Lock()
