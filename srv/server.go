@@ -382,7 +382,15 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/similar", s.handleSimilarParcels)
 
 	slog.Info("starting Siedler Österreich", "addr", addr)
-	return http.ListenAndServe(addr, securityHeaders(noindexMiddleware(s.maintenanceMiddleware(rateLimitMiddleware(gzipMiddleware(metricsMiddleware(mux)))))))
+	// ReadHeaderTimeout guards against slowloris; no WriteTimeout (SSE streams).
+	hs := &http.Server{
+		Addr:              addr,
+		Handler:           securityHeaders(noindexMiddleware(s.maintenanceMiddleware(rateLimitMiddleware(gzipMiddleware(metricsMiddleware(mux)))))),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+	return hs.ListenAndServe()
 }
 
 // ---- Gzip Middleware ----
