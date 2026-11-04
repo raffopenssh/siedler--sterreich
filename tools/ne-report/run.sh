@@ -91,12 +91,13 @@ BATCH=${BATCH:-25}
 # Hard deadline: the night must be over before 05:00 Vienna (host usage must look idle by day). A batch
 # is only started while the Vienna wall clock is before DEADLINE_H:DEADLINE_M (04:30 — a 25-KG batch takes
 # ~12 min); the remaining KGs stay unreported and the next night's fill picks them up first (overdue).
-DEADLINE_H=${DEADLINE_H:-4}; DEADLINE_M=${DEADLINE_M:-30}
+DEADLINE_H=${DEADLINE_H:-4}; DEADLINE_M=${DEADLINE_M:-30}; DEADLINE_END=${DEADLINE_END:-1200}
+# A daytime extra round (manual catch-up) sets e.g. DEADLINE_H=18 DEADLINE_END=2200 so it stops before the 20:00 prewarm.
 set -- $KGS
 rc=0; n=0; total=$#
 while [ $# -gt 0 ]; do
   hm=$(TZ=Europe/Vienna date +%H%M); start_hm=$(printf '%02d%02d' "$DEADLINE_H" "$DEADLINE_M")
-  if [ "$hm" -ge "$start_hm" ] && [ "$hm" -lt 1200 ]; then
+  if [ "$hm" -ge "$start_hm" ] && [ "$hm" -lt "$DEADLINE_END" ]; then
     echo "ne-report: deadline $start_hm Vienna reached ($hm) — $# KGs left for the next night" >&2
     break
   fi

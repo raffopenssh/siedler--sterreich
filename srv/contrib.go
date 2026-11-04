@@ -251,7 +251,18 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		}
 	}
 	sort.SliceStable(cheap, func(i, j int) bool { return warmed[cheap[i]].After(warmed[cheap[j]]) }) // freshest tiles first
+	// First sight first: a KG we have never reported (no file at all) adds new
+	// area to umfeld's siedler coverage, a re-report only refreshes it — so the
+	// never-seen ones go ahead, largest area first (2026-11-04: 1 762 never-seen
+	// KGs = 24 % of Austria sat scattered over the due days), then due order.
 	sort.SliceStable(later, func(i, j int) bool {
+		ni, nj := lastReport[later[i]] == "", lastReport[later[j]] == ""
+		if ni != nj {
+			return ni
+		}
+		if ni {
+			return admin().KGs[later[i]].AreaKm2 > admin().KGs[later[j]].AreaKm2
+		}
 		return contribDayOf(label, later[i], days) < contribDayOf(label, later[j], days)
 	})
 	if len(p.KGs) > p.NightMax {
