@@ -19,3 +19,4 @@ __pycache__/
 tools/ne-report/ne-report.env
 data/srtm-kgs.json.gz
 data/kg-universe.json.gz
+data/contrib-history.json*

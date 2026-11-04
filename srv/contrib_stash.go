@@ -35,7 +35,7 @@ import (
 // the enriched /api/viewport document is ever served to browsers. Cadastre
 // hygiene: nothing of this touches the disk.
 
-const contribStashMaxBytes = 768 << 20 // ~2 400 gzipped cells (~320 KB each) — a 300-KG night is ~2 000
+const contribStashMaxBytes = 1024 << 20 // ~4 900 gzipped docs (~210 KB each measured 2026-11-04); 768 MB evicted 1 200 docs of a 388-KG night (1 062 stash misses → live bevdirect at night)
 
 type stashEntry struct {
 	gz  []byte

@@ -46,12 +46,13 @@ import (
 )
 
 const (
-	contribCatchUpDays = 3                  // today + the two nights before (ne_report's 7-day skip dedups)
-	contribNightMin    = 440                // floor: fill every night to this many reportable KGs — monthly sweep: 7 850 KGs / ~390 mean ≈ 20 nights (margin for missed nights); prewarm ≤ 2 h 15 at 1 s/cell, report 440 × ~27 s ≈ 3.3 h (measured 2026-11-02: 293 KGs in 2 h 10) → done ≈ 02:30, run.sh stops at 04:30 regardless; ≈ 1 GB tiles
-	contribNightMargin = 1.5                // night_min = max(floor, margin × universe/days)
-	contribNightMax    = 440                // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
-	contribWarmCap     = 440                // KGs of tonight's plan the prewarmer builds at 20:00 (warmContribRun) — the whole night
-	contribRollMinAge  = 7 * 24 * time.Hour // rolling sweep: once the quarter's unreported KGs are done, re-report the least recently reported (ne_report skips < 7 d anyway)
+	contribCatchUpDays = 3   // today + the two nights before (ne_report's 7-day skip dedups)
+	contribNightMin    = 440 // floor: fill every night to this many reportable KGs — monthly sweep: 7 850 KGs / ~390 mean ≈ 20 nights (margin for missed nights); prewarm ≤ 2 h 15 at 1 s/cell, report 440 × ~27 s ≈ 3.3 h (measured 2026-11-02: 293 KGs in 2 h 10) → done ≈ 02:30, run.sh stops at 04:30 regardless; ≈ 1 GB tiles
+	contribNightMargin = 1.5 // night_min = max(floor, margin × universe/days)
+	contribNightMax    = 440 // cap on KGs needing fresh BEV tiles; warm (cheap) KGs are never capped
+	contribWarmCap     = 440 // KGs of tonight's plan the prewarmer builds at 20:00 (warmContribRun) — the whole night
+	contribRollMinAge  = 7 * 24 * time.Hour
+	contribSweepDays   = 28 // monthly guarantee: every KG reported at least once per 28 d → the fill gets ≥ universe/28 slots a night (revisit budget shrinks to make room), oldest report first // rolling sweep: once the quarter's unreported KGs are done, re-report the least recently reported (ne_report skips < 7 d anyway)
 	// Night schedule, Europe/Vienna wall clock (DST-safe): the prewarm (bevdirect assembly, paced
 	// 1 s/cell, ~18 s per KG → ~2 h 15 for a 440-KG night) starts at 20:00 (3 h before the report), the python report run at 23:00
 	// (CPUQuota 100 %, ~27 s per KG → ~3.3 h) — everything settled before 02:30; run.sh refuses to start a batch after 04:30 (goal
@@ -110,6 +111,11 @@ type contribPlan struct {
 	Universe     int               `json:"universe"`         // v2.4 KGs known
 	PerDayAvg    float64           `json:"per_day_avg"`      // universe / days
 	ReportedQ    int               `json:"reported_quarter"` // report files written this quarter
+	FillFloor    int               `json:"fill_floor"`       // ≥ universe/contribSweepDays fill slots a night (monthly sweep guarantee)
+	Seen30       int               `json:"seen_30d"`         // KGs with a report in the last 30 d
+	NeverSeen    int               `json:"never_seen"`       // KGs without any report file
+	Coverage30   float64           `json:"coverage_30d_pct"` // area share of Austria reported in the last 30 d
+	NeverPct     float64           `json:"never_seen_pct"`   // area share never reported
 	CatchUpDays  int               `json:"catch_up_days"`
 	Source       string            `json:"source"` // "registry" | "none"
 	NextForKG    string            `json:"next_for_kg,omitempty"`
@@ -173,8 +179,29 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// ones — at most contribRevisitShare of night_min, within the budget, not on
 	// top of it. Reported-this-quarter does not exclude them (that is the point);
 	// a KG already reported tonight or deferred as unreportable is left out.
+	// Monthly sweep guarantee: the fill keeps ≥ universe/28 slots (2026-11-04:
+	// ⅓ revisits + no_log re-queues had squeezed first sights out for weeks).
 	rev := map[string]bool{}
-	budget := int(float64(p.NightMin) * contribRevisitShare)
+	p.FillFloor = (len(uni) + contribSweepDays - 1) / contribSweepDays
+	budget := min(int(float64(p.NightMin)*contribRevisitShare), max(p.NightMin-p.FillFloor, 0))
+	cut30 := now.Add(-30 * 24 * time.Hour).Format("2006-01-02")
+	var areaAll, area30, areaNever float64
+	for _, kg := range uni {
+		a := admin().KGs[kg].AreaKm2
+		areaAll += a
+		switch d := lastReport[kg]; {
+		case d == "":
+			p.NeverSeen++
+			areaNever += a
+		case d >= cut30:
+			p.Seen30++
+			area30 += a
+		}
+	}
+	if areaAll > 0 {
+		p.Coverage30 = math.Round(1000*area30/areaAll) / 10
+		p.NeverPct = math.Round(1000*areaNever/areaAll) / 10
+	}
 	for _, r := range contribRevisit(now) {
 		if len(p.Revisit) >= budget {
 			break
@@ -254,14 +281,18 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// First sight first: a KG we have never reported (no file at all) adds new
 	// area to umfeld's siedler coverage, a re-report only refreshes it — so the
 	// never-seen ones go ahead, largest area first (2026-11-04: 1 762 never-seen
-	// KGs = 24 % of Austria sat scattered over the due days), then due order.
+	// KGs = 24 % of Austria sat scattered over the due days), then the oldest
+	// report first — a rolling monthly sweep rather than the hash-day order.
 	sort.SliceStable(later, func(i, j int) bool {
-		ni, nj := lastReport[later[i]] == "", lastReport[later[j]] == ""
-		if ni != nj {
-			return ni
+		li, lj := lastReport[later[i]], lastReport[later[j]]
+		if (li == "") != (lj == "") {
+			return li == ""
 		}
-		if ni {
+		if li == "" {
 			return admin().KGs[later[i]].AreaKm2 > admin().KGs[later[j]].AreaKm2
+		}
+		if li != lj {
+			return li < lj
 		}
 		return contribDayOf(label, later[i], days) < contribDayOf(label, later[j], days)
 	})
@@ -422,6 +453,7 @@ func (s *Server) contribStatusMap() map[string]any {
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
 		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "revisit_no_log": p.RevisitNoLog, "no_log_requeued": p.NoLogQ, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
+		"fill_floor": p.FillFloor, "seen_30d": p.Seen30, "never_seen": p.NeverSeen, "coverage_30d_pct": p.Coverage30, "never_seen_pct": p.NeverPct, "sweep_days": contribSweepDays,
 		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "wave": contribWaveStatus(time.Now()), "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
 }
 
