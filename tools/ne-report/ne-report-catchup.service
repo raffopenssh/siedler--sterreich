@@ -1,0 +1,20 @@
+# ne-report-catchup.service — daytime catch-up: KGs umfeld has never seen (tools/ne-report/catchup.sh).
+# Same resource envelope as ne-report.service; runs 08:00–18:30 Vienna until never_seen_kgs is empty.
+# Install: sudo cp tools/ne-report/ne-report-catchup.{service,timer} /etc/systemd/system/ && sudo systemctl enable --now ne-report-catchup.timer
+[Unit]
+Description=Daytime NE catch-up reports for never-seen KGs (siedler → umfeld-at)
+After=network-online.target bevdirect-serve.service srv.service
+Requires=bevdirect-serve.service
+
+[Service]
+Type=oneshot
+User=exedev
+WorkingDirectory=/home/exedev/siedler
+EnvironmentFile=-/home/exedev/siedler/tools/ne-report/ne-report.env
+ExecStart=/home/exedev/siedler/tools/ne-report/catchup.sh
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=100%
+CPUWeight=30
+TimeoutStartSec=12h
+MemoryMax=2800M
