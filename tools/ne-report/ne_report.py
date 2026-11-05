@@ -54,7 +54,8 @@ from vtcseamless.bevdirect import BevDirect, PendingError, ServerError, cell_bbo
 from vtcseamless.observe import incomplete_cells, tile_provenance   # QC provenance (vtcseamless-py ≥ 0.3.0)
 from ne_cells.change import chunk_rows, epoch_report_ap, pack_chunk_rows
 from ne_cells import canon
-from ne_cells.__main__ import _finish, doc_bytes, doc_prov
+from ne_cells.__main__ import doc_bytes, doc_prov
+from ne_lowmem import finish as _finish_lowmem   # ≡ ne_cells.__main__._finish, blocked (docs/ne-report.md § Memory)
 from ne_cells.pack import CHUNK_RES, MAGIC_LU, unpack_sections
 from ne_cells.algo import ALGO, H3_RES
 from ne_cells.change import AP_VERSION
@@ -519,9 +520,10 @@ def find_nec(outdir, kg, digest):
 
 def build_streaming(kg, epoch, cells, docs, output, input_bbox):
     """ne_cells.build_from_docs, one document at a time: the same calls in the same order (doc_prov,
-    canon._one_bevdirect per cell, canon.bevdirect_source, _finish) so the .nec is byte-identical, but
-    only the canonical rows of the whole KG are held at once — each document is decoded once from the
-    DocStore and dropped (the frozen ne_cells package itself is untouched)."""
+    canon._one_bevdirect per cell, canon.bevdirect_source) so the .nec is byte-identical, but only the
+    canonical rows of the whole KG are held at once — each document is decoded once from the DocStore and
+    dropped. The build itself is ne_lowmem.finish: the reference algorithm walked in res-7 blocks (same bytes,
+    same digest; 80110's 1.55 M res-12 cells no longer need > 5 GB). The frozen ne_cells package is untouched."""
     t0 = time.time()
     P, F, L, prov, vers = [], [], [], [], []
     for i, j in cells:
@@ -537,7 +539,7 @@ def build_streaming(kg, epoch, cells, docs, output, input_bbox):
     source = canon.bevdirect_source(vers)
     if not source.startswith("bevdirect@"):
         raise SystemExit("--source for bevdirect input must be bevdirect@<tag>")
-    return _finish(kg, epoch, source, P, F, L, prov, output, None, input_bbox, t0)
+    return _finish_lowmem(kg, epoch, source, P, F, L, prov, output, None, input_bbox, t0, log=log)
 
 
 def build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n):
