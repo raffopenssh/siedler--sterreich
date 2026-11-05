@@ -30,6 +30,10 @@ this file is where the "why" lives.
 - **Session create waited on umfeld** (3.8–6.3 s under load). → Never touch upstreams on the create path;
   `prememoSettlements`, treasures in goroutines.
 - **Farm bursts** of cold cells 503'd and tripped the breaker. → `hostSlots` 3 per farm host, busy ≠ down.
+- **Reporter held every parsed cell document** (~7 MB each) → 80110 (345 cells, 2.4 GB) OOM-killed at
+  `MemoryMax=2800M` twice; the same night the game server (stash 1 GB + cell RAM 1.4 GB, heap_sys 3.8 GB) was
+  OOM-killed beside bevdirect. → `DocStore` keeps documents gzipped (0.2 MB/cell), streaming build decodes each
+  once; `GOMEMLIMIT=2800MiB` on srv. Memory budget on the 8 GB box: bevdirect ≤ 3.8 G, srv ≤ 2.8 G, reporter ≤ 2.8 G.
 - **srtm hillshade 429s** at z10–11. → Tile gate ≤ 8 in flight, z < 12 as 204, 1 y cache with revalidation,
   client fetches nothing while the camera moves.
 
