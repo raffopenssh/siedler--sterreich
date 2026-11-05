@@ -53,7 +53,8 @@ import urllib.request
 from vtcseamless.bevdirect import BevDirect, PendingError, ServerError, cell_bbox, cells_for
 from vtcseamless.observe import incomplete_cells, tile_provenance   # QC provenance (vtcseamless-py ≥ 0.3.0)
 from ne_cells.change import chunk_rows, epoch_report_ap, pack_chunk_rows
-from ne_cells.__main__ import build_from_docs
+from ne_cells import canon
+from ne_cells.__main__ import _finish, doc_bytes, doc_prov
 from ne_cells.pack import CHUNK_RES, MAGIC_LU, unpack_sections
 from ne_cells.algo import ALGO, H3_RES
 from ne_cells.change import AP_VERSION
@@ -186,14 +187,57 @@ def fetch_cell(bev, i, j, max_total_s=900, siedler=None):
     return info, doc
 
 
+class DocStore:
+    """The fetched cell documents of one KG, gzip-compressed in RAM (never on disk). A parsed
+    bevdirect document costs ~7 MB of Python objects per cell (measured 2026-11-05: 16 cells = 110 MB),
+    so holding the largest KG (80110, 345 cells) as dicts needs ~2.4 GB and the reporter was OOM-killed
+    at MemoryMax=2800M — twice. Compressed it is ~0.2 MB per cell; `meta` keeps the small `tiles[]` and
+    `stats{}` parts parsed for the QC provenance, and the build decodes each document exactly once."""
+
+    def __init__(self):
+        self.raw, self.meta = {}, {}
+
+    def put(self, key, doc):
+        b = doc_bytes(doc)
+        self.raw[key] = (gzip.compress(b, 1), len(b))
+        self.meta[key] = {"tiles": doc.get("tiles"), "stats": doc.get("stats")}
+
+    def __len__(self):
+        return len(self.raw)
+
+    def __contains__(self, key):
+        return key in self.raw
+
+    def keys(self):
+        return self.raw.keys()
+
+    def bytes_of(self, key):
+        return gzip.decompress(self.raw[key][0])
+
+    def __getitem__(self, key):
+        return json.loads(self.bytes_of(key))
+
+    def items(self):
+        for key in self.raw:
+            yield key, self[key]
+
+    def values(self):
+        for key in self.raw:
+            yield self[key]
+
+    def compressed_mb(self):
+        return sum(len(gz) for gz, _ in self.raw.values()) / 1e6
+
+
 def fetch_cells(bev, cells, inflight=2, siedler=None):
-    """→ (infos sorted by (j, i), {(i, j): doc}). Cadastre hygiene: the documents live only in this dict."""
-    out, docs = [], {}
+    """→ (infos sorted by (j, i), DocStore{(i, j): doc}). Cadastre hygiene: the documents live only in this store."""
+    out, docs = [], DocStore()
     with cf.ThreadPoolExecutor(max_workers=inflight) as ex:
         futs = {ex.submit(fetch_cell, bev, i, j, 900, siedler): (i, j) for i, j in cells}
         for fut in cf.as_completed(futs):
             r, doc = fut.result()     # raises on a failed cell → whole KG aborts (never build on a partial set)
-            docs[(r["i"], r["j"])] = doc
+            docs.put((r["i"], r["j"]), doc)
+            del doc
             log(f"  cell {r['i']}_{r['j']}: parcels={r['parcels']} (truncated at pad {r['incomplete']}) footprints={r['footprints']} "
                 f"landuse={r['landuse']} bevdirect={r['bevdirect_version']} ({r['s']}s, {r['src']})")
             out.append(r)
@@ -473,6 +517,29 @@ def find_nec(outdir, kg, digest):
     return None
 
 
+def build_streaming(kg, epoch, cells, docs, output, input_bbox):
+    """ne_cells.build_from_docs, one document at a time: the same calls in the same order (doc_prov,
+    canon._one_bevdirect per cell, canon.bevdirect_source, _finish) so the .nec is byte-identical, but
+    only the canonical rows of the whole KG are held at once — each document is decoded once from the
+    DocStore and dropped (the frozen ne_cells package itself is untouched)."""
+    t0 = time.time()
+    P, F, L, prov, vers = [], [], [], [], []
+    for i, j in cells:
+        name, key = f"cell_{i}_{j}.json", (i, j)
+        doc = docs[key]
+        if not doc.get("ready", True):
+            raise SystemExit(f"{name}: ready:false — refusing to build on a partial fetch")
+        prov.append(doc_prov(name, doc, b=docs.bytes_of(key)))
+        vers.append({"bevdirect_version": doc.get("bevdirect_version")})
+        p, f, l = canon._one_bevdirect(doc)
+        P += p; F += f; L += l
+        del doc, p, f, l
+    source = canon.bevdirect_source(vers)
+    if not source.startswith("bevdirect@"):
+        raise SystemExit("--source for bevdirect input must be bevdirect@<tag>")
+    return _finish(kg, epoch, source, P, F, L, prov, output, None, input_bbox, t0)
+
+
 def build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n):
     """ne_cells build (in-process, from the RAM documents) → (summary, LU section). The only CPU-heavy
     step of the pipeline. Only the derived .nec reaches disk."""
@@ -480,7 +547,7 @@ def build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n):
     os.makedirs(os.path.dirname(nec), exist_ok=True)
     t0 = time.time()
     ibox = tuple(map(float, bbox_s.split(",")))
-    summary = build_from_docs(kg, a.epoch, [(f"cell_{i}_{j}.json", docs[(i, j)]) for i, j in cells], nec, input_bbox=ibox)
+    summary = build_streaming(kg, a.epoch, cells, docs, nec, input_bbox=ibox)
     log(f"{kg}: build ok in {time.time() - t0:.0f}s: source={summary['source']} cells={summary['cells']} kcells={summary['kcells']} "
         f"digest={summary['digest']} (umfeld lu cells_n={umfeld_lu_n}, Δ={summary['cells'] - umfeld_lu_n if umfeld_lu_n is not None else '?'})")
     return summary, lu_section(nec)
@@ -579,11 +646,11 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
         raise RuntimeError(f"{kg}: {len(fetched)} of {len(cells)} aligned cells fetched — refusing a partial build")
     log(f"{kg}: fetched {len(fetched)} cells in {time.time() - t0:.0f}s "
         f"(bevdirect {sorted({r['bevdirect_version'] for r in fetched})}, {sum(r['incomplete'] for r in fetched)} parcel copies truncated at the pad, "
-        f"{sum(1 for r in fetched if r['src'] == 'stash')} from the game server's stash)")
+        f"{sum(1 for r in fetched if r['src'] == 'stash')} from the game server's stash; {docs.compressed_mb():.0f} MB gzipped in RAM)")
 
     # QC provenance first (§5a): tiles{} is a pure function of the raw cell documents, so it decides BEFORE the
     # build whether a build could produce anything new. chunks_tiles{} needs the chunk ids → after the build.
-    tiles_now, _ = tile_provenance(docs, ())
+    tiles_now, _ = tile_provenance(docs.meta, ())
     bev_versions = sorted({r["bevdirect_version"] for r in fetched})
     section = None
     summary = None
@@ -596,11 +663,11 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
     else:
         summary, section = build_kg(a, kg, cells, docs, bbox_s, umfeld_lu_n)
         report = epoch_report_ap(section, a.observer)   # `ne_cells report` + chunks_ap / ap_version
-        tiles, chunks_tiles = tile_provenance(docs, report.get("chunks") or {})
+        tiles, chunks_tiles = tile_provenance(docs.meta, report.get("chunks") or {})
         tiles_bad = []
         if tiles is not None:
             report["tiles"], report["chunks_tiles"] = tiles, chunks_tiles
-            tiles_bad = [list(c) for c in incomplete_cells(docs)]
+            tiles_bad = [list(c) for c in incomplete_cells(docs.meta)]
             if tiles_bad:
                 log(f"{kg}: WARNING incomplete tile fetch ({tiles['fetched']}/{tiles['expected']} tiles) in cells {tiles_bad} "
                     "— posted as is (umfeld: change_suspect tiles_incomplete), never counted as change")

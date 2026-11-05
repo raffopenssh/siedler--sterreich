@@ -114,6 +114,7 @@ type contribPlan struct {
 	FillFloor    int               `json:"fill_floor"`       // ≥ universe/contribSweepDays fill slots a night (monthly sweep guarantee)
 	Seen30       int               `json:"seen_30d"`         // KGs with a report in the last 30 d
 	NeverSeen    int               `json:"never_seen"`       // KGs without any report file
+	NeverKGs     []string          `json:"never_seen_kgs"`   // the same, largest area first (extra-round input)
 	Coverage30   float64           `json:"coverage_30d_pct"` // area share of Austria reported in the last 30 d
 	NeverPct     float64           `json:"never_seen_pct"`   // area share never reported
 	CatchUpDays  int               `json:"catch_up_days"`
@@ -192,12 +193,14 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		switch d := lastReport[kg]; {
 		case d == "":
 			p.NeverSeen++
+			p.NeverKGs = append(p.NeverKGs, kg)
 			areaNever += a
 		case d >= cut30:
 			p.Seen30++
 			area30 += a
 		}
 	}
+	sort.SliceStable(p.NeverKGs, func(i, j int) bool { return admin().KGs[p.NeverKGs[i]].AreaKm2 > admin().KGs[p.NeverKGs[j]].AreaKm2 })
 	if areaAll > 0 {
 		p.Coverage30 = math.Round(1000*area30/areaAll) / 10
 		p.NeverPct = math.Round(1000*areaNever/areaAll) / 10
