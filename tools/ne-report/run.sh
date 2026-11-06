@@ -51,8 +51,8 @@ if isinstance(v, list) and v:
     rv = [str(k).zfill(5) for k in (d.get("revisit") or [])]
     rv += [str(k).zfill(5) for k in v if str(k).zfill(5) in bb and str(k).zfill(5) not in rv]
     print(",".join(k + ("=" + bb[k].replace(",", ":") if bb.get(k) else "") for k in rv))
-    print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale, %s no_log), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
-          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"), d.get("revisit_no_log"),
+    print("ne-report: contrib plan %s day %s/%s: %s revisit (%s pending, %s stale, %s no_log, %s next_pass → pass %s), %s today, %s cheap (warm < 24 h), %s incl. catch-up, universe %s, reported this quarter %s"
+          % (d.get("quarter"), d.get("day"), d.get("days"), len(d.get("revisit") or []), d.get("revisit_pending"), d.get("revisit_stale"), d.get("revisit_no_log"), d.get("revisit_next_pass"), d.get("pass_target"),
              len(d.get("today") or []), len(d.get("cheap") or []),
              len(v), d.get("universe"), d.get("reported_quarter")), file=sys.stderr)
 ' 2>/tmp/ne-report-plan.err)

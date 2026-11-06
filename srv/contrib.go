@@ -95,11 +95,13 @@ type contribPlan struct {
 	Today        []string          `json:"today"`
 	Fill         []string          `json:"fill"`                   // not-yet-reported KGs pulled forward to reach night_min
 	Cheap        []string          `json:"cheap"`                  // of those: warmed < 24 h ago (bevdirect tiles cached → no new BEV load)
-	Revisit      []string          `json:"revisit"`                // head of the night: umfeld's revisit hints (pending oldest first, then stale, then no_log), ≤ ⅓ of night_min — re-reported regardless of age (run.sh passes them as --revisit)
+	Revisit      []string          `json:"revisit"`                // head of the night: umfeld's revisit hints (pending oldest first, then stale, then no_log, then the daily next_pass slice), ≤ ⅓ of night_min — re-reported regardless of age (run.sh passes them as --revisit)
 	RevisitBBox  map[string]string `json:"revisit_bbox,omitempty"` // kg → "w,s,e,n": the exact bbox umfeld wants the revisit built with (run.sh passes it as --revisit KG=w:s:e:n)
 	RevisitPend  int               `json:"revisit_pending"`
 	RevisitStal  int               `json:"revisit_stale"`
 	RevisitNoLog int               `json:"revisit_no_log"`
+	RevisitNext  int               `json:"revisit_next_pass"`      // next_pass rows (umfeld's standing pass queue) filling the rest of the revisit budget
+	PassTarget   int               `json:"pass_target,omitempty"`  // umfeld totals.pass_target: the pass the nation is on
 	NoLogQ       int               `json:"no_log_requeued"` // KGs reported this quarter that umfeld still lists without a chunk log → treated as unreported (fill again, umfeld's bbox)
 	AheadDays    int               `json:"ahead_days"`      // how far ahead of the hash schedule the fill reaches
 	Overdue      int               `json:"overdue"`         // fill KGs whose hash day already passed (promoted mid-quarter)
@@ -205,11 +207,20 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 		p.Coverage30 = math.Round(1000*area30/areaAll) / 10
 		p.NeverPct = math.Round(1000*areaNever/areaAll) / 10
 	}
-	for _, r := range contribRevisit(now) {
+	// next_pass rows: umfeld's standing queue once the nation is fully digested
+	// (lowest pass first) fills what pending/stale/no_log leave of the budget.
+	// Not a sighting within same_pass_window (20 h), and umfeld hides KGs we
+	// visited < 7 d ago only on a fresh answer — mirror both on our report files.
+	cutNext := now.Add(-contribRevisitMinAge).Format("2006-01-02")
+	p.PassTarget = contribPassTarget()
+	for _, r := range contribRevisit(now, budget) {
 		if len(p.Revisit) >= budget {
 			break
 		}
 		if rev[r.KG] || skipped[r.KG] || admin().KGs[r.KG] == nil || lastReport[r.KG] >= tonight {
+			continue
+		}
+		if r.Kind == "next_pass" && lastReport[r.KG] > cutNext {
 			continue
 		}
 		rev[r.KG] = true
@@ -225,6 +236,8 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 			p.RevisitPend++
 		case "stale":
 			p.RevisitStal++
+		case "next_pass":
+			p.RevisitNext++
 		default:
 			p.RevisitNoLog++
 		}
@@ -454,7 +467,7 @@ func (s *Server) handleContribPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contribStatusMap() map[string]any {
 	p := s.contribPlanNow(time.Now())
 	return map[string]any{"quarter": p.Quarter, "day": p.Day, "days": p.Days, "today": len(p.Today), "fill": len(p.Fill), "cheap": len(p.Cheap),
-		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "revisit_no_log": p.RevisitNoLog, "no_log_requeued": p.NoLogQ, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
+		"ahead_days": p.AheadDays, "overdue": p.Overdue, "rolling": p.Rolling, "small": p.Small, "revisit": len(p.Revisit), "revisit_pending": p.RevisitPend, "revisit_stale": p.RevisitStal, "revisit_no_log": p.RevisitNoLog, "revisit_next_pass": p.RevisitNext, "pass_target": p.PassTarget, "no_log_requeued": p.NoLogQ, "tonight": len(p.KGs), "night_min": p.NightMin, "night_max": p.NightMax, "universe": p.Universe,
 		"per_day_avg": p.PerDayAvg, "reported_quarter": p.ReportedQ, "left_quarter": p.LeftQ,
 		"fill_floor": p.FillFloor, "seen_30d": p.Seen30, "never_seen": p.NeverSeen, "coverage_30d_pct": p.Coverage30, "never_seen_pct": p.NeverPct, "sweep_days": contribSweepDays,
 		"warm_cap": contribWarmCap, "warm_hour": contribWarmHour, "wave": contribWaveStatus(time.Now()), "night_hour": contribNightHour, "tz": contribLoc.String(), "next_night": nextContribNight(time.Now()).UTC().Format(time.RFC3339), "warm_last": contribWarmLast.Load(), "warm_last_queued": contribWarmQueued.Load(), "stash": contribStashStatus()}
