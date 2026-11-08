@@ -88,11 +88,11 @@ EXTRA=()
 # ~170–230 KGs every night 2026-10-26 … 11-01 — the fill[] tail of the plan (the KGs never reported this
 # quarter) sits at the end of the list and was never reached. A fresh process per batch keeps RSS flat.
 BATCH=${BATCH:-25}
-# Hard deadline: the night must be over before 05:00 Vienna (host usage must look idle by day). A batch
-# is only started while the Vienna wall clock is before DEADLINE_H:DEADLINE_M (04:30 — a 25-KG batch takes
+# Hard deadline: the night must be over before 06:00 Vienna (host usage must look idle by day). A batch
+# is only started while the Vienna wall clock is before DEADLINE_H:DEADLINE_M (05:30 — a 25-KG batch takes
 # ~12 min); the remaining KGs stay unreported and the next night's fill picks them up first (overdue).
-DEADLINE_H=${DEADLINE_H:-4}; DEADLINE_M=${DEADLINE_M:-30}; DEADLINE_END=${DEADLINE_END:-1200}
-# A daytime extra round (manual catch-up) sets e.g. DEADLINE_H=18 DEADLINE_END=2200 so it stops before the 20:00 prewarm.
+DEADLINE_H=${DEADLINE_H:-5}; DEADLINE_M=${DEADLINE_M:-30}; DEADLINE_END=${DEADLINE_END:-1200}
+# A daytime extra round (manual catch-up) sets e.g. DEADLINE_H=18 DEADLINE_END=2300 so it stops before the 21:00 prewarm.
 set -- $KGS
 rc=0; n=0; total=$#
 while [ $# -gt 0 ]; do
