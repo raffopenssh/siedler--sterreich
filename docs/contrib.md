@@ -9,17 +9,17 @@ chunk. Pipeline runbook: [ne-report.md](ne-report.md). Public counter: `GET /api
 ## The loop (Europe/Vienna wall clock, `contribLoc`, DST-safe)
 
 ```
-~21:00 warmContribRun (srv/contrib.go)   → builds tonight's cells into api_cache + RAM stash (≤ 440 KGs × ~18 s ≈ 2 h 15)
-00:00  ne-report.timer → run.sh          → GET /api/contrib/plan?night=1 → ne_report.py per KG, cells from the stash
-≤ 03:30 done (2026-11-02: 293 KGs in 2 h 10 → 440 ≈ 3.3 h); run.sh starts no batch after 05:30 Vienna (`DEADLINE_H/M`), leftovers are next night's overdue.               Nothing contrib-related runs by day.
+~19:00 warmContribRun (srv/contrib.go)   → builds tonight's cells into api_cache + RAM stash (≤ 440 KGs × ~18 s ≈ 2 h 15)
+22:00  ne-report.timer → run.sh          → GET /api/contrib/plan?night=1 → ne_report.py per KG, cells from the stash
+≤ 01:30 done (2026-11-02: 293 KGs in 2 h 10 → 440 ≈ 3.3 h); run.sh starts no batch after 03:30 Vienna (`DEADLINE_H/M`), leftovers are next night's overdue.               Nothing contrib-related runs by day.
 ```
 
-- **Wave** (`contribWave`): start time (21:00 ± 25 min) and volume (340–440 KGs) drift per night — two
+- **Wave** (`contribWave`): start time (19:00 ± 25 min) and volume (340–440 KGs) drift per night — two
   incommensurate sines over the night number + a per-date hash jitter, deterministic per night so plan, prewarm
   and report agree (`night_min`/`night_max` = tonight's volume; `/api/warm/status` → `contrib.wave{night, volume,
   shift_min, prewarm_at}`). The per-cell pause is jittered ±40 % too. Mean ≈ 390/night → universe in ~20 nights (monthly sweep with margin).
-- `contribWarmHour` 21, `contribNightHour` 0 (keep in sync with `tools/ne-report/ne-report.timer`). A restart
-  between 21:00 and 00:00 re-runs the prewarm after 90 s (`contribPrewarmPending`). `nextContribNight` has a 3 h grace: a run asking `?night=1` just after the timer fired gets the slot that just started, not tomorrow's. Prewarm is independent of
+- `contribWarmHour` 19, `contribNightHour` 22 (keep in sync with `tools/ne-report/ne-report.timer`). A restart
+  between 19:00 and 22:00 re-runs the prewarm after 90 s (`contribPrewarmPending`). `nextContribNight` has a 3 h grace: a run asking `?night=1` just after the timer fired gets the slot that just started, not tomorrow's. Prewarm is independent of
   the warm activity tier, cap 440, reason `contrib`, prio 2, paced `warmContribPause` 1 s/cell.
 - The service unit has `Nice=15`, `CPUQuota=100%` (one of the 2 cores), `CPUWeight=30`, `TimeoutStartSec=8h`;
   ~34 s CPU + ~10 s overhead per KG.
@@ -34,7 +34,7 @@ left_quarter, catch_up_days, source}`.
 - Each KG gets a day of the quarter by `hash(quarter, kg)` (~85/day); the quarter is the **change resolution**
   of the chunk protocol (first report baselines a KG's chunks, later ones upload only changed ones).
 - A night is filled to `night_min` = **440** (`contribNightMin`): today + catch-up (`contribCatchUpDays` 3), then
-  **every `cheap[]` KG** (warmed < 24 h, uncapped — so the KGs the 21:00 prewarm built *are* the fill of the
+  **every `cheap[]` KG** (warmed < 24 h, uncapped — so the KGs the 19:00 prewarm built *are* the fill of the
   night that follows), then unreported KGs in due order (`fill[]`, overdue first); once the quarter's
   unreported KGs are exhausted the **rolling sweep** re-reports the least recently reported KGs ≥ 7 d old.
   `night_max` 440 caps only KGs needing fresh tiles (≈ 1 GB/night) → whole universe every ~20 nights.

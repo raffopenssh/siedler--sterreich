@@ -1,9 +1,9 @@
-# ne-report.timer — run ne-report.service daily at 00:00 Europe/Vienna, 3 h after the 21:00 contrib prewarm (srv/contrib.go contribWarmHour/contribNightHour) filled the RAM stash; ~440 KGs × ~27 s ≈ 3.3 h at CPUQuota 100 % → settled before 03:30, run.sh stops at 05:30, no CPU spike during the day.
+# ne-report.timer — run ne-report.service daily at 22:00 Europe/Vienna, 3 h after the 19:00 contrib prewarm (srv/contrib.go contribWarmHour/contribNightHour) filled the RAM stash; ~440 KGs × ~27 s ≈ 3.3 h at CPUQuota 100 % → settled before 01:30, run.sh stops at 03:30, no CPU spike during the day.
 [Unit]
 Description=Daily NE epoch reports (siedler → umfeld-at)
 
 [Timer]
-OnCalendar=*-*-* 00:00:00 Europe/Vienna
+OnCalendar=*-*-* 22:00:00 Europe/Vienna
 RandomizedDelaySec=15min
 Persistent=true
 
