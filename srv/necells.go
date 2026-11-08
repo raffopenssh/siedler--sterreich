@@ -32,7 +32,7 @@ import (
 
 const (
 	neTTL         = 24 * time.Hour
-	neContribTTL  = 4 * time.Hour // NE docs fetched only for a contrib prewarm: ~1 MB gzip each × ~5 000 cells/night would hold 2.5 GB of db.sqlite3 for 24 h (2026-11-08); players rarely visit them, a re-fetch costs 1–2 s
+	neContribTTL  = 6 * time.Hour // NE docs fetched only for a contrib prewarm (19:00 → 22:00 ne-report + slack): ~1 MB gzip each × ~5 000 cells/night would hold 2.5 GB of db.sqlite3 for 24 h (2026-11-08); players rarely visit them, a re-fetch costs 1–2 s
 	neMissTTL     = time.Hour
 	neBucketDeg   = 0.0005 // ~37 × 55 m buckets for point-in-polygon scans
 	neAttribution = "srtm-lidar-at landscape segmentation (CC BY 4.0) — NE cells, observed layer · Datenquelle: BEV ALS/DOP (CC BY 4.0, bearbeitet) · Contains modified Copernicus Sentinel data 2022–2025 · © ESA WorldCover 2021 · Hansen GFC · Abgleich: BEV Kataster, CC BY 4.0, bearbeitet (Nutzungseinheit-Zellen, keine Objektgeometrie)"

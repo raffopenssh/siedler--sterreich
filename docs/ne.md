@@ -7,7 +7,7 @@ declared, and every night we report our own cadastre digests back to umfeld (see
 ## Fetch & cache (`srv/necells.go`)
 
 - srtm `/api/v1/cells?bbox&format=columns&centres=1&layers=obs,trees,structures`, one fetch per 0.02° cell
-  (`ne:v1:i:j`, 24 h, hot LRU 24 parsed). Per cell: cover[9 groups], canopy, LiDAR heights, NDVI, change,
+  (`ne:v1:i:j`, 24 h — 6 h when fetched only by the 19:00 contrib prewarm, `neContribTTL`; hot LRU 24 parsed). Per cell: cover[9 groups], canopy, LiDAR heights, NDVI, change,
   terrain, `consistency` (observed vs declared), **every tree apex ≥ 3 m** (species, vitality), **every
   structure** (type, heights).
 - 404 = KG not processed (negative 1 h, `retry_after_s`); `meta.partial` for mixed cells; `meta.kgs_missing`
