@@ -77,6 +77,9 @@ rm -rf "$HERE/../../data/ne-reports/work" 2>/dev/null || true
 # failed POST can be inspected with `ne_cells dump/compare`; the change protocol reads them from RAM in the
 # same run. Digest-only reports (KG.<date>.json / .meta.json) carry no cadastre content and stay.
 find "$HERE/../../data/ne-reports/nec" -name "*.nec" -mmin +1440 -delete 2>/dev/null || true
+# Digest-only reports are bounded per KG (newest 2 + newest full build + newest chunk POST, see prune.py):
+# unbounded they grew ~40 MB/night.
+python3 "$HERE/prune.py" || true
 
 # Token: ne-peer.key in the repo root wins, else the environment. ne_report.py logs a clear
 # "POST skipped — no peer token" line when neither exists.

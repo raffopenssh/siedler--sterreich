@@ -32,6 +32,7 @@ import (
 
 const (
 	neTTL         = 24 * time.Hour
+	neContribTTL  = 4 * time.Hour // NE docs fetched only for a contrib prewarm: ~1 MB gzip each × ~5 000 cells/night would hold 2.5 GB of db.sqlite3 for 24 h (2026-11-08); players rarely visit them, a re-fetch costs 1–2 s
 	neMissTTL     = time.Hour
 	neBucketDeg   = 0.0005 // ~37 × 55 m buckets for point-in-polygon scans
 	neAttribution = "srtm-lidar-at landscape segmentation (CC BY 4.0) — NE cells, observed layer · Datenquelle: BEV ALS/DOP (CC BY 4.0, bearbeitet) · Contains modified Copernicus Sentinel data 2022–2025 · © ESA WorldCover 2021 · Hansen GFC · Abgleich: BEV Kataster, CC BY 4.0, bearbeitet (Nutzungseinheit-Zellen, keine Objektgeometrie)"
@@ -249,7 +250,11 @@ func neParse(c cellID, raw []byte) (*neCols, *neStatus, int) {
 // (possibly partial — see Meta.Partial), 404 = nothing processed here (status
 // carries retry_after_s), 502/503 = srtm error / breaker open. Cached 24 h
 // (raw, gzipped by the Store), negative 1 h; a hot LRU keeps 24 parsed cells.
-func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) {
+func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) { return s.neCellsTTL(c, neTTL) }
+
+// neCellsTTL: ttl bounds how long a freshly fetched doc stays on disk (a doc
+// already cached keeps its own expiry).
+func (s *Server) neCellsTTL(c cellID, maxTTL time.Duration) (*neCols, *neStatus, int) {
 	if n := neHotGet(c); n != nil {
 		return n, nil, 200
 	}
@@ -276,7 +281,7 @@ func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 		switch resp.StatusCode {
 		case 200:
-			ttl := neTTL
+			ttl := maxTTL
 			if ra, pend := nePendingHint(raw); pend > 0 {
 				// Part of the cell is still being ingested upstream: keep this
 				// doc only until srtm's retry hint (≥ 30 min, ≤ 6 h) so the
@@ -287,6 +292,9 @@ func (s *Server) neCells(c cellID) (*neCols, *neStatus, int) {
 				}
 				if ttl > 6*time.Hour {
 					ttl = 6 * time.Hour
+				}
+				if ttl > maxTTL {
+					ttl = maxTTL
 				}
 			}
 			s.Q.SetCachedData(ctx, dbgen.SetCachedDataParams{CacheKey: key, Data: string(raw), ExpiresAt: time.Now().Add(ttl)})

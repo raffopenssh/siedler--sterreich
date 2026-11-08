@@ -39,7 +39,7 @@ func cachePack(s string) string {
 		return s
 	}
 	var buf bytes.Buffer
-	gw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	gw, _ := gzip.NewWriterLevel(&buf, gzip.DefaultCompression) // −20 % vs BestSpeed on 1 MB NE docs, ~40 ms each
 	gw.Write([]byte(s))
 	gw.Close()
 	if buf.Len() >= len(s) {
@@ -156,7 +156,7 @@ func (s *Server) compressLegacyCache() {
 			// Always gzip here (even if it wouldn't shrink) so the row
 			// leaves the WHERE set and the loop terminates.
 			var buf bytes.Buffer
-			gw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+			gw, _ := gzip.NewWriterLevel(&buf, gzip.DefaultCompression) // −20 % vs BestSpeed on 1 MB NE docs, ~40 ms each
 			gw.Write([]byte(r.v))
 			gw.Close()
 			packed := buf.String()

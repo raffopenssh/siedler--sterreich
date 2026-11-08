@@ -407,7 +407,11 @@ func (s *Server) buildCellOpt(b bbox, key string, contrib bool) ([]byte, int) {
 	go func() {
 		defer wg.Done()
 		if c, ok := isAlignedCell(b.W, b.S, b.E, b.N); ok {
-			ne, neSt, neCode = s.neCells(c)
+			ttl := neTTL
+			if contrib {
+				ttl = neContribTTL
+			}
+			ne, neSt, neCode = s.neCellsTTL(c, ttl)
 		}
 	}()
 	wg.Wait()
