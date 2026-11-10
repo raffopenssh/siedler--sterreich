@@ -486,13 +486,15 @@ var upstreamClient = &http.Client{
 }
 
 func init() {
-	upstreamBreaker.base = &http.Transport{
+	// friendlyTransport (friendly.go) identifies us to the farm sibling and
+	// retries its 429s; it sits under the breaker so health probes pass it too.
+	upstreamBreaker.base = &friendlyTransport{component: "srv", base: &http.Transport{
 		MaxIdleConns:        64,
 		MaxIdleConnsPerHost: 24,
 		MaxConnsPerHost:     32,
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   true,
-	}
+	}}
 }
 
 func upstreamGet(url string) (*http.Response, error) { return upstreamClient.Get(url) }

@@ -268,7 +268,8 @@ var aheadProbeClient = &http.Client{
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse // an auth redirect is a fail, not a pass
 	},
-	Transport: &http.Transport{MaxIdleConnsPerHost: 4, IdleConnTimeout: 30 * time.Second, ForceAttemptHTTP2: true},
+	// friendlyTransport: the farm sibling wants its own User-Agent (friendly.go).
+	Transport: &friendlyTransport{component: "ahead-check", base: &http.Transport{MaxIdleConnsPerHost: 4, IdleConnTimeout: 30 * time.Second, ForceAttemptHTTP2: true}},
 }
 
 func runProbe(ctx context.Context, base string, c *aheadCheck) (*probeRes, error) {
