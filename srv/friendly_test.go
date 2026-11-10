@@ -20,9 +20,11 @@ func (r rewrite) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestFriendlyTransport(t *testing.T) {
 	var n atomic.Int32
-	var ua atomic.Value
+	var ua, tok atomic.Value
+	t.Setenv("SIEDLER_FARM_PEER_TOKEN", "test-token")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ua.Store(r.UserAgent())
+		tok.Store(r.Header.Get("X-Peer-Token"))
 		if n.Add(1) < 3 {
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(429)
@@ -47,7 +49,10 @@ func TestFriendlyTransport(t *testing.T) {
 	if got, want := ua.Load().(string), "siedler-oesterreich/test (+https://siedler-oesterreich.exe.xyz)"; got != want {
 		t.Fatalf("UA %q, want %q", got, want)
 	}
-	if req.Header.Get("User-Agent") != "something-else/1" {
+	if tok.Load().(string) != "test-token" {
+		t.Fatalf("peer token not sent: %q", tok.Load())
+	}
+	if req.Header.Get("User-Agent") != "something-else/1" || req.Header.Get("X-Peer-Token") != "" {
 		t.Fatal("caller's request was modified")
 	}
 
@@ -59,6 +64,9 @@ func TestFriendlyTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+	if tok.Load().(string) != "" {
+		t.Fatal("peer token leaked to a foreign host")
+	}
 	if ua.Load().(string) != "keep/1" {
 		t.Fatalf("foreign host UA rewritten: %q", ua.Load())
 	}
@@ -78,8 +86,8 @@ func TestFriendlyLive(t *testing.T) {
 			t.Fatal(name, err)
 		}
 		resp.Body.Close()
-		if tier := resp.Header.Get("X-RateLimit-Tier"); tier != "friendly" {
-			t.Errorf("%s: tier %q (HTTP %d), want friendly", name, tier, resp.StatusCode)
+		if tier := resp.Header.Get("X-RateLimit-Tier"); tier != friendlyTier(farmPeerToken()) {
+			t.Errorf("%s: tier %q (HTTP %d), want %s", name, tier, resp.StatusCode, friendlyTier(farmPeerToken()))
 		}
 	}
 }
