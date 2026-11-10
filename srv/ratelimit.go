@@ -85,9 +85,11 @@ var (
 // ipKey hashes the client IP with an hourly-rotating random salt. The result
 // is only ever used as an in-memory map key.
 func ipKey(r *http.Request) string {
+	// The exe.dev proxy appends the address it saw to any client-sent
+	// X-Forwarded-For, so only the last entry is trustworthy.
 	ip := r.Header.Get("X-Forwarded-For")
-	if i := strings.IndexByte(ip, ','); i > 0 {
-		ip = ip[:i]
+	if i := strings.LastIndexByte(ip, ','); i >= 0 {
+		ip = ip[i+1:]
 	}
 	ip = strings.TrimSpace(ip)
 	if ip == "" {
