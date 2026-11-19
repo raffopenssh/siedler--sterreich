@@ -728,12 +728,12 @@ def _process_kg_cells(a, kg, today, prev, cells, full, ibox, ubox, bbox_s, hdr, 
         # deduped on token + source class + algo + digest + epoch, bbox-independent. `unchanged:true` =
         # our last report of this KG had the same digest → the chunk list (≈ 40–400 KB) is not sent at
         # all. Any other answer (changed, first report, old server → 4xx) falls through to the full POST.
-        # Step 0 is skipped (full report with chunks_ap straight away, ≈ 40–400 KB) when umfeld asked
-        # for this KG (revisit hint: stale = one chunk-bearing report, no_log = none — a header answered
-        # unchanged:true is a sighting but not a chunk-bearing report, so the KG would stay on the
-        # list night after night: 01205 on 2026-10-24/25/26) or when none of our POSTs of this KG ever
-        # carried the chunk list (pre-2026-10-08 baseline → header probe says unchanged forever).
-        full_reason = "revisit hint" if kg in a.revisit else (None if chunk_list_sent(a.out, kg) else "no chunk list on record")
+        # Revisit KGs go header-first too (umfeld 2026-11-19, ne-change.md §5b "Pass rule"): a report
+        # answered unchanged:true on a new UTC day lifts every chunk of the KG by one pass; 202
+        # need:"chunks" (digest or epoch moved) asks for the full report. Never send the full body
+        # after an unchanged header answer. Step 0 is skipped only when none of our POSTs of this KG
+        # ever carried the chunk list (pre-2026-10-08 baseline).
+        full_reason = None if chunk_list_sent(a.out, kg) else "no chunk list on record"
         head = {k: v for k, v in report.items() if k not in ("chunks", "chunks_ap", "chunks_tiles")}
         if full_reason:
             log(f"{kg}: step 0 skipped ({full_reason}) — sending the full report with chunks_ap")

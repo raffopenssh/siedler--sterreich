@@ -210,7 +210,7 @@ func (s *Server) contribPlanNow(now time.Time) contribPlan {
 	// next_pass rows: umfeld's standing queue once the nation is fully digested
 	// (lowest pass first) fills what pending/stale/no_log leave of the budget.
 	// Not a sighting within same_pass_window (20 h), and umfeld hides KGs we
-	// visited < 7 d ago only on a fresh answer — mirror both on our report files.
+	// visited < contribRevisitMinAge ago only on a fresh answer — mirror both on our report files.
 	cutNext := now.Add(-contribRevisitMinAge).Format("2006-01-02")
 	p.PassTarget = contribPassTarget()
 	for _, r := range contribRevisit(now, budget) {

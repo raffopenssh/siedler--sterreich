@@ -54,9 +54,16 @@ left_quarter, catch_up_days, source}`.
   chunk-bearing report covering the KG's universe bbox gives a baseline and makes its chunks authoritative, umfeld
   `ne-change.md` §4b) go to the **head of the night**, ≤ ⅓ of `night_min` (umfeld caps each list at 50),
   re-reported regardless of age (`revisit[]`, `revisit_pending`, `revisit_stale`, `revisit_no_log`; run.sh →
-  `--revisit`). `obs_on_index[]` is for NEO1 observers, not us. Every revisit KG is POSTed as a **full report**
-  (no header-only step 0, [ne-report.md](ne-report.md) § step 0): a header answered `unchanged` confirms but does
-  not count as a chunk-bearing report, so a `stale`/`no_log` KG would stay on the list forever.
+  `--revisit`). `obs_on_index[]` is for NEO1 observers, not us. Revisit KGs go **header-first** like any
+  other ([ne-report.md](ne-report.md) § step 0): `unchanged:true` = done, `202 need:"chunks"` = full report.
+- **`next_pass[]` — the standing pass queue** (`contribNextPass`, `?kind=next_pass&min_age_days=1&limit=<budget>`,
+  once a day with `If-None-Match`): `{kg, pass, chunks, chunks_below, last_at, bbox}` in umfeld's order (lowest
+  pass first), taken from the top after `pending`, before `stale`. **Pass rule** (umfeld `ne-change.md` §5b,
+  2026-11-19): any report of ours — also one answered `unchanged:true` — lifts every chunk of the KG by one pass
+  per UTC day, provided the build covers `row.bbox` (the box of the build that defines the KG's counted chunk set;
+  we build exactly it). `totals.chunks_by_pass` is per KG; pass *k* is complete when `[k] == ["1"]`, `pass_target`
+  then moves to *k*+1 (plan: `pass_target`, `revisit_next_pass`). The normal sweep's reports count as passes too.
+  `min_age_days=1` (`contribRevisitMinAge`; umfeld default 7) hides only what we visited in the last day.
   Umfeld (2026-10-27, §4b) treats every logged chunk as authoritative for its cell set: index cells our build no
   longer holds are served from the neighbour KG's rows or, orphaned, as `flags.superseded` fallbacks (bit 7 —
   ignore when diffing against our build; `header.view.hidden` counts them). Reporting both sides of a moved

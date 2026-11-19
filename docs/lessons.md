@@ -71,3 +71,8 @@ or certifi. Verified empirically: curl, Go, python (system + venv), node all rej
 incl. the no-CT chains. Only stale bundle was the venv's vendored pip certifi → pip upgraded to 26.2.2.
 Rule: never add a private CA bundle (certifi/`RootCAs`) to an upstream client — the system store is the
 single place that gets patched.
+
+- **2026-11-19 — pass 2 stuck at 98 %.** Umfeld did not credit revisits answered `unchanged:true`, counted chunks
+  of retired layouts and hid the KG from our queue for 7 d anyway. Fixed on umfeld (per-KG current chunk set,
+  unchanged = one pass per UTC day); we dropped the forced full report for revisit KGs (header-first) and ask with
+  `min_age_days=1`. A counter that never moves is a protocol question for the peer, not something to brute-force.

@@ -24,16 +24,20 @@ import (
 //   next_pass[] the standing work queue since Austria is 100 % digested
 //               (2026-11-06): {kg, pass, chunks, chunks_below, last_at, bbox},
 //               ordered by umfeld (lowest pass first, most chunks behind first,
-//               oldest visit first). One normal chunk-bearing report whose bbox
-//               COVERS the row's bbox lifts the whole KG by one pass.
+//               oldest visit first). One report whose bbox COVERS the row's bbox
+//               (the box of the build defining the KG's counted chunk set) lifts
+//               the whole KG by one pass per UTC day — also when answered
+//               unchanged:true (umfeld 2026-11-19, ne-change.md §5b "Pass rule").
+//               totals.chunks_by_pass is per KG; a pass k is complete when
+//               chunks_by_pass[k] == chunks_by_pass["1"], pass_target then k+1.
 // `obs_on_index[]`/`obs_missing[]` are for NEO1 observers — not us.
 // contribPlanNow puts them at the head of the night (pending → next_pass →
 // stale → no_log, see contribRevisit), capped at contribRevisitShare of
 // night_min; the rest of the night is the normal order. pending/stale/no_log refresh every
 // 10 min (umfeld recomputes every 10 min); next_pass is fetched once a day with
 // limit = the revisit budget (304 ⇒ yesterday's list, minus what we reported
-// since). ne_report.py sends every revisit KG as a full report (no header-only
-// step 0). Small JSON in RAM, no disk. An unreachable endpoint = no hints, never
+// since). ne_report.py sends every KG header-only first (step 0); the full
+// report follows only on 202 need:"chunks". Small JSON in RAM, no disk. An unreachable endpoint = no hints, never
 // a failed plan.
 const (
 	contribObserver       = "siedler-oesterreich"
@@ -42,7 +46,7 @@ const (
 	contribRevisitTTL     = 10 * time.Minute
 	contribNextPassTTL    = 24 * time.Hour // umfeld: fetch the next_pass slice once a day
 	contribSamePassWindow = 20 * time.Hour // umfeld same_pass_window: a re-post inside it is not a sighting
-	contribRevisitMinAge  = 7 * 24 * time.Hour // umfeld min_age_days: next_pass hides KGs we visited within it; mirrored on a 304-reused list
+	contribRevisitMinAge  = 24 * time.Hour // sent as min_age_days=1 (umfeld default 7): next_pass hides KGs we visited within it, so passes can run faster than weekly; mirrored on a 304-reused list
 )
 
 type contribRevisitKG struct {
@@ -296,7 +300,7 @@ func contribNextPass(now time.Time, n int) []contribRevisitKG {
 		c.etag = "" // a different limit is a different list
 	}
 	c.at, c.limit = now, n
-	body, status := c.get("kind=next_pass&limit=" + strconv.Itoa(n))
+	body, status := c.get("kind=next_pass&min_age_days=" + strconv.Itoa(int(contribRevisitMinAge/(24*time.Hour))) + "&limit=" + strconv.Itoa(n))
 	if body == nil {
 		if status != 304 && status != 0 {
 			c.at = now.Add(-contribNextPassTTL + 30*time.Minute) // retry in 30 min, not tomorrow
